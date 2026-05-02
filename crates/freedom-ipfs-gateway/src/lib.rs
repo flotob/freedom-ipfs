@@ -8,7 +8,7 @@ use axum::Router;
 use bytes::Bytes;
 use cid::Cid;
 use freedom_ipfs_core::{parse_cid, BlockProvider};
-use freedom_ipfs_namesys::{resolve_dnslink, CloudflareDohResolver};
+use freedom_ipfs_namesys::{DefaultNameResolver, NameResolver};
 use freedom_ipfs_store::SqliteBlockStore;
 use freedom_ipfs_unixfs::{read_file, UnixfsError};
 use std::net::SocketAddr;
@@ -18,17 +18,32 @@ use tokio::net::TcpListener;
 #[derive(Clone)]
 pub struct GatewayState {
     provider: Arc<dyn BlockProvider>,
+    name_resolver: Arc<dyn NameResolver>,
 }
 
 impl GatewayState {
     pub fn new(store: SqliteBlockStore) -> Self {
         Self {
             provider: Arc::new(store),
+            name_resolver: Arc::new(DefaultNameResolver::default()),
         }
     }
 
     pub fn with_provider(provider: Arc<dyn BlockProvider>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            name_resolver: Arc::new(DefaultNameResolver::default()),
+        }
+    }
+
+    pub fn with_provider_and_name_resolver(
+        provider: Arc<dyn BlockProvider>,
+        name_resolver: Arc<dyn NameResolver>,
+    ) -> Self {
+        Self {
+            provider,
+            name_resolver,
+        }
     }
 }
 
@@ -37,11 +52,21 @@ pub fn router(store: SqliteBlockStore) -> Router {
 }
 
 pub fn router_with_provider(provider: Arc<dyn BlockProvider>) -> Router {
+    router_with_provider_and_name_resolver(provider, Arc::new(DefaultNameResolver::default()))
+}
+
+pub fn router_with_provider_and_name_resolver(
+    provider: Arc<dyn BlockProvider>,
+    name_resolver: Arc<dyn NameResolver>,
+) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/ipfs/{*path}", get(ipfs_get))
         .route("/ipns/{*path}", get(ipns_get))
-        .with_state(GatewayState::with_provider(provider))
+        .with_state(GatewayState::with_provider_and_name_resolver(
+            provider,
+            name_resolver,
+        ))
 }
 
 pub async fn serve(store: SqliteBlockStore, addr: SocketAddr) -> std::io::Result<SocketAddr> {
@@ -78,7 +103,14 @@ async fn ipns_get(
     Path(path): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    match serve_ipns_path(state.provider.as_ref(), &path, headers.get(RANGE)).await {
+    match serve_ipns_path(
+        state.provider.as_ref(),
+        state.name_resolver.as_ref(),
+        &path,
+        headers.get(RANGE),
+    )
+    .await
+    {
         Ok(response) => response,
         Err(err) => gateway_error(err),
     }
@@ -125,10 +157,10 @@ fn split_ipfs_path(path: &str) -> Result<(Cid, &str), GatewayError> {
 
 async fn serve_ipns_path(
     provider: &dyn BlockProvider,
+    name_resolver: &dyn NameResolver,
     path: &str,
     range: Option<&HeaderValue>,
 ) -> Result<Response, GatewayError> {
-    let resolver = CloudflareDohResolver::default();
     let mut target = format!("/ipns/{path}");
 
     for _ in 0..4 {
@@ -142,7 +174,7 @@ async fn serve_ipns_path(
             )));
         };
         let (name, rest) = split_name_path(ipns)?;
-        let resolved = resolve_dnslink(&resolver, name).await.map_err(|err| {
+        let resolved = name_resolver.resolve_name(name).await.map_err(|err| {
             GatewayError::BadGateway(format!("ipns/dnslink resolution failed: {err}"))
         })?;
         target = append_path(&resolved, rest);
@@ -302,6 +334,7 @@ fn gateway_error(err: GatewayError) -> Response {
 mod tests {
     use super::*;
     use freedom_ipfs_core::{cid_from_data, CODEC_RAW};
+    use freedom_ipfs_namesys::{NamesysError, Result as NamesysResult};
     use tokio::net::TcpListener;
 
     #[tokio::test]
@@ -348,5 +381,47 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(response.bytes().await.unwrap(), Bytes::from_static(b"2345"));
+    }
+
+    #[tokio::test]
+    async fn resolves_ipns_path_through_name_resolver() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let data = b"<html>ipns</html>";
+        let cid = cid_from_data(CODEC_RAW, data);
+        store.put_block(&cid, data).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router_with_provider_and_name_resolver(
+            Arc::new(store),
+            Arc::new(StaticNameResolver {
+                name: "k51fixture".to_string(),
+                target: format!("/ipfs/{cid}"),
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{addr}/ipns/k51fixture");
+        let response = reqwest::get(url).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.bytes().await.unwrap(), Bytes::from_static(data));
+    }
+
+    struct StaticNameResolver {
+        name: String,
+        target: String,
+    }
+
+    #[async_trait::async_trait]
+    impl NameResolver for StaticNameResolver {
+        async fn resolve_name(&self, name: &str) -> NamesysResult<String> {
+            if name == self.name {
+                Ok(self.target.clone())
+            } else {
+                Err(NamesysError::NotFound(name.to_string()))
+            }
+        }
     }
 }

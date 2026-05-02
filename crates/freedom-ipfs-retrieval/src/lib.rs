@@ -124,6 +124,7 @@ impl HttpRetriever {
                 yamux::Config::default,
             )
             .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
+            .with_quic()
             .with_dns()
             .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
             .with_websocket(
@@ -144,6 +145,7 @@ impl HttpRetriever {
             tracing::debug!(peer = %peer.id, addrs = ?peer.addrs, "adding bitswap peer");
             peer_ids.push(peer.id);
             for addr in peer.addrs {
+                swarm.add_peer_address(peer.id, addr.clone());
                 let dial_addr = addr.with_p2p(peer.id).unwrap_or_else(|addr| addr);
                 if let Err(err) = swarm.dial(dial_addr) {
                     tracing::debug!(peer = %peer.id, error = %err, "bitswap dial rejected");
@@ -305,13 +307,14 @@ fn parse_peer_id(id: &str) -> Option<PeerId> {
 
 fn is_supported_bitswap_addr(addr: &Multiaddr) -> bool {
     let mut has_tcp = false;
+    let mut has_udp = false;
+    let mut has_quic = false;
     for protocol in addr.iter() {
         match protocol {
             Protocol::Tcp(_) => has_tcp = true,
-            Protocol::Udp(_)
-            | Protocol::Quic
-            | Protocol::QuicV1
-            | Protocol::WebTransport
+            Protocol::Udp(_) => has_udp = true,
+            Protocol::Quic | Protocol::QuicV1 => has_quic = true,
+            Protocol::WebTransport
             | Protocol::WebRTC
             | Protocol::WebRTCDirect
             | Protocol::P2pWebRtcDirect
@@ -319,7 +322,7 @@ fn is_supported_bitswap_addr(addr: &Multiaddr) -> bool {
             _ => {}
         }
     }
-    has_tcp
+    has_tcp || (has_udp && has_quic)
 }
 
 fn accept_bitswap_streams(control: &mut StreamControl) -> Result<Vec<IncomingStreams>> {
@@ -611,10 +614,11 @@ mod bitswap_tests {
     }
 
     #[test]
-    fn rejects_quic_multiaddr_for_tcp_client() {
+    fn accepts_quic_multiaddr() {
         let provider = parse_peer_id("12D3KooWNDpFqyse9kR7aZwgEzh4U1mL6Zz6jEuRNFXJxL5D2KPP");
-        assert!(
-            parse_bitswap_multiaddr("/ip4/164.92.225.198/udp/4001/quic-v1", provider,).is_none()
-        );
+        let (peer, addr) =
+            parse_bitswap_multiaddr("/ip4/164.92.225.198/udp/4001/quic-v1", provider).unwrap();
+        assert_eq!(Some(peer), provider);
+        assert_eq!(addr.to_string(), "/ip4/164.92.225.198/udp/4001/quic-v1");
     }
 }

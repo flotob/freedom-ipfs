@@ -402,6 +402,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
+name = "cbor4ii"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b544cf8c89359205f4f990d0e6f3828db42df85b5dac95d09157a250eb0749c4"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -887,6 +896,7 @@ name = "freedom-ipfs-gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "bytes",
  "cid",
@@ -921,9 +931,16 @@ name = "freedom-ipfs-namesys"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "cid",
+ "ipld-core",
+ "libp2p-identity",
+ "multihash",
+ "prost",
  "reqwest",
  "serde",
+ "serde_ipld_dagcbor",
  "thiserror 2.0.18",
+ "time",
  "tokio",
 ]
 
@@ -1607,6 +1624,17 @@ dependencies = [
  "windows-registry",
  "windows-result",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ipld-core"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "090f624976d72f0b0bb71b86d58dc16c15e069193067cb3a3a09d655246cbbda"
+dependencies = [
+ "cid",
+ "serde",
+ "serde_bytes",
 ]
 
 [[package]]
@@ -3009,6 +3037,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "serde_ipld_dagcbor"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46182f4f08349a02b45c998ba3215d3f9de826246ba02bb9dddfe9a2a2100778"
+dependencies = [
+ "cbor4ii",
+ "ipld-core",
+ "scopeguard",
+ "serde",
 ]
 
 [[package]]

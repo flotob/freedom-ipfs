@@ -1,9 +1,26 @@
 use cid::Cid;
+use futures::StreamExt;
+use libp2p::kad::{self, store::MemoryStore, store::RecordStore, GetProvidersOk, QueryResult};
+use libp2p::multiaddr::Protocol;
+use libp2p::swarm::SwarmEvent;
+use libp2p::{noise, tcp, tls, yamux, Multiaddr, PeerId, SwarmBuilder};
 use serde::Deserialize;
+use std::collections::HashSet;
+use std::str::FromStr;
+use std::time::Duration;
 use thiserror::Error;
 use url::Url;
 
 pub const DEFAULT_DELEGATED_ROUTER: &str = "https://delegated-ipfs.dev/routing/v1";
+const DEFAULT_DHT_QUERY_TIMEOUT: Duration = Duration::from_secs(25);
+const DEFAULT_MAX_DHT_PROVIDERS: usize = 32;
+const DEFAULT_BOOTSTRAP_PEERS: &[&str] = &[
+    "/dnsaddr/sg1.bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+    "/dnsaddr/sv15.bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+    "/dnsaddr/am6.bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
+    "/dnsaddr/ny5.bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+    "/dnsaddr/va1.bootstrap.libp2p.io/p2p/12D3KooWKnDdG3iXw9eTFijk3EWSunZcFi54Zka4wmtqtt6rPxc8",
+];
 
 #[derive(Debug, Error)]
 pub enum RoutingError {
@@ -13,6 +30,8 @@ pub enum RoutingError {
     InvalidResponse(String),
     #[error("invalid provider url: {0}")]
     InvalidProviderUrl(String),
+    #[error("dht: {0}")]
+    Dht(String),
 }
 
 pub type Result<T> = std::result::Result<T, RoutingError>;
@@ -22,6 +41,57 @@ pub struct Provider {
     pub id: Option<String>,
     pub addrs: Vec<String>,
     pub http_urls: Vec<Url>,
+}
+
+impl Provider {
+    pub fn from_parts(id: Option<String>, addrs: Vec<String>) -> Result<Self> {
+        let mut http_urls = Vec::new();
+        for addr in &addrs {
+            if let Some(url) = http_url_from_multiaddr(addr)? {
+                http_urls.push(url);
+            }
+        }
+        Ok(Self {
+            id,
+            addrs,
+            http_urls,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ProviderRoutingClient {
+    Delegated(DelegatedRoutingClient),
+    Auto(AutoRoutingClient),
+    LightDht(LightDhtClient),
+}
+
+impl ProviderRoutingClient {
+    pub async fn providers(&self, cid: &Cid) -> Result<Vec<Provider>> {
+        match self {
+            Self::Delegated(client) => client.providers(cid).await,
+            Self::Auto(client) => client.providers(cid).await,
+            Self::LightDht(client) => client.providers(cid).await,
+        }
+    }
+}
+
+impl From<DelegatedRoutingClient> for ProviderRoutingClient {
+    fn from(client: DelegatedRoutingClient) -> Self {
+        Self::Delegated(client)
+    }
+}
+
+impl From<AutoRoutingClient> for ProviderRoutingClient {
+    fn from(client: AutoRoutingClient) -> Self {
+        Self::Auto(client)
+    }
+}
+
+impl From<LightDhtClient> for ProviderRoutingClient {
+    fn from(client: LightDhtClient) -> Self {
+        Self::LightDht(client)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +126,136 @@ impl DelegatedRoutingClient {
             .text()
             .await?;
         parse_provider_response(&body)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AutoRoutingClient {
+    delegated: DelegatedRoutingClient,
+    dht: LightDhtClient,
+}
+
+impl Default for AutoRoutingClient {
+    fn default() -> Self {
+        Self::new(DelegatedRoutingClient::default(), LightDhtClient::default())
+    }
+}
+
+impl AutoRoutingClient {
+    pub fn new(delegated: DelegatedRoutingClient, dht: LightDhtClient) -> Self {
+        Self { delegated, dht }
+    }
+
+    pub async fn providers(&self, cid: &Cid) -> Result<Vec<Provider>> {
+        match self.delegated.providers(cid).await {
+            Ok(providers) if !providers.is_empty() => Ok(providers),
+            Ok(_) => self.dht.providers(cid).await,
+            Err(delegated_err) => match self.dht.providers(cid).await {
+                Ok(providers) => Ok(providers),
+                Err(dht_err) => Err(RoutingError::Dht(format!(
+                    "delegated routing failed ({delegated_err}); light DHT failed ({dht_err})"
+                ))),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LightDhtClient {
+    bootstrap_peers: Vec<String>,
+    query_timeout: Duration,
+    max_providers: usize,
+}
+
+impl Default for LightDhtClient {
+    fn default() -> Self {
+        Self {
+            bootstrap_peers: DEFAULT_BOOTSTRAP_PEERS
+                .iter()
+                .map(|peer| (*peer).to_string())
+                .collect(),
+            query_timeout: DEFAULT_DHT_QUERY_TIMEOUT,
+            max_providers: DEFAULT_MAX_DHT_PROVIDERS,
+        }
+    }
+}
+
+impl LightDhtClient {
+    pub fn new(bootstrap_peers: Vec<String>) -> Self {
+        Self {
+            bootstrap_peers,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_query_timeout(mut self, timeout: Duration) -> Self {
+        self.query_timeout = timeout;
+        self
+    }
+
+    pub async fn providers(&self, cid: &Cid) -> Result<Vec<Provider>> {
+        let mut swarm = build_dht_swarm(self.query_timeout).await?;
+        let mut bootstrap_count = 0usize;
+        for addr in &self.bootstrap_peers {
+            let Some((peer, addr)) = parse_p2p_multiaddr(addr) else {
+                tracing::debug!(addr, "ignoring invalid DHT bootstrap peer");
+                continue;
+            };
+            swarm.behaviour_mut().add_address(&peer, addr.clone());
+            swarm.add_peer_address(peer, addr.clone());
+            if let Ok(dial_addr) = addr.with_p2p(peer) {
+                if let Err(err) = swarm.dial(dial_addr) {
+                    tracing::debug!(peer = %peer, error = %err, "DHT bootstrap dial rejected");
+                }
+            }
+            bootstrap_count += 1;
+        }
+        if bootstrap_count == 0 {
+            return Err(RoutingError::Dht("no valid DHT bootstrap peers".into()));
+        }
+
+        let key = kad::RecordKey::new(&cid.hash().to_bytes());
+        let query_id = swarm.behaviour_mut().get_providers(key.clone());
+        let mut provider_ids = HashSet::new();
+        let deadline = tokio::time::sleep(self.query_timeout);
+        tokio::pin!(deadline);
+
+        loop {
+            tokio::select! {
+                _ = &mut deadline => {
+                    break;
+                }
+                event = swarm.select_next_some() => {
+                    let SwarmEvent::Behaviour(kad::Event::OutboundQueryProgressed { id, result, .. }) = event else {
+                        continue;
+                    };
+                    if id != query_id {
+                        continue;
+                    }
+                    match result {
+                        QueryResult::GetProviders(Ok(GetProvidersOk::FoundProviders { providers, .. })) => {
+                            provider_ids.extend(providers);
+                            if provider_ids.len() >= self.max_providers {
+                                break;
+                            }
+                        }
+                        QueryResult::GetProviders(Ok(GetProvidersOk::FinishedWithNoAdditionalRecord { .. })) => {
+                            break;
+                        }
+                        QueryResult::GetProviders(Err(err)) => {
+                            if provider_ids.is_empty() {
+                                return Err(RoutingError::Dht(err.to_string()));
+                            }
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        let providers = providers_from_dht(&mut swarm, &key, provider_ids, self.max_providers)?;
+        resolve_missing_provider_addresses(&mut swarm, providers, self.query_timeout).await
     }
 }
 
@@ -116,19 +316,164 @@ struct ProviderRecord {
 
 impl ProviderRecord {
     fn into_provider(self) -> Result<Provider> {
-        let addrs = self.addrs.unwrap_or_default();
-        let mut http_urls = Vec::new();
-        for addr in &addrs {
-            if let Some(url) = http_url_from_multiaddr(addr)? {
-                http_urls.push(url);
+        Provider::from_parts(self.id, self.addrs.unwrap_or_default())
+    }
+}
+
+async fn build_dht_swarm(
+    query_timeout: Duration,
+) -> Result<libp2p::Swarm<kad::Behaviour<MemoryStore>>> {
+    SwarmBuilder::with_new_identity()
+        .with_tokio()
+        .with_tcp(
+            tcp::Config::default(),
+            (tls::Config::new, noise::Config::new),
+            yamux::Config::default,
+        )
+        .map_err(|err| RoutingError::Dht(err.to_string()))?
+        .with_quic()
+        .with_dns()
+        .map_err(|err| RoutingError::Dht(err.to_string()))?
+        .with_websocket(
+            (tls::Config::new, noise::Config::new),
+            yamux::Config::default,
+        )
+        .await
+        .map_err(|err| RoutingError::Dht(err.to_string()))?
+        .with_behaviour(move |key| {
+            let peer_id = key.public().to_peer_id();
+            let store = MemoryStore::new(peer_id);
+            let mut config = kad::Config::new(kad::PROTOCOL_NAME);
+            config.set_query_timeout(query_timeout);
+            config.set_periodic_bootstrap_interval(None);
+            let mut behaviour = kad::Behaviour::with_config(peer_id, store, config);
+            behaviour.set_mode(Some(kad::Mode::Client));
+            behaviour
+        })
+        .map_err(|err| RoutingError::Dht(err.to_string()))
+        .map(|builder| {
+            builder
+                .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(20)))
+                .build()
+        })
+}
+
+fn providers_from_dht(
+    swarm: &mut libp2p::Swarm<kad::Behaviour<MemoryStore>>,
+    key: &kad::RecordKey,
+    provider_ids: HashSet<PeerId>,
+    max_providers: usize,
+) -> Result<Vec<Provider>> {
+    let records = swarm.behaviour_mut().store_mut().providers(key);
+    let mut providers = Vec::new();
+    for peer_id in provider_ids.into_iter().take(max_providers) {
+        let mut addrs = records
+            .iter()
+            .filter(|record| record.provider == peer_id)
+            .flat_map(|record| record.addresses.iter().cloned())
+            .collect::<Vec<_>>();
+        if addrs.is_empty() {
+            addrs = peer_addresses_from_kbuckets(swarm.behaviour_mut(), &peer_id);
+        }
+        providers.push(Provider::from_parts(
+            Some(peer_id.to_string()),
+            addrs.into_iter().map(|addr| addr.to_string()).collect(),
+        )?);
+    }
+    Ok(providers)
+}
+
+async fn resolve_missing_provider_addresses(
+    swarm: &mut libp2p::Swarm<kad::Behaviour<MemoryStore>>,
+    mut providers: Vec<Provider>,
+    query_timeout: Duration,
+) -> Result<Vec<Provider>> {
+    let mut pending = Vec::new();
+    for (index, provider) in providers.iter().enumerate() {
+        if !provider.addrs.is_empty() {
+            continue;
+        }
+        let Some(peer) = provider.id.as_deref().and_then(parse_peer_id) else {
+            continue;
+        };
+        let query_id = swarm.behaviour_mut().get_closest_peers(peer.to_bytes());
+        pending.push((query_id, peer, index));
+    }
+
+    if pending.is_empty() {
+        providers.retain(|provider| !provider.addrs.is_empty());
+        return Ok(providers);
+    }
+
+    let deadline = tokio::time::sleep(query_timeout);
+    tokio::pin!(deadline);
+    while !pending.is_empty() {
+        tokio::select! {
+            _ = &mut deadline => break,
+            event = swarm.select_next_some() => {
+                let SwarmEvent::Behaviour(kad::Event::OutboundQueryProgressed { id, result, .. }) = event else {
+                    continue;
+                };
+                let Some(pos) = pending.iter().position(|(query_id, _, _)| *query_id == id) else {
+                    continue;
+                };
+                let (_, target_peer, provider_index) = pending.swap_remove(pos);
+                let peer_info = match result {
+                    QueryResult::GetClosestPeers(Ok(ok)) => ok
+                        .peers
+                        .into_iter()
+                        .find(|peer| peer.peer_id == target_peer),
+                    QueryResult::GetClosestPeers(Err(kad::GetClosestPeersError::Timeout { peers, .. })) => peers
+                        .into_iter()
+                        .find(|peer| peer.peer_id == target_peer),
+                    _ => None,
+                };
+                let Some(peer_info) = peer_info else {
+                    continue;
+                };
+                providers[provider_index] = Provider::from_parts(
+                    Some(target_peer.to_string()),
+                    peer_info
+                        .addrs
+                        .into_iter()
+                        .map(|addr| addr.to_string())
+                        .collect(),
+                )?;
             }
         }
-        Ok(Provider {
-            id: self.id,
-            addrs,
-            http_urls,
-        })
     }
+
+    providers.retain(|provider| !provider.addrs.is_empty());
+    Ok(providers)
+}
+
+fn peer_addresses_from_kbuckets(
+    behaviour: &mut kad::Behaviour<MemoryStore>,
+    peer_id: &PeerId,
+) -> Vec<Multiaddr> {
+    let mut addrs = Vec::new();
+    for bucket in behaviour.kbuckets() {
+        for entry in bucket.iter() {
+            if entry.node.key.preimage() == peer_id {
+                addrs.extend(entry.node.value.iter().cloned());
+            }
+        }
+    }
+    addrs
+}
+
+fn parse_peer_id(id: &str) -> Option<PeerId> {
+    PeerId::from_str(id).ok()
+}
+
+fn parse_p2p_multiaddr(addr: &str) -> Option<(PeerId, Multiaddr)> {
+    let mut multiaddr = Multiaddr::from_str(addr).ok()?;
+    let peer = match multiaddr.iter().last()? {
+        Protocol::P2p(peer) => peer,
+        _ => return None,
+    };
+    multiaddr.pop();
+    Some((peer, multiaddr))
 }
 
 fn http_url_from_multiaddr(addr: &str) -> Result<Option<Url>> {
@@ -193,5 +538,43 @@ mod tests {
             Some("12D3KooWNDpFqyse9kR7aZwgEzh4U1mL6Zz6jEuRNFXJxL5D2KPP")
         );
         assert_eq!(providers[0].addrs[0], "/ip4/164.92.225.198/tcp/4001");
+    }
+
+    #[test]
+    fn parses_dht_bootstrap_multiaddr() {
+        let (peer, addr) = parse_p2p_multiaddr(
+            "/dnsaddr/ny5.bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+        )
+        .unwrap();
+        assert_eq!(
+            peer.to_string(),
+            "QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa"
+        );
+        assert_eq!(addr.to_string(), "/dnsaddr/ny5.bootstrap.libp2p.io");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "network smoke test against the public Amino DHT"]
+    async fn live_light_dht_finds_public_providers() {
+        let cid = std::env::var("FREEDOM_IPFS_LIVE_DHT_CID")
+            .unwrap_or_else(|_| {
+                "bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u".into()
+            })
+            .parse::<Cid>()
+            .unwrap();
+        let providers = LightDhtClient::default()
+            .with_query_timeout(Duration::from_secs(30))
+            .providers(&cid)
+            .await
+            .unwrap();
+        eprintln!("DHT found {} providers for {cid}", providers.len());
+        for provider in &providers {
+            eprintln!(
+                "provider {} addrs={:?}",
+                provider.id.as_deref().unwrap_or("<unknown>"),
+                provider.addrs
+            );
+        }
+        assert!(!providers.is_empty());
     }
 }

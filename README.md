@@ -17,14 +17,16 @@ The implementation is split into small crates so the local gateway, cache, routi
 
 Early implementation. Current code supports:
 
-- cache-backed local gateway for `/ipfs` and DNSLink-backed `/ipns`,
+- cache-backed local gateway for `/ipfs` and DNSLink/IPNS-backed `/ipns`,
+- IPNS record retrieval and v2 signature/validity verification,
 - delegated routing provider lookup,
+- client-mode light DHT provider lookup fallback,
 - verified HTTP raw-block retrieval from HTTP-capable providers,
-- client-only Bitswap retrieval over libp2p streams for Bitswap-only providers,
+- client-only Bitswap retrieval over TCP, WebSocket, and QUIC libp2p streams for Bitswap-only providers,
 - CAR import for tests/cache warmup,
 - an iOS staticlib/XCFramework build skeleton.
 
-Still incomplete: full IPNS record verification, light DHT fallback, HAMT-sharded UnixFS directories, production iOS packaging validation, and resource profiling on device.
+Still incomplete: HAMT-sharded UnixFS directories, production iOS packaging validation, resource profiling on device, and hardened DHT-only retrieval for sites whose DHT providers are slow or stale.
 
 ## Development
 
@@ -33,11 +35,23 @@ cargo test --workspace
 cargo run -p freedom-ipfs-gateway -- --help
 ```
 
+Run the gateway online with the mobile default `auto` routing mode:
+
+```bash
+cargo run -p freedom-ipfs-gateway -- --online --routing-mode auto
+```
+
 Live smoke test, intentionally ignored by default because it uses the public IPFS network:
 
 ```bash
 FREEDOM_IPFS_LIVE_ENS=vitalik.eth,daicowtf.eth \
   cargo test -p freedom-ipfs-gateway --test live_smoke -- --ignored --nocapture
+```
+
+Light-DHT provider discovery smoke:
+
+```bash
+cargo test -p freedom-ipfs-routing live_light_dht_finds_public_providers -- --ignored --nocapture
 ```
 
 ## License

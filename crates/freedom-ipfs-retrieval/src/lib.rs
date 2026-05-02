@@ -1,7 +1,7 @@
 use cid::Cid;
 use freedom_ipfs_core::{verify_block, Block, BlockProvider, CoreError, Result as CoreResult};
 use freedom_ipfs_namesys::{CloudflareDohResolver, DnsTxtResolver};
-use freedom_ipfs_routing::{DelegatedRoutingClient, Provider};
+use freedom_ipfs_routing::{Provider, ProviderRoutingClient};
 use freedom_ipfs_store::SqliteBlockStore;
 use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use futures::stream::{select_all, FuturesUnordered};
@@ -45,15 +45,15 @@ pub type Result<T> = std::result::Result<T, RetrievalError>;
 #[derive(Clone)]
 pub struct HttpRetriever {
     client: reqwest::Client,
-    routing: DelegatedRoutingClient,
+    routing: ProviderRoutingClient,
     store: SqliteBlockStore,
 }
 
 impl HttpRetriever {
-    pub fn new(routing: DelegatedRoutingClient, store: SqliteBlockStore) -> Self {
+    pub fn new(routing: impl Into<ProviderRoutingClient>, store: SqliteBlockStore) -> Self {
         Self {
             client: reqwest::Client::new(),
-            routing,
+            routing: routing.into(),
             store,
         }
     }
@@ -179,7 +179,7 @@ pub struct FetchingBlockProvider {
 }
 
 impl FetchingBlockProvider {
-    pub fn new(store: SqliteBlockStore, routing: DelegatedRoutingClient) -> Self {
+    pub fn new(store: SqliteBlockStore, routing: impl Into<ProviderRoutingClient>) -> Self {
         let retriever = HttpRetriever::new(routing, store.clone());
         Self { store, retriever }
     }
@@ -412,18 +412,28 @@ async fn request_bitswap_block(
             }
         };
 
-        write_bitswap_want(&mut stream, &cid)
-            .await
-            .map_err(|err| format!("{peer_id} {protocol_name}: write failed: {err}"))?;
-        let blocks = timeout(Duration::from_secs(10), read_bitswap_blocks(&mut stream))
-            .await
-            .map_err(|_| format!("{peer_id} {protocol_name}: read timed out"))?
-            .map_err(|err| format!("{peer_id} {protocol_name}: read failed: {err}"))?;
+        if let Err(err) = write_bitswap_want(&mut stream, &cid).await {
+            failures.push(format!("{protocol_name}: write failed: {err}"));
+            continue;
+        }
+        let blocks = match timeout(Duration::from_secs(10), read_bitswap_blocks(&mut stream)).await
+        {
+            Ok(Ok(blocks)) => blocks,
+            Ok(Err(err)) => {
+                failures.push(format!("{protocol_name}: read failed: {err}"));
+                continue;
+            }
+            Err(_) => {
+                failures.push(format!("{protocol_name}: read timed out"));
+                continue;
+            }
+        };
         for data in blocks {
             if verify_block(&cid, &data).is_ok() {
                 return Ok(data);
             }
         }
+        failures.push(format!("{protocol_name}: no valid block returned"));
     }
     Err(format!(
         "{peer_id}: no supported Bitswap protocol returned the requested block ({})",

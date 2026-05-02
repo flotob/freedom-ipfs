@@ -1,9 +1,12 @@
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use freedom_ipfs_core::parse_cid;
 use freedom_ipfs_gateway::{serve, serve_with_provider};
 use freedom_ipfs_retrieval::FetchingBlockProvider;
-use freedom_ipfs_routing::{DelegatedRoutingClient, DEFAULT_DELEGATED_ROUTER};
+use freedom_ipfs_routing::{
+    AutoRoutingClient, DelegatedRoutingClient, LightDhtClient, ProviderRoutingClient,
+    DEFAULT_DELEGATED_ROUTER,
+};
 use freedom_ipfs_store::SqliteBlockStore;
 use std::fs;
 use std::net::SocketAddr;
@@ -25,6 +28,15 @@ struct Args {
     online: bool,
     #[arg(long, default_value = DEFAULT_DELEGATED_ROUTER)]
     delegated_router: String,
+    #[arg(long, value_enum, default_value_t = RoutingMode::Auto)]
+    routing_mode: RoutingMode,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum RoutingMode {
+    Auto,
+    Delegated,
+    LightDht,
 }
 
 #[tokio::main]
@@ -52,7 +64,15 @@ async fn main() -> Result<()> {
     }
 
     let bound = if args.online {
-        let routing = DelegatedRoutingClient::new(args.delegated_router);
+        let delegated = DelegatedRoutingClient::new(args.delegated_router);
+        let routing = match args.routing_mode {
+            RoutingMode::Auto => ProviderRoutingClient::from(AutoRoutingClient::new(
+                delegated,
+                LightDhtClient::default(),
+            )),
+            RoutingMode::Delegated => ProviderRoutingClient::from(delegated),
+            RoutingMode::LightDht => ProviderRoutingClient::from(LightDhtClient::default()),
+        };
         let provider = FetchingBlockProvider::new(store, routing);
         serve_with_provider(Arc::new(provider), args.addr).await?
     } else {

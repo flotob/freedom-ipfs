@@ -83,6 +83,42 @@ pub unsafe extern "C" fn freedom_ipfs_node_import_car(
 
 /// # Safety
 ///
+/// `ptr` must be a valid node pointer.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_block_count(ptr: *mut FreedomIpfsNode) -> u64 {
+    if ptr.is_null() {
+        return 0;
+    }
+    let node = &*ptr;
+    node.store.block_count().unwrap_or(0)
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_total_bytes(ptr: *mut FreedomIpfsNode) -> u64 {
+    if ptr.is_null() {
+        return 0;
+    }
+    let node = &*ptr;
+    node.store.total_bytes().unwrap_or(0)
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_clear_cache(ptr: *mut FreedomIpfsNode) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    let node = &*ptr;
+    node.store.clear().is_ok()
+}
+
+/// # Safety
+///
 /// `ptr` must be a valid node pointer. `addr` must point to a NUL-terminated
 /// UTF-8 socket address string for the duration of this call.
 #[no_mangle]
@@ -178,6 +214,7 @@ fn stop_gateway(node: &FreedomIpfsNode) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use freedom_ipfs_core::{cid_from_data, CODEC_RAW};
     use std::io::{Read, Write};
 
     #[test]
@@ -207,6 +244,26 @@ mod tests {
 
             assert!(freedom_ipfs_node_stop_gateway(node));
             assert!(freedom_ipfs_node_gateway_url(node).is_null());
+            freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
+    fn reports_and_clears_cache_stats() {
+        unsafe {
+            let node = freedom_ipfs_node_new_in_memory();
+            assert!(!node.is_null());
+
+            let data = b"mobile stats";
+            let cid = cid_from_data(CODEC_RAW, data);
+            (*node).store.put_block(&cid, data).unwrap();
+
+            assert_eq!(freedom_ipfs_node_block_count(node), 1);
+            assert_eq!(freedom_ipfs_node_total_bytes(node), data.len() as u64);
+            assert!(freedom_ipfs_node_clear_cache(node));
+            assert_eq!(freedom_ipfs_node_block_count(node), 0);
+            assert_eq!(freedom_ipfs_node_total_bytes(node), 0);
+
             freedom_ipfs_node_free(node);
         }
     }

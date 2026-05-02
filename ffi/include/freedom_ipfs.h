@@ -18,6 +18,9 @@ FreedomIpfsNode *freedom_ipfs_node_new_in_memory(void);
 void freedom_ipfs_node_free(FreedomIpfsNode *ptr);
 
 bool freedom_ipfs_node_import_car(FreedomIpfsNode *ptr, const uint8_t *data, size_t len);
+uint64_t freedom_ipfs_node_block_count(FreedomIpfsNode *ptr);
+uint64_t freedom_ipfs_node_total_bytes(FreedomIpfsNode *ptr);
+bool freedom_ipfs_node_clear_cache(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_start_gateway(FreedomIpfsNode *ptr, const char *addr);
 char *freedom_ipfs_node_gateway_url(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_stop_gateway(FreedomIpfsNode *ptr);

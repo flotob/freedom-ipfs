@@ -1002,6 +1002,8 @@ dependencies = [
  "freedom-ipfs-core",
  "parking_lot",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
 ]

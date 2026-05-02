@@ -2,7 +2,7 @@ use cid::Cid;
 use freedom_ipfs_core::{verify_block, Block, BlockProvider, CoreError, Result as CoreResult};
 use freedom_ipfs_namesys::{CloudflareDohResolver, DnsTxtResolver};
 use freedom_ipfs_routing::{Provider, ProviderRoutingClient};
-use freedom_ipfs_store::SqliteBlockStore;
+use freedom_ipfs_store::{CachedProviderRecord, SqliteBlockStore};
 use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use futures::stream::{select_all, FuturesUnordered};
 use futures::StreamExt;
@@ -17,6 +17,10 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::time::timeout;
 use url::Url;
+
+const PROVIDER_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const BAD_HTTP_PROVIDER_TTL: Duration = Duration::from_secs(10 * 60);
+const BAD_BITSWAP_PROVIDER_TTL: Duration = Duration::from_secs(2 * 60);
 
 #[derive(Debug, Error)]
 pub enum RetrievalError {
@@ -63,16 +67,34 @@ impl HttpRetriever {
             return Ok(block);
         }
 
-        let providers = self.routing.providers(cid).await?;
+        let providers = match self.cached_providers(cid)? {
+            Some(providers) => providers,
+            None => {
+                let providers = self.routing.providers(cid).await?;
+                self.cache_providers(cid, &providers)?;
+                providers
+            }
+        };
         self.fetch_from_providers(cid, &providers).await
     }
 
     pub async fn fetch_from_providers(&self, cid: &Cid, providers: &[Provider]) -> Result<Block> {
         for provider in providers {
             for base in &provider.http_urls {
+                if self.store.is_bad_provider(base.as_str())? {
+                    tracing::debug!(provider = %base, "skipping temporarily bad HTTP provider");
+                    continue;
+                }
                 match self.fetch_from_http_provider(cid, base).await {
                     Ok(block) => return Ok(block),
-                    Err(_) => continue,
+                    Err(err) => {
+                        let _ = self.store.mark_bad_provider(
+                            base.as_str(),
+                            &err.to_string(),
+                            BAD_HTTP_PROVIDER_TTL,
+                        );
+                        continue;
+                    }
                 }
             }
         }
@@ -81,6 +103,34 @@ impl HttpRetriever {
             Err(RetrievalError::NoBitswapProviders) => Err(RetrievalError::NoHttpProviders),
             Err(err) => Err(err),
         }
+    }
+
+    fn cached_providers(&self, cid: &Cid) -> Result<Option<Vec<Provider>>> {
+        let Some(records) = self.store.get_provider_records(cid)? else {
+            return Ok(None);
+        };
+        let providers = records
+            .into_iter()
+            .map(|record| Provider::from_parts(record.id, record.addrs))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if providers.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(providers))
+        }
+    }
+
+    fn cache_providers(&self, cid: &Cid, providers: &[Provider]) -> Result<()> {
+        let records = providers
+            .iter()
+            .map(|provider| CachedProviderRecord {
+                id: provider.id.clone(),
+                addrs: provider.addrs.clone(),
+            })
+            .collect::<Vec<_>>();
+        self.store
+            .put_provider_records(cid, &records, PROVIDER_CACHE_TTL)?;
+        Ok(())
     }
 
     async fn fetch_from_http_provider(&self, cid: &Cid, base: &Url) -> Result<Block> {
@@ -106,7 +156,17 @@ impl HttpRetriever {
         cid: &Cid,
         providers: &[Provider],
     ) -> Result<Block> {
-        let peers = bitswap_peers(providers).await;
+        let mut peers = bitswap_peers(providers).await;
+        peers.retain(
+            |peer| match self.store.is_bad_provider(&peer.id.to_string()) {
+                Ok(false) => true,
+                Ok(true) => {
+                    tracing::debug!(peer = %peer.id, "skipping temporarily bad Bitswap provider");
+                    false
+                }
+                Err(_) => true,
+            },
+        );
         tracing::debug!(
             provider_count = providers.len(),
             peer_count = peers.len(),
@@ -159,14 +219,40 @@ impl HttpRetriever {
             }
         });
 
-        let result = timeout(Duration::from_secs(45), async {
+        let request_peer_ids = peer_ids.clone();
+        let result = match timeout(Duration::from_secs(45), async {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            fetch_bitswap_over_streams(control, incoming, peer_ids, *cid).await
+            fetch_bitswap_over_streams(control, incoming, request_peer_ids, *cid).await
         })
         .await
-        .map_err(|_| RetrievalError::BitswapTimeout)?;
+        {
+            Ok(result) => result,
+            Err(_) => {
+                swarm_task.abort();
+                for peer_id in &peer_ids {
+                    let _ = self.store.mark_bad_provider(
+                        &peer_id.to_string(),
+                        "bitswap request timed out",
+                        BAD_BITSWAP_PROVIDER_TTL,
+                    );
+                }
+                return Err(RetrievalError::BitswapTimeout);
+            }
+        };
         swarm_task.abort();
-        let data = result?;
+        let data = match result {
+            Ok(data) => data,
+            Err(err) => {
+                for peer_id in &peer_ids {
+                    let _ = self.store.mark_bad_provider(
+                        &peer_id.to_string(),
+                        &err.to_string(),
+                        BAD_BITSWAP_PROVIDER_TTL,
+                    );
+                }
+                return Err(err);
+            }
+        };
         self.store.put_block(cid, &data)?;
         Ok(Block::unchecked(*cid, data))
     }

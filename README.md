@@ -21,6 +21,7 @@ Early implementation. Current code supports:
 - IPNS record retrieval and v2 signature/validity verification,
 - delegated routing provider lookup,
 - client-mode light DHT provider lookup fallback,
+- short-lived provider-result cache and bad-provider suppression,
 - verified HTTP raw-block retrieval from HTTP-capable providers,
 - client-only Bitswap retrieval over TCP, WebSocket, and QUIC libp2p streams for Bitswap-only providers,
 - CAR import for tests/cache warmup,

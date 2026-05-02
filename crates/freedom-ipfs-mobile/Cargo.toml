@@ -1,0 +1,16 @@
+[package]
+name = "freedom-ipfs-mobile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+freedom-ipfs-gateway.workspace = true
+freedom-ipfs-store.workspace = true
+tokio.workspace = true
+

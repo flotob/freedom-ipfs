@@ -1,0 +1,9 @@
+/target/
+/.idea/
+/.vscode/
+.DS_Store
+*.xcframework
+*.a
+*.dSYM
+*.profraw
+*.profdata

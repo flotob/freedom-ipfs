@@ -1,0 +1,17 @@
+[package]
+name = "freedom-ipfs-unixfs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cid.workspace = true
+freedom-ipfs-core.workspace = true
+multihash.workspace = true
+prost.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+freedom-ipfs-store.workspace = true

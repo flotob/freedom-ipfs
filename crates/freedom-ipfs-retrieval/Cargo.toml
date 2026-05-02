@@ -1,0 +1,17 @@
+[package]
+name = "freedom-ipfs-retrieval"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cid.workspace = true
+freedom-ipfs-core.workspace = true
+freedom-ipfs-routing.workspace = true
+freedom-ipfs-store.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true

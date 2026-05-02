@@ -5,6 +5,11 @@ use prost::Message;
 use std::io::Cursor;
 use thiserror::Error;
 
+const HAMT_MURMUR3_X64_64: u64 = 0x22;
+const HAMT_FANOUT_256: u64 = 256;
+const HAMT_LINK_PREFIX_LEN: usize = 2;
+const HAMT_MAX_SHARDS_VISITED: usize = 1024;
+
 #[derive(Debug, Error)]
 pub enum UnixfsError {
     #[error("block not found: {0}")]
@@ -55,6 +60,10 @@ struct UnixfsData {
     filesize: Option<u64>,
     #[prost(uint64, repeated, tag = "4")]
     blocksizes: Vec<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    hash_type: Option<u64>,
+    #[prost(uint64, optional, tag = "6")]
+    fanout: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
@@ -111,7 +120,8 @@ pub fn resolve_path(provider: &dyn BlockProvider, root: &Cid, path: &str) -> Res
                     .ok_or_else(|| UnixfsError::PathNotFound(segment.to_string()))?;
             }
             DataType::HamtShard => {
-                return Err(UnixfsError::UnsupportedNodeType(DataType::HamtShard as i32))
+                current = find_hamt_link(provider, &node, &data, segment)?
+                    .ok_or_else(|| UnixfsError::PathNotFound(segment.to_string()))?;
             }
             _ => return Err(UnixfsError::NotDirectory),
         }
@@ -206,6 +216,83 @@ fn find_link(node: &PbNode, name: &str) -> Result<Option<Cid>> {
         .transpose()
 }
 
+fn find_hamt_link(
+    provider: &dyn BlockProvider,
+    node: &PbNode,
+    data: &UnixfsData,
+    name: &str,
+) -> Result<Option<Cid>> {
+    validate_hamt(data)?;
+    let mut pending = Vec::new();
+    if let Some(cid) = scan_hamt_links(&node.links, name, &mut pending)? {
+        return Ok(Some(cid));
+    }
+
+    let mut visited = 0usize;
+    while let Some(cid) = pending.pop() {
+        visited += 1;
+        if visited > HAMT_MAX_SHARDS_VISITED {
+            return Err(UnixfsError::InvalidDagPb(format!(
+                "HAMT traversal exceeded {HAMT_MAX_SHARDS_VISITED} shards"
+            )));
+        }
+
+        let block = provider
+            .get_block(&cid)
+            .map_err(|err| UnixfsError::Provider(err.to_string()))?
+            .ok_or(UnixfsError::NotFound(cid))?;
+        if block.codec() != CODEC_DAG_PB {
+            return Err(UnixfsError::NotDirectory);
+        }
+
+        let shard = decode_pb_node(block.data())?;
+        let shard_data = decode_unixfs_data(&shard)?;
+        if data_type(&shard_data)? != DataType::HamtShard {
+            return Err(UnixfsError::InvalidDagPb(
+                "HAMT bucket link did not resolve to a HAMT shard".into(),
+            ));
+        }
+        validate_hamt(&shard_data)?;
+        if let Some(cid) = scan_hamt_links(&shard.links, name, &mut pending)? {
+            return Ok(Some(cid));
+        }
+    }
+
+    Ok(None)
+}
+
+fn validate_hamt(data: &UnixfsData) -> Result<()> {
+    if data.hash_type != Some(HAMT_MURMUR3_X64_64) || data.fanout != Some(HAMT_FANOUT_256) {
+        return Err(UnixfsError::InvalidDagPb(format!(
+            "unsupported HAMT parameters hashType={:?} fanout={:?}",
+            data.hash_type, data.fanout
+        )));
+    }
+    if data.filesize.is_some() || !data.blocksizes.is_empty() {
+        return Err(UnixfsError::InvalidDagPb(
+            "HAMT shard carried file-only UnixFS fields".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn scan_hamt_links(links: &[PbLink], name: &str, pending: &mut Vec<Cid>) -> Result<Option<Cid>> {
+    for link in links {
+        let Some(link_name) = link.name.as_deref() else {
+            continue;
+        };
+        let link_name = link_name.as_bytes();
+        if link_name.len() == HAMT_LINK_PREFIX_LEN {
+            pending.push(link_cid(link)?);
+        } else if link_name.len() > HAMT_LINK_PREFIX_LEN
+            && &link_name[HAMT_LINK_PREFIX_LEN..] == name.as_bytes()
+        {
+            return link_cid(link).map(Some);
+        }
+    }
+    Ok(None)
+}
+
 fn link_cid(link: &PbLink) -> Result<Cid> {
     let bytes = link
         .hash
@@ -236,6 +323,8 @@ mod tests {
             data: Some(data.to_vec()),
             filesize: Some(data.len() as u64),
             blocksizes: Vec::new(),
+            hash_type: None,
+            fanout: None,
         }
         .encode_to_vec()
     }
@@ -251,6 +340,24 @@ mod tests {
     fn pb_directory(links: Vec<PbLink>) -> Vec<u8> {
         PbNode {
             data: Some(unixfs_data(DataType::Directory, &[])),
+            links,
+        }
+        .encode_to_vec()
+    }
+
+    fn pb_hamt(links: Vec<PbLink>) -> Vec<u8> {
+        PbNode {
+            data: Some(
+                UnixfsData {
+                    r#type: Some(DataType::HamtShard as i32),
+                    data: Some(vec![0xff; (HAMT_FANOUT_256 / 8) as usize]),
+                    filesize: None,
+                    blocksizes: Vec::new(),
+                    hash_type: Some(HAMT_MURMUR3_X64_64),
+                    fanout: Some(HAMT_FANOUT_256),
+                }
+                .encode_to_vec(),
+            ),
             links,
         }
         .encode_to_vec()
@@ -293,5 +400,37 @@ mod tests {
             read_file(&store, &dir_cid, "index.html").unwrap(),
             b"prefix linked bytes"
         );
+    }
+
+    #[test]
+    fn resolves_single_level_hamt_shard() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let data = b"hamt index";
+        let file_cid = cid_from_data(CODEC_RAW, data);
+        store.put_block(&file_cid, data).unwrap();
+
+        let hamt_data = pb_hamt(vec![link("ABindex.html", &file_cid)]);
+        let hamt_cid = cid_from_data(CODEC_DAG_PB, &hamt_data);
+        store.put_block(&hamt_cid, &hamt_data).unwrap();
+
+        assert_eq!(read_file(&store, &hamt_cid, "index.html").unwrap(), data);
+    }
+
+    #[test]
+    fn resolves_nested_hamt_shard() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let data = b"nested hamt";
+        let file_cid = cid_from_data(CODEC_RAW, data);
+        store.put_block(&file_cid, data).unwrap();
+
+        let child_data = pb_hamt(vec![link("CDnested.txt", &file_cid)]);
+        let child_cid = cid_from_data(CODEC_DAG_PB, &child_data);
+        store.put_block(&child_cid, &child_data).unwrap();
+
+        let root_data = pb_hamt(vec![link("AB", &child_cid)]);
+        let root_cid = cid_from_data(CODEC_DAG_PB, &root_data);
+        store.put_block(&root_cid, &root_data).unwrap();
+
+        assert_eq!(read_file(&store, &root_cid, "nested.txt").unwrap(), data);
     }
 }

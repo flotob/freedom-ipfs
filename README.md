@@ -41,6 +41,12 @@ Run the gateway online with the mobile default `auto` routing mode:
 cargo run -p freedom-ipfs-gateway -- --online --routing-mode auto
 ```
 
+On macOS with Xcode command line tools installed, build the iOS static libraries and XCFramework:
+
+```bash
+cargo run -p xtask -- build-xcframework
+```
+
 Live smoke test, intentionally ignored by default because it uses the public IPFS network:
 
 ```bash

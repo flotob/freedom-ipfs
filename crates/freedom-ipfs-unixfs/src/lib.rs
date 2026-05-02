@@ -139,6 +139,30 @@ pub fn read_file(provider: &dyn BlockProvider, root: &Cid, path: &str) -> Result
     read_file_cid(provider, &resolved.cid)
 }
 
+pub fn file_size(provider: &dyn BlockProvider, root: &Cid, path: &str) -> Result<u64> {
+    let resolved = resolve_path(provider, root, path)?;
+    match resolved.kind {
+        NodeKind::Directory | NodeKind::HamtShard => return Err(UnixfsError::IsDirectory),
+        NodeKind::Raw | NodeKind::File => {}
+    }
+    file_size_cid(provider, &resolved.cid)
+}
+
+pub fn read_file_range(
+    provider: &dyn BlockProvider,
+    root: &Cid,
+    path: &str,
+    start: u64,
+    end: u64,
+) -> Result<Vec<u8>> {
+    let resolved = resolve_path(provider, root, path)?;
+    match resolved.kind {
+        NodeKind::Directory | NodeKind::HamtShard => return Err(UnixfsError::IsDirectory),
+        NodeKind::Raw | NodeKind::File => {}
+    }
+    read_file_cid_range(provider, &resolved.cid, start, end)
+}
+
 fn read_file_cid(provider: &dyn BlockProvider, cid: &Cid) -> Result<Vec<u8>> {
     let block = provider
         .get_block(cid)
@@ -165,6 +189,126 @@ fn read_file_cid(provider: &dyn BlockProvider, cid: &Cid) -> Result<Vec<u8>> {
         }
         codec => Err(UnixfsError::UnsupportedCodec(codec)),
     }
+}
+
+fn file_size_cid(provider: &dyn BlockProvider, cid: &Cid) -> Result<u64> {
+    let block = provider
+        .get_block(cid)
+        .map_err(|err| UnixfsError::Provider(err.to_string()))?
+        .ok_or(UnixfsError::NotFound(*cid))?;
+
+    match block.codec() {
+        CODEC_RAW => Ok(block.data().len() as u64),
+        CODEC_DAG_PB => {
+            let node = decode_pb_node(block.data())?;
+            let data = decode_unixfs_data(&node)?;
+            match data_type(&data)? {
+                DataType::Raw | DataType::File => {
+                    if let Some(filesize) = data.filesize {
+                        return Ok(filesize);
+                    }
+                    let mut size = data.data.as_ref().map_or(0, |bytes| bytes.len() as u64);
+                    for link in &node.links {
+                        size = size.saturating_add(file_size_cid(provider, &link_cid(link)?)?);
+                    }
+                    Ok(size)
+                }
+                DataType::Directory | DataType::HamtShard => Err(UnixfsError::IsDirectory),
+                other => Err(UnixfsError::UnsupportedNodeType(other as i32)),
+            }
+        }
+        codec => Err(UnixfsError::UnsupportedCodec(codec)),
+    }
+}
+
+fn read_file_cid_range(
+    provider: &dyn BlockProvider,
+    cid: &Cid,
+    start: u64,
+    end: u64,
+) -> Result<Vec<u8>> {
+    let block = provider
+        .get_block(cid)
+        .map_err(|err| UnixfsError::Provider(err.to_string()))?
+        .ok_or(UnixfsError::NotFound(*cid))?;
+
+    match block.codec() {
+        CODEC_RAW => Ok(slice_bytes(block.data(), start, end)),
+        CODEC_DAG_PB => {
+            let node = decode_pb_node(block.data())?;
+            let data = decode_unixfs_data(&node)?;
+            match data_type(&data)? {
+                DataType::Raw | DataType::File => {
+                    let mut out = Vec::new();
+                    let mut offset = 0u64;
+                    if let Some(inline) = data.data.as_deref() {
+                        append_intersection(&mut out, inline, offset, start, end);
+                        offset = offset.saturating_add(inline.len() as u64);
+                    }
+
+                    for (index, link) in node.links.iter().enumerate() {
+                        let child = link_cid(link)?;
+                        let child_size = data
+                            .blocksizes
+                            .get(index)
+                            .copied()
+                            .map(Ok)
+                            .unwrap_or_else(|| file_size_cid(provider, &child))?;
+                        if child_size == 0 {
+                            continue;
+                        }
+                        let child_end = offset.saturating_add(child_size - 1);
+                        if ranges_intersect(offset, child_end, start, end) {
+                            let range_start = start.saturating_sub(offset);
+                            let range_end = end.min(child_end).saturating_sub(offset);
+                            out.extend_from_slice(&read_file_cid_range(
+                                provider,
+                                &child,
+                                range_start,
+                                range_end,
+                            )?);
+                        }
+                        offset = offset.saturating_add(child_size);
+                        if offset > end {
+                            break;
+                        }
+                    }
+                    Ok(out)
+                }
+                DataType::Directory | DataType::HamtShard => Err(UnixfsError::IsDirectory),
+                other => Err(UnixfsError::UnsupportedNodeType(other as i32)),
+            }
+        }
+        codec => Err(UnixfsError::UnsupportedCodec(codec)),
+    }
+}
+
+fn append_intersection(out: &mut Vec<u8>, bytes: &[u8], offset: u64, start: u64, end: u64) {
+    if bytes.is_empty() {
+        return;
+    }
+    let block_end = offset.saturating_add(bytes.len() as u64 - 1);
+    if !ranges_intersect(offset, block_end, start, end) {
+        return;
+    }
+    out.extend_from_slice(&slice_bytes(
+        bytes,
+        start.saturating_sub(offset),
+        end.min(block_end).saturating_sub(offset),
+    ));
+}
+
+fn slice_bytes(bytes: &[u8], start: u64, end: u64) -> Vec<u8> {
+    if bytes.is_empty() || start > end || start >= bytes.len() as u64 {
+        return Vec::new();
+    }
+    let start = start.min(bytes.len() as u64) as usize;
+    let end = end.min(bytes.len() as u64 - 1) as usize;
+    bytes[start..=end].to_vec()
+}
+
+fn ranges_intersect(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
+    a_start <= b_end && b_start <= a_end
 }
 
 fn classify(provider: &dyn BlockProvider, cid: &Cid) -> Result<ResolvedNode> {
@@ -330,8 +474,27 @@ mod tests {
     }
 
     fn pb_file(data: &[u8], links: Vec<PbLink>) -> Vec<u8> {
+        pb_file_with_metadata(data, links, data.len() as u64, Vec::new())
+    }
+
+    fn pb_file_with_metadata(
+        data: &[u8],
+        links: Vec<PbLink>,
+        filesize: u64,
+        blocksizes: Vec<u64>,
+    ) -> Vec<u8> {
         PbNode {
-            data: Some(unixfs_data(DataType::File, data)),
+            data: Some(
+                UnixfsData {
+                    r#type: Some(DataType::File as i32),
+                    data: Some(data.to_vec()),
+                    filesize: Some(filesize),
+                    blocksizes,
+                    hash_type: None,
+                    fanout: None,
+                }
+                .encode_to_vec(),
+            ),
             links,
         }
         .encode_to_vec()
@@ -399,6 +562,30 @@ mod tests {
         assert_eq!(
             read_file(&store, &dir_cid, "index.html").unwrap(),
             b"prefix linked bytes"
+        );
+    }
+
+    #[test]
+    fn reads_file_range_across_inline_and_linked_blocks() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+
+        let leaf_data = b"linked bytes";
+        let leaf_cid = cid_from_data(CODEC_RAW, leaf_data);
+        store.put_block(&leaf_cid, leaf_data).unwrap();
+
+        let file_data = pb_file_with_metadata(
+            b"prefix ",
+            vec![link("leaf", &leaf_cid)],
+            19,
+            vec![leaf_data.len() as u64],
+        );
+        let file_cid = cid_from_data(CODEC_DAG_PB, &file_data);
+        store.put_block(&file_cid, &file_data).unwrap();
+
+        assert_eq!(file_size(&store, &file_cid, "").unwrap(), 19);
+        assert_eq!(
+            read_file_range(&store, &file_cid, "", 3, 12).unwrap(),
+            b"fix linked"
         );
     }
 

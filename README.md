@@ -25,6 +25,7 @@ Early implementation. Current code supports:
 - verified HTTP raw-block retrieval from HTTP-capable providers,
 - client-only Bitswap retrieval over TCP, WebSocket, and QUIC libp2p streams for Bitswap-only providers,
 - basic HAMT-sharded UnixFS directory traversal,
+- UnixFS range reads that avoid assembling entire multi-block files for byte-range responses,
 - configurable local-gateway request concurrency limiting,
 - CAR import for tests/cache warmup,
 - an iOS staticlib/XCFramework build skeleton with C ABI headers for persistent-cache node creation, cache trimming, routing-mode selection, and offline/online gateway start.

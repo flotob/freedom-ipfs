@@ -10,7 +10,7 @@ use cid::Cid;
 use freedom_ipfs_core::{parse_cid, BlockProvider};
 use freedom_ipfs_namesys::{DefaultNameResolver, NameResolver};
 use freedom_ipfs_store::SqliteBlockStore;
-use freedom_ipfs_unixfs::{read_file, UnixfsError};
+use freedom_ipfs_unixfs::{file_size, read_file, read_file_range, UnixfsError};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -208,25 +208,34 @@ async fn serve_ipfs_path(
     range: Option<&HeaderValue>,
 ) -> Result<Response, GatewayError> {
     let (cid, unixfs_path) = split_ipfs_path(path)?;
-    let (served_path, bytes) = match read_file(provider, &cid, unixfs_path) {
-        Ok(bytes) => (unixfs_path.to_string(), bytes),
-        Err(UnixfsError::IsDirectory) => {
-            let index_path = append_path(unixfs_path, "index.html");
-            let bytes = read_file(provider, &cid, &index_path).map_err(GatewayError::Unixfs)?;
-            (index_path, bytes)
-        }
-        Err(err) => return Err(GatewayError::Unixfs(err)),
-    };
+    let served_path = served_file_path(provider, &cid, unixfs_path)?;
     let mime = mime_guess::from_path(&served_path)
         .first_or_octet_stream()
         .to_string();
 
     let response = if let Some(range) = range {
-        ranged_response(bytes, range, &mime)?
+        ranged_response(provider, &cid, &served_path, range, &mime)?
     } else {
+        let bytes = read_file(provider, &cid, &served_path).map_err(GatewayError::Unixfs)?;
         full_response(bytes, &mime)?
     };
     Ok(response)
+}
+
+fn served_file_path(
+    provider: &dyn BlockProvider,
+    cid: &Cid,
+    unixfs_path: &str,
+) -> Result<String, GatewayError> {
+    match file_size(provider, cid, unixfs_path) {
+        Ok(_) => Ok(unixfs_path.to_string()),
+        Err(UnixfsError::IsDirectory) => {
+            let index_path = append_path(unixfs_path, "index.html");
+            file_size(provider, cid, &index_path).map_err(GatewayError::Unixfs)?;
+            Ok(index_path)
+        }
+        Err(err) => Err(GatewayError::Unixfs(err)),
+    }
 }
 
 fn split_ipfs_path(path: &str) -> Result<(Cid, &str), GatewayError> {
@@ -313,7 +322,9 @@ fn full_response(bytes: Vec<u8>, mime: &str) -> Result<Response, GatewayError> {
 }
 
 fn ranged_response(
-    bytes: Vec<u8>,
+    provider: &dyn BlockProvider,
+    cid: &Cid,
+    path: &str,
     range: &HeaderValue,
     mime: &str,
 ) -> Result<Response, GatewayError> {
@@ -325,8 +336,9 @@ fn ranged_response(
             "only bytes ranges are supported".into(),
         ));
     };
-    let (start, end) = parse_range_spec(spec, bytes.len())?;
-    let slice = bytes[start..=end].to_vec();
+    let total_len = file_size(provider, cid, path).map_err(GatewayError::Unixfs)?;
+    let (start, end) = parse_range_spec(spec, total_len)?;
+    let slice = read_file_range(provider, cid, path, start, end).map_err(GatewayError::Unixfs)?;
     let mut response =
         (StatusCode::PARTIAL_CONTENT, Body::from(Bytes::from(slice))).into_response();
     response.headers_mut().insert(
@@ -338,7 +350,7 @@ fn ranged_response(
         .insert(ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     response.headers_mut().insert(
         CONTENT_RANGE,
-        HeaderValue::from_str(&format!("bytes {start}-{end}/{}", bytes.len()))
+        HeaderValue::from_str(&format!("bytes {start}-{end}/{total_len}"))
             .map_err(|err| GatewayError::Internal(err.to_string()))?,
     );
     response.headers_mut().insert(
@@ -349,7 +361,7 @@ fn ranged_response(
     Ok(response)
 }
 
-fn parse_range_spec(spec: &str, len: usize) -> Result<(usize, usize), GatewayError> {
+fn parse_range_spec(spec: &str, len: u64) -> Result<(u64, u64), GatewayError> {
     if len == 0 {
         return Err(GatewayError::RangeNotSatisfiable);
     }
@@ -359,7 +371,7 @@ fn parse_range_spec(spec: &str, len: usize) -> Result<(usize, usize), GatewayErr
 
     if start.is_empty() {
         let suffix = end
-            .parse::<usize>()
+            .parse::<u64>()
             .map_err(|_| GatewayError::BadRequest("invalid suffix range".into()))?;
         if suffix == 0 {
             return Err(GatewayError::RangeNotSatisfiable);
@@ -369,12 +381,12 @@ fn parse_range_spec(spec: &str, len: usize) -> Result<(usize, usize), GatewayErr
     }
 
     let start = start
-        .parse::<usize>()
+        .parse::<u64>()
         .map_err(|_| GatewayError::BadRequest("invalid range start".into()))?;
     let end = if end.is_empty() {
         len - 1
     } else {
-        end.parse::<usize>()
+        end.parse::<u64>()
             .map_err(|_| GatewayError::BadRequest("invalid range end".into()))?
     };
 

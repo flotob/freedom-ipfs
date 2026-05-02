@@ -11,6 +11,11 @@ use tokio::net::TcpListener;
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "network smoke test; set FREEDOM_IPFS_LIVE_PATHS=/ipfs/<cid>,/ipns/<name>"]
 async fn live_gateway_fetches_real_paths_without_public_gateway_fallback() {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init()
+        .ok();
+
     let mut paths = env::var("FREEDOM_IPFS_LIVE_PATHS")
         .unwrap_or_default()
         .split(',')

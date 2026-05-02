@@ -9,9 +9,16 @@ repository.workspace = true
 [dependencies]
 cid.workspace = true
 freedom-ipfs-core.workspace = true
+freedom-ipfs-namesys.workspace = true
 freedom-ipfs-routing.workspace = true
 freedom-ipfs-store.workspace = true
+futures.workspace = true
+libp2p.workspace = true
+libp2p-stream.workspace = true
+prost.workspace = true
 reqwest.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
+unsigned-varint.workspace = true
 url.workspace = true

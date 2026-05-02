@@ -15,7 +15,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.81"
+rust-version = "1.83"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/flotob/freedom-ipfs"
 homepage = "https://github.com/flotob/freedom-ipfs"
@@ -31,6 +31,8 @@ clap = { version = "4", features = ["derive"] }
 data-encoding = "2"
 futures = "0.3"
 http = "1"
+libp2p = { version = "0.56", default-features = false, features = ["dns", "ed25519", "noise", "rsa", "tcp", "tls", "tokio", "websocket", "yamux"] }
+libp2p-stream = "0.4.0-alpha"
 mime_guess = "2"
 multibase = "0.9"
 multihash = "0.19"

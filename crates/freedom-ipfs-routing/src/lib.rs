@@ -109,6 +109,7 @@ impl ProvidersResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct ProviderRecord {
+    #[serde(rename = "ID", alias = "Id")]
     id: Option<String>,
     addrs: Option<Vec<String>>,
 }
@@ -179,6 +180,18 @@ mod tests {
         let body =
             r#"{"Providers":[{"ID":"peer","Addrs":["/dns4/example.com/tcp/443/tls/http"]}]}"#;
         let providers = parse_provider_response(body).unwrap();
+        assert_eq!(providers[0].id.as_deref(), Some("peer"));
         assert_eq!(providers[0].http_urls[0].as_str(), "https://example.com/");
+    }
+
+    #[test]
+    fn parses_ndjson_peer_records_with_uppercase_id() {
+        let body = r#"{"Addrs":["/ip4/164.92.225.198/tcp/4001"],"ID":"12D3KooWNDpFqyse9kR7aZwgEzh4U1mL6Zz6jEuRNFXJxL5D2KPP","Schema":"peer"}"#;
+        let providers = parse_provider_response(body).unwrap();
+        assert_eq!(
+            providers[0].id.as_deref(),
+            Some("12D3KooWNDpFqyse9kR7aZwgEzh4U1mL6Zz6jEuRNFXJxL5D2KPP")
+        );
+        assert_eq!(providers[0].addrs[0], "/ip4/164.92.225.198/tcp/4001");
     }
 }

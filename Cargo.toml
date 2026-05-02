@@ -49,7 +49,7 @@ sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "time", "fs"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "time", "fs", "sync"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

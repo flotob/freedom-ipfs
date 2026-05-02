@@ -14,35 +14,77 @@ use freedom_ipfs_unixfs::{read_file, UnixfsError};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
+
+pub const DEFAULT_GATEWAY_MAX_CONCURRENT_REQUESTS: usize = 8;
+
+#[derive(Debug, Clone)]
+pub struct GatewayConfig {
+    max_concurrent_requests: usize,
+}
+
+impl GatewayConfig {
+    pub fn new(max_concurrent_requests: usize) -> Self {
+        Self {
+            max_concurrent_requests: max_concurrent_requests.max(1),
+        }
+    }
+
+    pub fn max_concurrent_requests(&self) -> usize {
+        self.max_concurrent_requests
+    }
+}
+
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        Self::new(DEFAULT_GATEWAY_MAX_CONCURRENT_REQUESTS)
+    }
+}
 
 #[derive(Clone)]
 pub struct GatewayState {
     provider: Arc<dyn BlockProvider>,
     name_resolver: Arc<dyn NameResolver>,
+    request_limiter: Arc<Semaphore>,
 }
 
 impl GatewayState {
     pub fn new(store: SqliteBlockStore) -> Self {
-        Self {
-            provider: Arc::new(store),
-            name_resolver: Arc::new(DefaultNameResolver::default()),
-        }
+        Self::with_provider(Arc::new(store))
     }
 
     pub fn with_provider(provider: Arc<dyn BlockProvider>) -> Self {
-        Self {
+        Self::with_provider_config(provider, GatewayConfig::default())
+    }
+
+    pub fn with_provider_config(provider: Arc<dyn BlockProvider>, config: GatewayConfig) -> Self {
+        Self::with_provider_and_name_resolver_config(
             provider,
-            name_resolver: Arc::new(DefaultNameResolver::default()),
-        }
+            Arc::new(DefaultNameResolver::default()),
+            config,
+        )
     }
 
     pub fn with_provider_and_name_resolver(
         provider: Arc<dyn BlockProvider>,
         name_resolver: Arc<dyn NameResolver>,
     ) -> Self {
+        Self::with_provider_and_name_resolver_config(
+            provider,
+            name_resolver,
+            GatewayConfig::default(),
+        )
+    }
+
+    pub fn with_provider_and_name_resolver_config(
+        provider: Arc<dyn BlockProvider>,
+        name_resolver: Arc<dyn NameResolver>,
+        config: GatewayConfig,
+    ) -> Self {
         Self {
             provider,
             name_resolver,
+            request_limiter: Arc::new(Semaphore::new(config.max_concurrent_requests())),
         }
     }
 }
@@ -55,31 +97,67 @@ pub fn router_with_provider(provider: Arc<dyn BlockProvider>) -> Router {
     router_with_provider_and_name_resolver(provider, Arc::new(DefaultNameResolver::default()))
 }
 
+pub fn router_with_provider_config(
+    provider: Arc<dyn BlockProvider>,
+    config: GatewayConfig,
+) -> Router {
+    router_with_provider_and_name_resolver_config(
+        provider,
+        Arc::new(DefaultNameResolver::default()),
+        config,
+    )
+}
+
 pub fn router_with_provider_and_name_resolver(
     provider: Arc<dyn BlockProvider>,
     name_resolver: Arc<dyn NameResolver>,
+) -> Router {
+    router_with_provider_and_name_resolver_config(provider, name_resolver, GatewayConfig::default())
+}
+
+pub fn router_with_provider_and_name_resolver_config(
+    provider: Arc<dyn BlockProvider>,
+    name_resolver: Arc<dyn NameResolver>,
+    config: GatewayConfig,
 ) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/ipfs/{*path}", get(ipfs_get))
         .route("/ipns/{*path}", get(ipns_get))
-        .with_state(GatewayState::with_provider_and_name_resolver(
+        .with_state(GatewayState::with_provider_and_name_resolver_config(
             provider,
             name_resolver,
+            config,
         ))
 }
 
 pub async fn serve(store: SqliteBlockStore, addr: SocketAddr) -> std::io::Result<SocketAddr> {
-    serve_with_provider(Arc::new(store), addr).await
+    serve_config(store, addr, GatewayConfig::default()).await
+}
+
+pub async fn serve_config(
+    store: SqliteBlockStore,
+    addr: SocketAddr,
+    config: GatewayConfig,
+) -> std::io::Result<SocketAddr> {
+    serve_with_provider_config(Arc::new(store), addr, config).await
 }
 
 pub async fn serve_with_provider(
     provider: Arc<dyn BlockProvider>,
     addr: SocketAddr,
 ) -> std::io::Result<SocketAddr> {
+    serve_with_provider_config(provider, addr, GatewayConfig::default()).await
+}
+
+pub async fn serve_with_provider_config(
+    provider: Arc<dyn BlockProvider>,
+    addr: SocketAddr,
+    config: GatewayConfig,
+) -> std::io::Result<SocketAddr> {
     let listener = TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
-    axum::serve(listener, router_with_provider(provider)).await?;
+    axum::serve(listener, router_with_provider_config(provider, config)).await?;
     Ok(bound)
 }
 
@@ -92,6 +170,10 @@ async fn ipfs_get(
     Path(path): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    let Ok(_permit) = state.request_limiter.clone().try_acquire_owned() else {
+        return gateway_error(GatewayError::Busy);
+    };
+
     match serve_ipfs_path(state.provider.as_ref(), &path, headers.get(RANGE)).await {
         Ok(response) => response,
         Err(err) => gateway_error(err),
@@ -103,6 +185,10 @@ async fn ipns_get(
     Path(path): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    let Ok(_permit) = state.request_limiter.clone().try_acquire_owned() else {
+        return gateway_error(GatewayError::Busy);
+    };
+
     match serve_ipns_path(
         state.provider.as_ref(),
         state.name_resolver.as_ref(),
@@ -303,6 +389,7 @@ enum GatewayError {
     BadRequest(String),
     Unixfs(UnixfsError),
     RangeNotSatisfiable,
+    Busy,
     BadGateway(String),
     Internal(String),
 }
@@ -325,6 +412,7 @@ fn gateway_error(err: GatewayError) -> Response {
         GatewayError::RangeNotSatisfiable => {
             (StatusCode::RANGE_NOT_SATISFIABLE, "range not satisfiable").into_response()
         }
+        GatewayError::Busy => (StatusCode::SERVICE_UNAVAILABLE, "gateway busy").into_response(),
         GatewayError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, msg).into_response(),
         GatewayError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response(),
     }
@@ -333,8 +421,10 @@ fn gateway_error(err: GatewayError) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use freedom_ipfs_core::{cid_from_data, CODEC_RAW};
+    use freedom_ipfs_core::{cid_from_data, Block, CoreError, Result as CoreResult, CODEC_RAW};
     use freedom_ipfs_namesys::{NamesysError, Result as NamesysResult};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
     use tokio::net::TcpListener;
 
     #[tokio::test]
@@ -409,6 +499,39 @@ mod tests {
         assert_eq!(response.bytes().await.unwrap(), Bytes::from_static(data));
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rejects_requests_above_concurrency_limit() {
+        let data = b"limited gateway";
+        let cid = cid_from_data(CODEC_RAW, data);
+        let entered = Arc::new(AtomicBool::new(false));
+        let provider = Arc::new(SlowProvider {
+            cid,
+            data: data.to_vec(),
+            entered: entered.clone(),
+        });
+
+        let state = GatewayState::with_provider_config(provider, GatewayConfig::new(1));
+        let first = tokio::spawn(ipfs_get(
+            State(state.clone()),
+            Path(cid.to_string()),
+            HeaderMap::new(),
+        ));
+
+        for _ in 0..50 {
+            if entered.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(entered.load(Ordering::SeqCst));
+
+        let second = ipfs_get(State(state), Path(cid.to_string()), HeaderMap::new()).await;
+        assert_eq!(second.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let first = first.await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+    }
+
     struct StaticNameResolver {
         name: String,
         target: String,
@@ -422,6 +545,23 @@ mod tests {
             } else {
                 Err(NamesysError::NotFound(name.to_string()))
             }
+        }
+    }
+
+    struct SlowProvider {
+        cid: Cid,
+        data: Vec<u8>,
+        entered: Arc<AtomicBool>,
+    }
+
+    impl BlockProvider for SlowProvider {
+        fn get_block(&self, cid: &Cid) -> CoreResult<Option<Block>> {
+            if cid != &self.cid {
+                return Err(CoreError::Storage("unexpected cid".into()));
+            }
+            self.entered.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(300));
+            Ok(Some(Block::unchecked(*cid, self.data.clone())))
         }
     }
 }

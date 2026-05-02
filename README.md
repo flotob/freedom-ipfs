@@ -24,10 +24,12 @@ Early implementation. Current code supports:
 - short-lived provider-result cache and bad-provider suppression,
 - verified HTTP raw-block retrieval from HTTP-capable providers,
 - client-only Bitswap retrieval over TCP, WebSocket, and QUIC libp2p streams for Bitswap-only providers,
+- basic HAMT-sharded UnixFS directory traversal,
+- configurable local-gateway request concurrency limiting,
 - CAR import for tests/cache warmup,
-- an iOS staticlib/XCFramework build skeleton.
+- an iOS staticlib/XCFramework build skeleton with C ABI headers for offline and online gateway start.
 
-Still incomplete: HAMT-sharded UnixFS directories, production iOS packaging validation, resource profiling on device, and hardened DHT-only retrieval for sites whose DHT providers are slow or stale.
+Still incomplete: production iOS packaging validation, resource profiling on device, full streaming gateway responses, and hardened DHT-only retrieval for sites whose DHT providers are slow or stale.
 
 ## Development
 
@@ -40,6 +42,12 @@ Run the gateway online with the mobile default `auto` routing mode:
 
 ```bash
 cargo run -p freedom-ipfs-gateway -- --online --routing-mode auto
+```
+
+Limit local-gateway request concurrency for mobile resource testing:
+
+```bash
+cargo run -p freedom-ipfs-gateway -- --online --max-concurrent-requests 4
 ```
 
 On macOS with Xcode command line tools installed, build the iOS static libraries and XCFramework:

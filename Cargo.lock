@@ -933,6 +933,7 @@ dependencies = [
 name = "freedom-ipfs-mobile"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "freedom-ipfs-gateway",
  "freedom-ipfs-store",
  "tokio",

@@ -19,6 +19,8 @@ void freedom_ipfs_node_free(FreedomIpfsNode *ptr);
 
 bool freedom_ipfs_node_import_car(FreedomIpfsNode *ptr, const uint8_t *data, size_t len);
 bool freedom_ipfs_node_start_gateway(FreedomIpfsNode *ptr, const char *addr);
+char *freedom_ipfs_node_gateway_url(FreedomIpfsNode *ptr);
+bool freedom_ipfs_node_stop_gateway(FreedomIpfsNode *ptr);
 
 #ifdef __cplusplus
 }

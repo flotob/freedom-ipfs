@@ -274,6 +274,10 @@ impl SqliteBlockStore {
         Ok(())
     }
 
+    pub fn trim_blocks_to(&self, max_bytes: u64) -> Result<()> {
+        self.evict_until(max_bytes)
+    }
+
     fn touch(&self, cid: &Cid) -> Result<()> {
         self.conn.lock().execute(
             "UPDATE blocks SET last_accessed_at = ?1 WHERE cid = ?2",
@@ -283,9 +287,13 @@ impl SqliteBlockStore {
     }
 
     fn evict_if_needed(&self) -> Result<()> {
+        self.evict_until(self.max_bytes)
+    }
+
+    fn evict_until(&self, max_bytes: u64) -> Result<()> {
         loop {
             let total = self.total_bytes()?;
-            if total <= self.max_bytes {
+            if total <= max_bytes {
                 return Ok(());
             }
             let deleted = self.conn.lock().execute(
@@ -350,6 +358,22 @@ mod tests {
 
         assert!(store.total_bytes().unwrap() <= 20);
         assert_eq!(store.get(&second_cid).unwrap().unwrap().data(), second);
+    }
+
+    #[test]
+    fn trims_blocks_to_requested_budget() {
+        let store = SqliteBlockStore::in_memory(1024).unwrap();
+        let first = vec![1u8; 16];
+        let second = vec![2u8; 16];
+        let first_cid = cid_from_data(CODEC_RAW, &first);
+        let second_cid = cid_from_data(CODEC_RAW, &second);
+        store.put_block(&first_cid, &first).unwrap();
+        store.put_block(&second_cid, &second).unwrap();
+
+        store.trim_blocks_to(20).unwrap();
+
+        assert!(store.total_bytes().unwrap() <= 20);
+        assert_eq!(store.block_count().unwrap(), 1);
     }
 
     #[test]

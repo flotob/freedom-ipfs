@@ -168,6 +168,21 @@ pub unsafe extern "C" fn freedom_ipfs_node_clear_cache(ptr: *mut FreedomIpfsNode
 
 /// # Safety
 ///
+/// `ptr` must be a valid node pointer.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_trim_cache(
+    ptr: *mut FreedomIpfsNode,
+    max_bytes: u64,
+) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    let node = &*ptr;
+    node.store.trim_blocks_to(max_bytes).is_ok()
+}
+
+/// # Safety
+///
 /// `ptr` must be a valid node pointer. `addr` must point to a NUL-terminated
 /// UTF-8 socket address string for the duration of this call.
 #[no_mangle]
@@ -449,6 +464,27 @@ mod tests {
             assert!(freedom_ipfs_node_clear_cache(node));
             assert_eq!(freedom_ipfs_node_block_count(node), 0);
             assert_eq!(freedom_ipfs_node_total_bytes(node), 0);
+
+            freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
+    fn trims_cache_to_requested_budget() {
+        unsafe {
+            let node = freedom_ipfs_node_new_in_memory();
+            assert!(!node.is_null());
+
+            let first = vec![1u8; 16];
+            let second = vec![2u8; 16];
+            let first_cid = cid_from_data(CODEC_RAW, &first);
+            let second_cid = cid_from_data(CODEC_RAW, &second);
+            (*node).store.put_block(&first_cid, &first).unwrap();
+            (*node).store.put_block(&second_cid, &second).unwrap();
+
+            assert!(freedom_ipfs_node_trim_cache(node, 20));
+            assert!(freedom_ipfs_node_total_bytes(node) <= 20);
+            assert_eq!(freedom_ipfs_node_block_count(node), 1);
 
             freedom_ipfs_node_free(node);
         }

@@ -28,6 +28,7 @@ bool freedom_ipfs_node_import_car(FreedomIpfsNode *ptr, const uint8_t *data, siz
 uint64_t freedom_ipfs_node_block_count(FreedomIpfsNode *ptr);
 uint64_t freedom_ipfs_node_total_bytes(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_clear_cache(FreedomIpfsNode *ptr);
+bool freedom_ipfs_node_trim_cache(FreedomIpfsNode *ptr, uint64_t max_bytes);
 bool freedom_ipfs_node_start_gateway(FreedomIpfsNode *ptr, const char *addr);
 bool freedom_ipfs_node_start_gateway_online(
     FreedomIpfsNode *ptr,

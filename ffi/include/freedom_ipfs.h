@@ -11,6 +11,10 @@ extern "C" {
 
 typedef struct FreedomIpfsNode FreedomIpfsNode;
 
+#define FREEDOM_IPFS_ROUTING_MODE_AUTO ((uint32_t)0)
+#define FREEDOM_IPFS_ROUTING_MODE_DELEGATED ((uint32_t)1)
+#define FREEDOM_IPFS_ROUTING_MODE_LIGHT_DHT ((uint32_t)2)
+
 char *freedom_ipfs_version(void);
 void freedom_ipfs_string_free(char *ptr);
 
@@ -29,6 +33,12 @@ bool freedom_ipfs_node_start_gateway_online(
     FreedomIpfsNode *ptr,
     const char *addr,
     const char *delegated_router);
+bool freedom_ipfs_node_start_gateway_online_with_config(
+    FreedomIpfsNode *ptr,
+    const char *addr,
+    const char *delegated_router,
+    uint32_t routing_mode,
+    size_t max_concurrent_requests);
 char *freedom_ipfs_node_gateway_url(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_stop_gateway(FreedomIpfsNode *ptr);
 

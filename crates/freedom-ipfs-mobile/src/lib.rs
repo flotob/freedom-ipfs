@@ -1,6 +1,7 @@
 use freedom_ipfs_retrieval::FetchingBlockProvider;
 use freedom_ipfs_routing::{
-    AutoRoutingClient, DelegatedRoutingClient, LightDhtClient, DEFAULT_DELEGATED_ROUTER,
+    AutoRoutingClient, DelegatedRoutingClient, LightDhtClient, ProviderRoutingClient,
+    DEFAULT_DELEGATED_ROUTER,
 };
 use freedom_ipfs_store::SqliteBlockStore;
 use std::ffi::{c_char, CStr, CString};
@@ -15,6 +16,9 @@ use tokio::task::JoinHandle;
 
 const DEFAULT_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 const CACHE_DB_FILE: &str = "freedom-ipfs.sqlite3";
+const ROUTING_MODE_AUTO: u32 = 0;
+const ROUTING_MODE_DELEGATED: u32 = 1;
+const ROUTING_MODE_LIGHT_DHT: u32 = 2;
 
 pub struct FreedomIpfsNode {
     runtime: Runtime,
@@ -200,6 +204,30 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online(
     addr: *const c_char,
     delegated_router: *const c_char,
 ) -> bool {
+    freedom_ipfs_node_start_gateway_online_with_config(
+        ptr,
+        addr,
+        delegated_router,
+        ROUTING_MODE_AUTO,
+        0,
+    )
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer. `addr` must point to a NUL-terminated
+/// UTF-8 socket address string for the duration of this call. `delegated_router`
+/// may be null to use the default delegated routing endpoint, otherwise it must
+/// point to a NUL-terminated UTF-8 URL string. `routing_mode` must be one of the
+/// `FREEDOM_IPFS_ROUTING_MODE_*` constants from the C header.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config(
+    ptr: *mut FreedomIpfsNode,
+    addr: *const c_char,
+    delegated_router: *const c_char,
+    routing_mode: u32,
+    max_concurrent_requests: usize,
+) -> bool {
     if ptr.is_null() || addr.is_null() {
         return false;
     }
@@ -221,15 +249,26 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online(
         }
     };
 
-    let routing = AutoRoutingClient::new(
-        DelegatedRoutingClient::new(delegated_router),
-        LightDhtClient::default(),
-    );
+    let delegated = DelegatedRoutingClient::new(delegated_router);
+    let routing = match routing_mode {
+        ROUTING_MODE_AUTO => ProviderRoutingClient::from(AutoRoutingClient::new(
+            delegated,
+            LightDhtClient::default(),
+        )),
+        ROUTING_MODE_DELEGATED => ProviderRoutingClient::from(delegated),
+        ROUTING_MODE_LIGHT_DHT => ProviderRoutingClient::from(LightDhtClient::default()),
+        _ => return false,
+    };
     let provider = FetchingBlockProvider::new(node.store.clone(), routing);
+    let gateway_config = if max_concurrent_requests == 0 {
+        freedom_ipfs_gateway::GatewayConfig::default()
+    } else {
+        freedom_ipfs_gateway::GatewayConfig::new(max_concurrent_requests)
+    };
     start_gateway_with_router(
         node,
         addr,
-        freedom_ipfs_gateway::router_with_provider(Arc::new(provider)),
+        freedom_ipfs_gateway::router_with_provider_config(Arc::new(provider), gateway_config),
     )
 }
 
@@ -348,6 +387,48 @@ mod tests {
             assert_gateway_health(node);
 
             assert!(freedom_ipfs_node_stop_gateway(node));
+            assert!(freedom_ipfs_node_gateway_url(node).is_null());
+            freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
+    fn starts_online_gateway_with_config() {
+        unsafe {
+            let node = freedom_ipfs_node_new_in_memory();
+            assert!(!node.is_null());
+
+            let addr = CString::new("127.0.0.1:0").unwrap();
+            let router = CString::new("http://127.0.0.1:9/routing/v1").unwrap();
+            assert!(freedom_ipfs_node_start_gateway_online_with_config(
+                node,
+                addr.as_ptr(),
+                router.as_ptr(),
+                ROUTING_MODE_DELEGATED,
+                1,
+            ));
+
+            assert_gateway_health(node);
+
+            assert!(freedom_ipfs_node_stop_gateway(node));
+            freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_routing_mode() {
+        unsafe {
+            let node = freedom_ipfs_node_new_in_memory();
+            assert!(!node.is_null());
+
+            let addr = CString::new("127.0.0.1:0").unwrap();
+            assert!(!freedom_ipfs_node_start_gateway_online_with_config(
+                node,
+                addr.as_ptr(),
+                ptr::null(),
+                99,
+                0,
+            ));
             assert!(freedom_ipfs_node_gateway_url(node).is_null());
             freedom_ipfs_node_free(node);
         }

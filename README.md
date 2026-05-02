@@ -27,7 +27,7 @@ Early implementation. Current code supports:
 - basic HAMT-sharded UnixFS directory traversal,
 - configurable local-gateway request concurrency limiting,
 - CAR import for tests/cache warmup,
-- an iOS staticlib/XCFramework build skeleton with C ABI headers for persistent-cache node creation plus offline and online gateway start.
+- an iOS staticlib/XCFramework build skeleton with C ABI headers for persistent-cache node creation, routing-mode selection, and offline/online gateway start.
 
 Still incomplete: production iOS packaging validation, resource profiling on device, full streaming gateway responses, and hardened DHT-only retrieval for sites whose DHT providers are slow or stale.
 

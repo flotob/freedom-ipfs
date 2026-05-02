@@ -15,6 +15,9 @@ char *freedom_ipfs_version(void);
 void freedom_ipfs_string_free(char *ptr);
 
 FreedomIpfsNode *freedom_ipfs_node_new_in_memory(void);
+FreedomIpfsNode *freedom_ipfs_node_new_with_data_dir(
+    const char *data_dir,
+    uint64_t max_cache_bytes);
 void freedom_ipfs_node_free(FreedomIpfsNode *ptr);
 
 bool freedom_ipfs_node_import_car(FreedomIpfsNode *ptr, const uint8_t *data, size_t len);
@@ -22,7 +25,10 @@ uint64_t freedom_ipfs_node_block_count(FreedomIpfsNode *ptr);
 uint64_t freedom_ipfs_node_total_bytes(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_clear_cache(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_start_gateway(FreedomIpfsNode *ptr, const char *addr);
-bool freedom_ipfs_node_start_gateway_online(FreedomIpfsNode *ptr, const char *addr, const char *delegated_router);
+bool freedom_ipfs_node_start_gateway_online(
+    FreedomIpfsNode *ptr,
+    const char *addr,
+    const char *delegated_router);
 char *freedom_ipfs_node_gateway_url(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_stop_gateway(FreedomIpfsNode *ptr);
 

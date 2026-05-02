@@ -19,3 +19,4 @@ tokio.workspace = true
 
 [dev-dependencies]
 freedom-ipfs-core.workspace = true
+tempfile.workspace = true

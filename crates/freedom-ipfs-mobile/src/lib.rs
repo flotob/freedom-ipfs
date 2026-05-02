@@ -4,12 +4,17 @@ use freedom_ipfs_routing::{
 };
 use freedom_ipfs_store::SqliteBlockStore;
 use std::ffi::{c_char, CStr, CString};
+use std::fs;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::ptr;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
+
+const DEFAULT_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+const CACHE_DB_FILE: &str = "freedom-ipfs.sqlite3";
 
 pub struct FreedomIpfsNode {
     runtime: Runtime,
@@ -38,12 +43,48 @@ pub unsafe extern "C" fn freedom_ipfs_string_free(ptr: *mut c_char) {
 
 #[no_mangle]
 pub extern "C" fn freedom_ipfs_node_new_in_memory() -> *mut FreedomIpfsNode {
-    let runtime = match Runtime::new() {
-        Ok(runtime) => runtime,
+    let store = match SqliteBlockStore::in_memory(DEFAULT_CACHE_BYTES) {
+        Ok(store) => store,
         Err(_) => return ptr::null_mut(),
     };
-    let store = match SqliteBlockStore::in_memory(256 * 1024 * 1024) {
+    node_from_store(store)
+}
+
+/// # Safety
+///
+/// `data_dir` must point to a NUL-terminated UTF-8 path string for the
+/// duration of this call. `max_cache_bytes` may be 0 to use the default 256 MiB
+/// cache budget.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_new_with_data_dir(
+    data_dir: *const c_char,
+    max_cache_bytes: u64,
+) -> *mut FreedomIpfsNode {
+    if data_dir.is_null() {
+        return ptr::null_mut();
+    }
+    let data_dir = match CStr::from_ptr(data_dir).to_str() {
+        Ok(path) => PathBuf::from(path),
+        Err(_) => return ptr::null_mut(),
+    };
+    if fs::create_dir_all(&data_dir).is_err() {
+        return ptr::null_mut();
+    }
+    let max_cache_bytes = if max_cache_bytes == 0 {
+        DEFAULT_CACHE_BYTES
+    } else {
+        max_cache_bytes
+    };
+    let store = match SqliteBlockStore::open(data_dir.join(CACHE_DB_FILE), max_cache_bytes) {
         Ok(store) => store,
+        Err(_) => return ptr::null_mut(),
+    };
+    node_from_store(store)
+}
+
+fn node_from_store(store: SqliteBlockStore) -> *mut FreedomIpfsNode {
+    let runtime = match Runtime::new() {
+        Ok(runtime) => runtime,
         Err(_) => return ptr::null_mut(),
     };
     Box::into_raw(Box::new(FreedomIpfsNode {
@@ -329,6 +370,28 @@ mod tests {
             assert_eq!(freedom_ipfs_node_total_bytes(node), 0);
 
             freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
+    fn opens_persistent_data_dir_cache() {
+        unsafe {
+            let tempdir = tempfile::tempdir().unwrap();
+            let data_dir = CString::new(tempdir.path().to_str().unwrap()).unwrap();
+            let node = freedom_ipfs_node_new_with_data_dir(data_dir.as_ptr(), 1024 * 1024);
+            assert!(!node.is_null());
+
+            let data = b"persisted mobile cache";
+            let cid = cid_from_data(CODEC_RAW, data);
+            (*node).store.put_block(&cid, data).unwrap();
+            assert_eq!(freedom_ipfs_node_block_count(node), 1);
+            freedom_ipfs_node_free(node);
+
+            let reopened = freedom_ipfs_node_new_with_data_dir(data_dir.as_ptr(), 1024 * 1024);
+            assert!(!reopened.is_null());
+            assert_eq!(freedom_ipfs_node_block_count(reopened), 1);
+            assert_eq!(freedom_ipfs_node_total_bytes(reopened), data.len() as u64);
+            freedom_ipfs_node_free(reopened);
         }
     }
 

@@ -939,6 +939,7 @@ dependencies = [
  "freedom-ipfs-retrieval",
  "freedom-ipfs-routing",
  "freedom-ipfs-store",
+ "tempfile",
  "tokio",
 ]
 

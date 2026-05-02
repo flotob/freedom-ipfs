@@ -1,8 +1,12 @@
+use freedom_ipfs_retrieval::FetchingBlockProvider;
+use freedom_ipfs_routing::{
+    AutoRoutingClient, DelegatedRoutingClient, LightDhtClient, DEFAULT_DELEGATED_ROUTER,
+};
 use freedom_ipfs_store::SqliteBlockStore;
 use std::ffi::{c_char, CStr, CString};
 use std::net::SocketAddr;
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
@@ -139,6 +143,60 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway(
         None => return false,
     };
 
+    let store = node.store.clone();
+    start_gateway_with_router(node, addr, freedom_ipfs_gateway::router(store))
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer. `addr` must point to a NUL-terminated
+/// UTF-8 socket address string for the duration of this call. `delegated_router`
+/// may be null to use the default delegated routing endpoint, otherwise it must
+/// point to a NUL-terminated UTF-8 URL string.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online(
+    ptr: *mut FreedomIpfsNode,
+    addr: *const c_char,
+    delegated_router: *const c_char,
+) -> bool {
+    if ptr.is_null() || addr.is_null() {
+        return false;
+    }
+    let node = &*ptr;
+    let addr = match CStr::from_ptr(addr)
+        .to_str()
+        .ok()
+        .and_then(|s| s.parse::<SocketAddr>().ok())
+    {
+        Some(addr) => addr,
+        None => return false,
+    };
+    let delegated_router = if delegated_router.is_null() {
+        DEFAULT_DELEGATED_ROUTER.to_string()
+    } else {
+        match CStr::from_ptr(delegated_router).to_str() {
+            Ok(router) => router.to_string(),
+            Err(_) => return false,
+        }
+    };
+
+    let routing = AutoRoutingClient::new(
+        DelegatedRoutingClient::new(delegated_router),
+        LightDhtClient::default(),
+    );
+    let provider = FetchingBlockProvider::new(node.store.clone(), routing);
+    start_gateway_with_router(
+        node,
+        addr,
+        freedom_ipfs_gateway::router_with_provider(Arc::new(provider)),
+    )
+}
+
+fn start_gateway_with_router(
+    node: &FreedomIpfsNode,
+    addr: SocketAddr,
+    router: axum::Router,
+) -> bool {
     let mut gateway_task = match node.gateway_task.lock() {
         Ok(guard) => guard,
         Err(_) => return false,
@@ -147,7 +205,6 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway(
         return true;
     }
 
-    let store = node.store.clone();
     let listener = match node.runtime.block_on(TcpListener::bind(addr)) {
         Ok(listener) => listener,
         Err(_) => return false,
@@ -157,7 +214,7 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway(
         Err(_) => return false,
     };
     let task = node.runtime.spawn(async move {
-        let _ = axum::serve(listener, freedom_ipfs_gateway::router(store)).await;
+        let _ = axum::serve(listener, router).await;
     });
     *gateway_task = Some(task);
     if let Ok(mut gateway_addr) = node.gateway_addr.lock() {
@@ -226,21 +283,28 @@ mod tests {
             let addr = CString::new("127.0.0.1:0").unwrap();
             assert!(freedom_ipfs_node_start_gateway(node, addr.as_ptr()));
 
-            let url_ptr = freedom_ipfs_node_gateway_url(node);
-            assert!(!url_ptr.is_null());
-            let url = CStr::from_ptr(url_ptr).to_str().unwrap().to_string();
-            freedom_ipfs_string_free(url_ptr);
-            assert!(url.starts_with("http://127.0.0.1:"));
+            assert_gateway_health(node);
 
-            let addr = url.strip_prefix("http://").unwrap();
-            let mut stream = std::net::TcpStream::connect(addr).unwrap();
-            stream
-                .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-                .unwrap();
-            let mut response = String::new();
-            stream.read_to_string(&mut response).unwrap();
-            assert!(response.contains("200 OK"));
-            assert!(response.ends_with("ok\n"));
+            assert!(freedom_ipfs_node_stop_gateway(node));
+            assert!(freedom_ipfs_node_gateway_url(node).is_null());
+            freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
+    fn starts_online_gateway_and_reports_bound_url() {
+        unsafe {
+            let node = freedom_ipfs_node_new_in_memory();
+            assert!(!node.is_null());
+
+            let addr = CString::new("127.0.0.1:0").unwrap();
+            assert!(freedom_ipfs_node_start_gateway_online(
+                node,
+                addr.as_ptr(),
+                ptr::null(),
+            ));
+
+            assert_gateway_health(node);
 
             assert!(freedom_ipfs_node_stop_gateway(node));
             assert!(freedom_ipfs_node_gateway_url(node).is_null());
@@ -266,5 +330,23 @@ mod tests {
 
             freedom_ipfs_node_free(node);
         }
+    }
+
+    unsafe fn assert_gateway_health(node: *mut FreedomIpfsNode) {
+        let url_ptr = freedom_ipfs_node_gateway_url(node);
+        assert!(!url_ptr.is_null());
+        let url = CStr::from_ptr(url_ptr).to_str().unwrap().to_string();
+        freedom_ipfs_string_free(url_ptr);
+        assert!(url.starts_with("http://127.0.0.1:"));
+
+        let addr = url.strip_prefix("http://").unwrap();
+        let mut stream = std::net::TcpStream::connect(addr).unwrap();
+        stream
+            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.contains("200 OK"));
+        assert!(response.ends_with("ok\n"));
     }
 }

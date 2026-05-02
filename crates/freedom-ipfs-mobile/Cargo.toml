@@ -12,6 +12,8 @@ crate-type = ["rlib", "staticlib"]
 [dependencies]
 axum.workspace = true
 freedom-ipfs-gateway.workspace = true
+freedom-ipfs-retrieval.workspace = true
+freedom-ipfs-routing.workspace = true
 freedom-ipfs-store.workspace = true
 tokio.workspace = true
 

@@ -22,6 +22,7 @@ uint64_t freedom_ipfs_node_block_count(FreedomIpfsNode *ptr);
 uint64_t freedom_ipfs_node_total_bytes(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_clear_cache(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_start_gateway(FreedomIpfsNode *ptr, const char *addr);
+bool freedom_ipfs_node_start_gateway_online(FreedomIpfsNode *ptr, const char *addr, const char *delegated_router);
 char *freedom_ipfs_node_gateway_url(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_stop_gateway(FreedomIpfsNode *ptr);
 

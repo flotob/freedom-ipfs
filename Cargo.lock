@@ -936,6 +936,8 @@ dependencies = [
  "axum",
  "freedom-ipfs-core",
  "freedom-ipfs-gateway",
+ "freedom-ipfs-retrieval",
+ "freedom-ipfs-routing",
  "freedom-ipfs-store",
  "tokio",
 ]

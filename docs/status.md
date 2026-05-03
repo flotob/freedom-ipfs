@@ -55,11 +55,11 @@ make live-soak
 iOS XCFramework CI passed:
 
 ```text
-GitHub Actions run: https://github.com/flotob/freedom-ipfs/actions/runs/25270519396
-Head SHA: 9408ac2d2194d04dac2ce2af725ada7a6fc5d279
+GitHub Actions run: https://github.com/flotob/freedom-ipfs/actions/runs/25270803278
+Head SHA: fd013d28f8d8882d3c7c767b69618f925a29b829
 ```
 
-The macOS job ran on `macos-15` with Xcode 16.4. It built `FreedomIpfs.xcframework`, verified headers/module maps/exported C symbols, booted an iOS simulator, compiled and linked the Swift wrapper smoke, ran the gateway smoke through `simctl spawn booted`, built and installed a generated UIKit/WebKit app, rendered a CAR-backed gateway fixture in `WKWebView`, verified the DOM marker, and uploaded the XCFramework artifact `6768232933` (`60010020` bytes).
+The macOS job ran on `macos-15` with Xcode 16.4. It built `FreedomIpfs.xcframework`, verified headers/module maps/exported C symbols, booted an iOS simulator, compiled and linked the Swift wrapper smoke, ran the gateway smoke through `simctl spawn booted`, built and installed a generated UIKit/WebKit app, rendered a CAR-backed gateway fixture in `WKWebView`, verified the DOM marker, and uploaded the XCFramework artifact `6768364970` (`60010020` bytes).
 
 Observed live-smoke result:
 
@@ -110,7 +110,7 @@ Error: verify-xcframework requires macOS with Xcode command line tools; current 
 
 M0 decisions and fixtures: partially complete. The repo, license, generated unit-test fixtures, deterministic libp2p fixtures, and Kubo-generated UnixFS/HAMT CAR parity smokes exist. A larger checked-in public fixture corpus is still useful.
 
-M1 workspace and mobile skeleton: mostly complete. Workspace, mobile C ABI, Swift wrapper source, gateway start/stop, stats, cache import/export, routing mode selection, multi-router configuration, local gateway URL mapping helpers, lifecycle hooks, preload/cancel with path/URI/bare-CID normalization, and an XCFramework build/verify skeleton exist. The build stages the C header plus module map and checks artifact structure/exported C symbols; the verifier additionally stages a simulator Swift smoke that imports a generated CAR fixture, starts the local gateway, fetches through loopback, and stops on macOS. It also builds, installs, and launches a generated UIKit/WebKit simulator app that renders the same gateway fixture and verifies the DOM marker. GitHub Actions macOS run `25270519396` verified artifact production, simulator execution, and app rendering.
+M1 workspace and mobile skeleton: mostly complete. Workspace, mobile C ABI, Swift wrapper source, gateway start/stop, stats, cache import/export, routing mode selection, multi-router configuration, local gateway URL mapping helpers, lifecycle hooks, preload/cancel with path/URI/bare-CID normalization, and an XCFramework build/verify skeleton exist. The build stages the C header plus module map and checks artifact structure/exported C symbols; the verifier additionally stages a simulator Swift smoke that imports a generated CAR fixture, starts the local gateway, fetches through loopback, and stops on macOS. It also builds, installs, and launches a generated UIKit/WebKit simulator app that renders the same gateway fixture and verifies the DOM marker. GitHub Actions macOS run `25270803278` verified artifact production, simulator execution, and app rendering.
 
 M2 CID, block verification, and store: complete for MVP. CID parse/format, verified block insertion, CAR import/export, bounded in-memory hot block cache, SQLite cache, eviction, active block retention, provider cache, bad-provider cache, clear, and trim are covered by tests.
 

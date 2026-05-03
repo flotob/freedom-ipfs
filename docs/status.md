@@ -85,7 +85,7 @@ M1 workspace and mobile skeleton: mostly complete. Workspace, mobile C ABI, Swif
 
 M2 CID, block verification, and store: complete for MVP. CID parse/format, verified block insertion, CAR import/export, SQLite cache, eviction, provider cache, bad-provider cache, clear, and trim are covered by tests.
 
-M3 UnixFS reader and offline gateway: complete for MVP. Raw, dag-pb, multi-block files, directories, basic HAMT traversal, range reads, streaming gateway responses, traversal-segment rejection, and Kubo-generated UnixFS/HAMT CAR import/gateway byte parity are implemented and tested.
+M3 UnixFS reader and offline gateway: complete for MVP. Raw, dag-pb, multi-block files, directories, basic HAMT traversal, range reads, malformed/unsatisfiable byte-range rejection, streaming gateway responses, traversal-segment rejection, and Kubo-generated UnixFS/HAMT CAR import/gateway byte parity are implemented and tested.
 
 M4 IPNS and DNSLink: implemented. DNSLink uses Cloudflare DoH through a pluggable trait. IPNS delegated lookup, light-DHT fallback, v2 verification, expiry checks, recursion-limit failure, and name caching are implemented and tested. Native/system TXT lookup remains a follow-up.
 

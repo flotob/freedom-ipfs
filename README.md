@@ -41,6 +41,7 @@ Early implementation. Current code supports:
 - deterministic in-process libp2p Bitswap retrieval test coverage,
 - basic HAMT-sharded UnixFS directory traversal,
 - UnixFS range reads that avoid assembling entire multi-block files for byte-range responses,
+- gateway rejection of malformed and unsatisfiable byte-range requests,
 - full local-gateway responses streamed in bounded UnixFS chunks instead of one full-file buffer,
 - gateway rejection of `.`/`..` path traversal segments before UnixFS lookup,
 - Kubo-generated CAR parity smoke for UnixFS files/directories and HAMT directories when `KUBO_BIN` is available,

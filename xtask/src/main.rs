@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use freedom_ipfs_core::{cid_from_data, encode_car_v1, CarBlock, CODEC_RAW};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -178,7 +179,7 @@ fn verify_xcframework(framework: &Path) -> Result<()> {
         verify_exported_symbols(library)?;
     }
 
-    verify_swift_simulator_link(framework, &libraries)?;
+    verify_swift_simulator_smoke(framework, &libraries)?;
 
     println!("verified {}", framework.display());
     Ok(())
@@ -228,7 +229,7 @@ fn verify_exported_symbols(library: &Path) -> Result<()> {
     Ok(())
 }
 
-fn verify_swift_simulator_link(framework: &Path, libraries: &[PathBuf]) -> Result<()> {
+fn verify_swift_simulator_smoke(framework: &Path, libraries: &[PathBuf]) -> Result<()> {
     let library = libraries
         .iter()
         .find(|library| library.to_string_lossy().contains("simulator"))
@@ -266,27 +267,46 @@ fn verify_swift_simulator_link(framework: &Path, libraries: &[PathBuf]) -> Resul
     }
     fs::create_dir_all(&verify_dir).context("create Swift verification directory")?;
     let smoke = verify_dir.join("FreedomIpfsSmoke.swift");
-    fs::write(
-        &smoke,
+    let fixture_bytes = b"simulator fixture";
+    let fixture_cid = cid_from_data(CODEC_RAW, fixture_bytes);
+    let fixture_car = encode_car_v1(&[CarBlock {
+        cid: fixture_cid,
+        data: fixture_bytes.to_vec(),
+    }]);
+    let fixture_car = format_swift_byte_array(&fixture_car);
+    let fixture_body = format_swift_byte_array(fixture_bytes);
+    let smoke_source = format!(
         r#"import Foundation
 import FreedomIpfs
 
 @main
-enum FreedomIpfsSmoke {
-    static func main() throws {
+enum FreedomIpfsSmoke {{
+    static func main() async throws {{
         _ = FreedomIpfsReader.version
         let reader = try FreedomIpfsReader()
+        try reader.importCar(Data([{fixture_car}]))
         try reader.startGateway()
-        guard reader.gatewayURL != nil else {
+        guard reader.gatewayURL != nil else {{
             fatalError("gateway URL missing")
-        }
+        }}
+        guard let url = reader.localGatewayURL(for: "/ipfs/{fixture_cid}") else {{
+            fatalError("fixture gateway URL missing")
+        }}
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {{
+            fatalError("fixture request failed")
+        }}
+        guard data == Data([{fixture_body}]) else {{
+            fatalError("fixture body mismatch")
+        }}
         _ = reader.stopGateway()
-    }
-}
+    }}
+}}
 "#,
-    )
-    .context("write Swift verification smoke source")?;
+    );
+    fs::write(&smoke, smoke_source).context("write Swift verification smoke source")?;
 
+    let executable = verify_dir.join("FreedomIpfsSmoke");
     run(
         Command::new("xcrun")
             .args(["--sdk", "iphonesimulator", "swiftc"])
@@ -303,8 +323,21 @@ enum FreedomIpfsSmoke {
             .arg("ffi/swift/FreedomIpfsReader.swift")
             .arg(&smoke)
             .arg("-o")
-            .arg(verify_dir.join("FreedomIpfsSmoke")),
+            .arg(&executable),
         "swiftc simulator link smoke",
+    )?;
+
+    run(
+        Command::new("xcrun").args(["simctl", "bootstatus", "booted", "-b"]),
+        "wait for booted iOS simulator",
+    )?;
+    let executable = fs::canonicalize(&executable)
+        .with_context(|| format!("canonicalize {}", executable.display()))?;
+    run(
+        Command::new("xcrun")
+            .args(["simctl", "spawn", "booted"])
+            .arg(&executable),
+        "simctl simulator gateway smoke",
     )
 }
 
@@ -337,4 +370,12 @@ fn command_stdout(command: &mut Command, label: &str) -> Result<String> {
         bail!("{label} failed");
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn format_swift_byte_array(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }

@@ -9,3 +9,4 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+freedom-ipfs-core = { path = "../crates/freedom-ipfs-core" }

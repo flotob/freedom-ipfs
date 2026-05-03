@@ -79,4 +79,4 @@ M11 optional features: not started except CAR export/import support, which was p
 - Real iPhone resource targets are unverified, including the provisional under-60-MiB idle RSS target beside Bee.
 - DHT-only retrieval of `daicowtf.eth` is not reliable on the public DHT; current auto mode succeeds because delegated routing returns usable providers.
 - DNSLink still defaults to Cloudflare DoH. Native/system TXT lookup should be evaluated for artifact size and iOS behavior.
-- No controlled local Kubo parity harness exists yet for deterministic cross-implementation gateway/routing regression coverage.
+- No controlled local Kubo parity harness exists yet for deterministic cross-implementation gateway/routing regression coverage; the `ipfs` command is not installed in this Linux environment.

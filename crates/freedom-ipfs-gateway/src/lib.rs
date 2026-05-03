@@ -720,6 +720,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolves_percent_encoded_browser_paths() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let data = b"encoded browser path";
+        let file_block = test_pb_file(data);
+        let file_cid = cid_from_data(CODEC_DAG_PB, &file_block);
+        store.put_block(&file_cid, &file_block).unwrap();
+
+        let dir_block = test_pb_directory(vec![test_link("space name #1.txt", &file_cid)]);
+        let dir_cid = cid_from_data(CODEC_DAG_PB, &dir_block);
+        store.put_block(&dir_cid, &dir_block).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router(store);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{addr}/ipfs/{dir_cid}/space%20name%20%231.txt");
+        let response = reqwest::get(url).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.bytes().await.unwrap(), Bytes::from_static(data));
+    }
+
+    #[tokio::test]
     async fn supports_byte_ranges() {
         let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
         let data = b"0123456789";

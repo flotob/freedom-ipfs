@@ -45,6 +45,7 @@ Early implementation. Current code supports:
 - deterministic in-process libp2p Bitswap retrieval test coverage,
 - basic HAMT-sharded UnixFS directory traversal,
 - directory `index.html` fallback with path-based MIME headers,
+- percent-encoded browser path segments for files with spaces and reserved characters,
 - UnixFS range reads that avoid assembling entire multi-block files for byte-range responses,
 - gateway rejection of malformed and unsatisfiable byte-range requests,
 - fixed, open-ended, and suffix byte-range responses with `Content-Range`,
@@ -53,7 +54,7 @@ Early implementation. Current code supports:
 - browser-facing HTML gateway error pages with escaped details and stable HTTP status codes,
 - explicit test coverage that Kubo RPC/WebUI paths such as `/api/v0/version`
   and `/webui` are not exposed,
-- Kubo-generated CAR parity smoke for UnixFS files/directories, empty files, byte ranges, and HAMT directories when `KUBO_BIN` is available,
+- Kubo-generated CAR parity smoke for UnixFS files/directories, empty files, percent-encoded browser paths, byte ranges, and HAMT directories when `KUBO_BIN` is available,
 - opt-in public corpus smoke that fetches documented `/ipfs` and DNSLink-backed `/ipns` paths and byte ranges through the local gateway,
 - opt-in live harness retries for transient local-gateway `408`/`502`/`503`/`504` responses caused by public-network provider timeouts,
 - opt-in local gateway soak that repeats cached reads and checks bounded RSS growth on Linux,

@@ -24,6 +24,11 @@ async fn kubo_generated_unixfs_site_matches_local_gateway_bytes() {
     .unwrap();
     fs::write(site.join("assets/style.css"), b"body { color: #111; }\n").unwrap();
     fs::write(site.join("assets/empty.txt"), b"").unwrap();
+    fs::write(
+        site.join("assets/space name #1.txt"),
+        b"encoded path fixture\n",
+    )
+    .unwrap();
     let large = (0..600_000)
         .map(|index| (index % 251) as u8)
         .collect::<Vec<_>>();
@@ -102,6 +107,14 @@ async fn kubo_generated_unixfs_site_matches_local_gateway_bytes() {
             expected.as_slice()
         );
     }
+
+    let encoded_url = format!("http://{addr}/ipfs/{root}/assets/space%20name%20%231.txt");
+    let response = reqwest::get(encoded_url).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.bytes().await.unwrap().as_ref(),
+        b"encoded path fixture\n"
+    );
 
     let range_start = 123_456usize;
     let range_end = 124_567usize;

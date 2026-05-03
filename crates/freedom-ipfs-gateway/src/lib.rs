@@ -782,6 +782,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn supports_head_requests_without_response_bodies() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let data = b"0123456789";
+        let cid = cid_from_data(CODEC_RAW, data);
+        store.put_block(&cid, data).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router(store);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{addr}/ipfs/{cid}");
+        let client = reqwest::Client::new();
+
+        let response = client.head(&url).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_LENGTH).unwrap(),
+            HeaderValue::from_static("10")
+        );
+        assert_eq!(
+            response.headers().get(ACCEPT_RANGES).unwrap(),
+            HeaderValue::from_static("bytes")
+        );
+        assert!(response.bytes().await.unwrap().is_empty());
+
+        let response = client
+            .head(&url)
+            .header(RANGE, "bytes=2-5")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.headers().get(CONTENT_RANGE).unwrap(),
+            HeaderValue::from_static("bytes 2-5/10")
+        );
+        assert_eq!(
+            response.headers().get(CONTENT_LENGTH).unwrap(),
+            HeaderValue::from_static("4")
+        );
+        assert!(response.bytes().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn rejects_invalid_and_unsatisfiable_byte_ranges() {
         let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
         let data = b"0123456789";

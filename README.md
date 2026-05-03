@@ -141,7 +141,8 @@ make live-soak
 Light-DHT provider discovery smoke:
 
 ```bash
-cargo test -p freedom-ipfs-routing live_light_dht_finds_public_providers -- --ignored --nocapture
+FREEDOM_IPFS_LIVE_DHT_CID=<cid-with-known-amino-dht-providers> \
+  cargo test -p freedom-ipfs-routing live_light_dht_finds_public_providers -- --ignored --nocapture
 ```
 
 Kubo fixture parity smoke, if a Kubo `ipfs` binary is available:

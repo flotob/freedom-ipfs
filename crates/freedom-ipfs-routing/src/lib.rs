@@ -1243,14 +1243,15 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "network smoke test against the public Amino DHT"]
+    #[ignore = "network smoke test against the public Amino DHT; set FREEDOM_IPFS_LIVE_DHT_CID"]
     async fn live_light_dht_finds_public_providers() {
-        let cid = std::env::var("FREEDOM_IPFS_LIVE_DHT_CID")
-            .unwrap_or_else(|_| {
-                "bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u".into()
-            })
-            .parse::<Cid>()
-            .unwrap();
+        let Ok(cid) = std::env::var("FREEDOM_IPFS_LIVE_DHT_CID") else {
+            eprintln!(
+                "skipping public DHT smoke; set FREEDOM_IPFS_LIVE_DHT_CID to a CID with known Amino DHT providers"
+            );
+            return;
+        };
+        let cid = cid.parse::<Cid>().unwrap();
         let providers = LightDhtClient::default()
             .with_query_timeout(Duration::from_secs(30))
             .providers(&cid)

@@ -112,7 +112,7 @@ Results:
 | Minimal Bitswap client | Deterministic in-process libp2p Bitswap tests verify retrieval, cache insert, want-have before want-block for multi-peer sessions, DONT_HAVE handling, cancel behavior, and no-listener client swarm construction. | Done for MVP |
 | Bitswap transports | TCP/WebSocket/QUIC configured; supported address filtering tests. | Done |
 | No block serving to peers | Retrieval implements client-only Bitswap path, does not expose a serving strategy, and host tests assert Bitswap client swarms have no listen addresses. | Done for host; packet-level/device audit still needed for final confidence |
-| Light DHT fallback | Kademlia client mode provider lookup and IPNS record lookup, deterministic local DHT tests, and no-listener/client-mode swarm construction test. | Done |
+| Light DHT fallback | Kademlia client mode provider lookup and IPNS record lookup, deterministic local DHT tests, and no-listener/client-mode swarm construction test. Ignored public DHT smoke requires `FREEDOM_IPFS_LIVE_DHT_CID` because the default live corpus CIDs returned zero public DHT providers. | Done for implementation; public DHT target evidence remains opportunistic |
 | Lazy/idle network behavior | DHT swarms are per lookup; Bitswap sessions are bounded; host tests assert DHT and Bitswap client swarms start without listeners; no background maintenance loops are apparent. | Partially verified; device/network inspection still needed |
 | Routing modes | `auto`, `delegated`, `light_dht`, `offline` paths exist across CLI/mobile/gateway constructors; C ABI and Swift wrapper expose explicit online-gateway restart for Settings-style routing changes. | Done |
 | iOS-first C ABI | `freedom-ipfs-mobile`, `ffi/include/freedom_ipfs.h`, and lifecycle/cache/gateway/preload APIs exist; mobile gateway start/restart accepts only loopback socket addresses. | Done |
@@ -134,8 +134,9 @@ Results:
 
 1. Integrate the Swift wrapper into the Freedom iOS app and wire background/foreground, low-memory, and network-path events using `docs/ios-device-verification.md`.
 2. Profile real devices with Bee running beside this node and record RSS, CPU, startup, active retrieval, and idle network behavior in the runbook evidence table.
-3. Expand the public corpus with larger media cases and documented pass/fail notes.
-4. Add device soaks for live retrieval, background/foreground, and memory growth.
+3. Expand the public corpus with more larger media cases and documented pass/fail notes.
+4. Find or control a stable public-DHT provider target for `FREEDOM_IPFS_LIVE_DHT_CID`.
+5. Add device soaks for live retrieval, background/foreground, and memory growth.
 
 ## Completion Rule
 

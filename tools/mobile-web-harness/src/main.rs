@@ -14,6 +14,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 const DEFAULT_CORPUS: &str = "tools/mobile-web-harness/corpus/mobile-web.json";
+const DEFAULT_GATEWAY_MAX_CONCURRENT_REQUESTS: usize = 8;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -50,7 +51,7 @@ struct Args {
     #[arg(long, default_value_t = 180)]
     timeout_secs: u64,
     /// Gateway request concurrency budget when spawning a gateway.
-    #[arg(long, alias = "gateway-max-concurrent-requests", default_value_t = 4)]
+    #[arg(long, alias = "gateway-max-concurrent-requests", default_value_t = DEFAULT_GATEWAY_MAX_CONCURRENT_REQUESTS)]
     max_concurrent_requests: usize,
     /// Gateway routing mode when spawning a gateway.
     #[arg(long, default_value = "auto")]

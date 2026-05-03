@@ -6,6 +6,7 @@ use freedom_ipfs_core::{
 use freedom_ipfs_namesys::{CloudflareDohResolver, DnsTxtResolver};
 use freedom_ipfs_routing::{Provider, ProviderRoutingClient};
 use freedom_ipfs_store::{CachedProviderRecord, SqliteBlockStore};
+use futures::future::BoxFuture;
 use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use futures::stream::{select_all, FuturesUnordered};
 use futures::StreamExt;
@@ -19,19 +20,19 @@ use libp2p_stream::{Control as StreamControl, IncomingStreams};
 use multihash::Multihash;
 use multihash_codetable::{Code, MultihashDigest};
 use prost::Message;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use url::Url;
 
 const PROVIDER_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const BAD_HTTP_PROVIDER_TTL: Duration = Duration::from_secs(10 * 60);
-const BAD_BITSWAP_PROVIDER_TTL: Duration = Duration::from_secs(2 * 60);
 const HTTP_PROVIDER_TIMEOUT: Duration = Duration::from_secs(20);
 const BITSWAP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 const BITSWAP_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
@@ -113,6 +114,7 @@ pub struct HttpRetriever {
     client: reqwest::Client,
     routing: ProviderRoutingClient,
     store: SqliteBlockStore,
+    bitswap: Arc<tokio::sync::Mutex<Option<SharedBitswapClient>>>,
 }
 
 impl HttpRetriever {
@@ -121,6 +123,7 @@ impl HttpRetriever {
             client: timeout_http_client(HTTP_PROVIDER_TIMEOUT),
             routing: routing.into(),
             store,
+            bitswap: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -279,50 +282,11 @@ impl HttpRetriever {
             return Err(RetrievalError::NoBitswapProviders);
         }
 
-        let mut swarm = build_bitswap_swarm().await?;
-
-        let mut control = swarm.behaviour().stream.new_control();
-        let incoming = accept_bitswap_streams(&mut control)?;
-        let mut peer_ids = Vec::new();
-        for peer in peers {
-            tracing::debug!(peer = %peer.id, addrs = ?peer.addrs, "adding bitswap peer");
-            peer_ids.push(peer.id);
-            for addr in peer.addrs {
-                swarm.add_peer_address(peer.id, addr.clone());
-                let dial_addr = addr.with_p2p(peer.id).unwrap_or_else(|addr| addr);
-                if let Err(err) = swarm.dial(dial_addr) {
-                    tracing::debug!(peer = %peer.id, error = %err, "bitswap dial rejected");
-                }
-            }
-        }
-
-        let swarm_task = tokio::spawn(async move {
-            loop {
-                let _ = swarm.select_next_some().await;
-            }
-        });
-
-        let request_peer_ids = peer_ids.clone();
-        let result = match timeout(Duration::from_secs(45), async {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            fetch_bitswap_over_streams(control, incoming, request_peer_ids, *cid).await
-        })
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => {
-                swarm_task.abort();
-                for peer_id in &peer_ids {
-                    let _ = self.store.mark_bad_provider(
-                        &peer_id.to_string(),
-                        "bitswap request timed out",
-                        BAD_BITSWAP_PROVIDER_TTL,
-                    );
-                }
-                return Err(RetrievalError::BitswapTimeout);
-            }
-        };
-        swarm_task.abort();
+        let result = self
+            .shared_bitswap_client()
+            .await?
+            .fetch(*cid, peers)
+            .await?;
         let result = match result {
             Ok(result) => result,
             Err(err) => return Err(err),
@@ -334,6 +298,16 @@ impl HttpRetriever {
         }
         self.store.put_block(cid, &result.requested_block)?;
         Ok(Block::unchecked(*cid, result.requested_block))
+    }
+
+    async fn shared_bitswap_client(&self) -> Result<SharedBitswapClient> {
+        let mut client = self.bitswap.lock().await;
+        if let Some(client) = client.as_ref() {
+            return Ok(client.clone());
+        }
+        let spawned = SharedBitswapClient::spawn().await?;
+        *client = Some(spawned.clone());
+        Ok(spawned)
     }
 }
 
@@ -407,9 +381,141 @@ struct BitswapPeer {
     addrs: Vec<Multiaddr>,
 }
 
+#[derive(Clone)]
 struct BitswapFetchResult {
     requested_block: Vec<u8>,
     extra_blocks: Vec<(Cid, Vec<u8>)>,
+}
+
+#[derive(Clone)]
+struct SharedBitswapClient {
+    commands: mpsc::Sender<BitswapCommand>,
+}
+
+struct BitswapCommand {
+    cid: Cid,
+    peers: Vec<BitswapPeer>,
+    respond: oneshot::Sender<Result<BitswapFetchResult>>,
+}
+
+impl SharedBitswapClient {
+    async fn spawn() -> Result<Self> {
+        let swarm = build_bitswap_swarm().await?;
+        let mut control = swarm.behaviour().stream.new_control();
+        let incoming = accept_bitswap_streams(&mut control)?;
+        let (commands, receiver) = mpsc::channel(64);
+        tokio::spawn(run_shared_bitswap_swarm(swarm, control, incoming, receiver));
+        Ok(Self { commands })
+    }
+
+    async fn fetch(&self, cid: Cid, peers: Vec<BitswapPeer>) -> Result<Result<BitswapFetchResult>> {
+        let peer_count = peers.len();
+        let (respond, response) = oneshot::channel();
+        self.commands
+            .send(BitswapCommand {
+                cid,
+                peers,
+                respond,
+            })
+            .await
+            .map_err(|_| RetrievalError::Bitswap("shared bitswap swarm stopped".into()))?;
+
+        match timeout(Duration::from_secs(45), response).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) => Err(RetrievalError::Bitswap(
+                "shared bitswap response dropped".into(),
+            )),
+            Err(_) => {
+                tracing::debug!(cid = %cid, peer_count, "bitswap request timed out");
+                Err(RetrievalError::BitswapTimeout)
+            }
+        }
+    }
+}
+
+async fn run_shared_bitswap_swarm(
+    mut swarm: libp2p::Swarm<BitswapBehaviour>,
+    control: StreamControl,
+    incoming: Vec<IncomingStreams>,
+    mut commands: mpsc::Receiver<BitswapCommand>,
+) {
+    let mut incoming = select_all(incoming);
+    let mut fetches = FuturesUnordered::<BoxFuture<'static, Cid>>::new();
+    let mut pending_incoming =
+        HashMap::<Cid, Vec<mpsc::UnboundedSender<BitswapFetchResult>>>::new();
+    let mut pending_counts = HashMap::<Cid, usize>::new();
+
+    loop {
+        tokio::select! {
+            Some(command) = commands.recv() => {
+                let (incoming_result, incoming_results) = mpsc::unbounded_channel();
+                pending_incoming.entry(command.cid).or_default().push(incoming_result);
+                *pending_counts.entry(command.cid).or_default() += 1;
+
+                let mut peer_ids = Vec::new();
+                for peer in command.peers {
+                    tracing::debug!(peer = %peer.id, addrs = ?peer.addrs, "adding bitswap peer");
+                    peer_ids.push(peer.id);
+                    for addr in peer.addrs {
+                        swarm.add_peer_address(peer.id, addr.clone());
+                        let dial_addr = addr.with_p2p(peer.id).unwrap_or_else(|addr| addr);
+                        if let Err(err) = swarm.dial(dial_addr) {
+                            tracing::debug!(peer = %peer.id, error = %err, "bitswap dial rejected");
+                        }
+                    }
+                }
+
+                let control = control.clone();
+                fetches.push(Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let result = fetch_bitswap_with_incoming_streams(
+                        control,
+                        peer_ids,
+                        command.cid,
+                        incoming_results,
+                    ).await;
+                    let _ = command.respond.send(result);
+                    command.cid
+                }));
+            }
+            Some(cid) = fetches.next(), if !fetches.is_empty() => {
+                if let Some(count) = pending_counts.get_mut(&cid) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        pending_counts.remove(&cid);
+                        pending_incoming.remove(&cid);
+                    }
+                }
+            }
+            maybe_stream = incoming.next() => {
+                let Some((_peer, mut stream)) = maybe_stream else {
+                    continue;
+                };
+                match read_bitswap_blocks(&mut stream).await {
+                    Ok(blocks) => {
+                        let mut matched = false;
+                        for cid in pending_incoming.keys().copied().collect::<Vec<_>>() {
+                            if let Some(result) = collect_bitswap_result(&cid, blocks.clone()) {
+                                matched = true;
+                                if let Some(senders) = pending_incoming.get_mut(&cid) {
+                                    senders.retain(|sender| sender.send(result.clone()).is_ok());
+                                }
+                                let _ = write_bitswap_cancel(&mut stream, &cid).await;
+                            }
+                        }
+                        if !matched {
+                            let _ = write_empty_bitswap_message(&mut stream).await;
+                        }
+                    }
+                    Err(err) => {
+                        tracing::debug!(error = %err, "incoming bitswap stream read failed");
+                    }
+                }
+            }
+            _event = swarm.select_next_some() => {}
+            else => break,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -699,13 +805,25 @@ fn accept_bitswap_streams(control: &mut StreamControl) -> Result<Vec<IncomingStr
         .collect()
 }
 
-async fn fetch_bitswap_over_streams(
+async fn fetch_bitswap_with_incoming_streams(
     control: StreamControl,
-    incoming: Vec<IncomingStreams>,
+    peer_ids: Vec<PeerId>,
+    cid: Cid,
+    mut incoming_results: mpsc::UnboundedReceiver<BitswapFetchResult>,
+) -> Result<BitswapFetchResult> {
+    tokio::select! {
+        result = fetch_bitswap_over_outgoing_streams(control, peer_ids, cid) => result,
+        incoming = incoming_results.recv() => incoming.ok_or_else(|| {
+            RetrievalError::Bitswap("incoming bitswap result channel closed".into())
+        }),
+    }
+}
+
+async fn fetch_bitswap_over_outgoing_streams(
+    control: StreamControl,
     peer_ids: Vec<PeerId>,
     cid: Cid,
 ) -> Result<BitswapFetchResult> {
-    let mut incoming = select_all(incoming);
     let mut attempts = FuturesUnordered::new();
     let prefer_want_have = peer_ids.len() > 1;
     for peer_id in peer_ids {
@@ -718,41 +836,21 @@ async fn fetch_bitswap_over_streams(
     }
 
     let mut failures = Vec::new();
-    loop {
-        tokio::select! {
-            maybe_result = attempts.next() => {
-                match maybe_result {
-                    Some(Ok(data)) => return Ok(data),
-                    Some(Err(err)) => failures.push(err),
-                    None => {
-                        let detail = if failures.is_empty() {
-                            "no bitswap request attempts completed".to_string()
-                        } else {
-                            failures.join("; ")
-                        };
-                        return Err(RetrievalError::Bitswap(format!(
-                            "all bitswap stream requests failed: {detail}"
-                        )));
-                    }
-                }
-            }
-            maybe_stream = incoming.next() => {
-                let Some((_peer, mut stream)) = maybe_stream else {
-                    continue;
-                };
-                match read_bitswap_blocks(&mut stream).await {
-                    Ok(blocks) => {
-                        if let Some(result) = collect_bitswap_result(&cid, blocks) {
-                            let _ = write_bitswap_cancel(&mut stream, &cid).await;
-                            return Ok(result);
-                        }
-                        let _ = write_empty_bitswap_message(&mut stream).await;
-                    }
-                    Err(err) => failures.push(err.to_string()),
-                }
-            }
+    while let Some(result) = attempts.next().await {
+        match result {
+            Ok(data) => return Ok(data),
+            Err(err) => failures.push(err),
         }
     }
+
+    let detail = if failures.is_empty() {
+        "no bitswap request attempts completed".to_string()
+    } else {
+        failures.join("; ")
+    };
+    Err(RetrievalError::Bitswap(format!(
+        "all bitswap stream requests failed: {detail}"
+    )))
 }
 
 async fn request_bitswap_block(
@@ -911,6 +1009,14 @@ where
     io.flush().await
 }
 
+async fn write_empty_bitswap_message<T>(io: &mut T) -> io::Result<()>
+where
+    T: AsyncWrite + Unpin,
+{
+    write_length_prefixed(io, &BitswapMessage::default().encode_to_vec()).await?;
+    io.flush().await
+}
+
 fn bitswap_want_message(cid: &Cid, cancel: bool) -> BitswapMessage {
     bitswap_want_message_with_type(cid, cancel, WantType::Block)
 }
@@ -934,14 +1040,6 @@ fn bitswap_want_message_with_type(cid: &Cid, cancel: bool, want_type: WantType) 
         pending_bytes: 0,
         tokens: Vec::new(),
     }
-}
-
-async fn write_empty_bitswap_message<T>(io: &mut T) -> io::Result<()>
-where
-    T: AsyncWrite + Unpin,
-{
-    write_length_prefixed(io, &BitswapMessage::default().encode_to_vec()).await?;
-    io.flush().await
 }
 
 async fn read_bitswap_blocks<T>(io: &mut T) -> io::Result<Vec<ReceivedBitswapBlock>>
@@ -1381,6 +1479,49 @@ mod bitswap_tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn shared_bitswap_client_handles_repeated_block_fetches() {
+        let first = b"first shared bitswap block";
+        let second = b"second shared bitswap block";
+        let first_cid = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, first);
+        let second_cid = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, second);
+        let (peer_id, addr, swarm_task, stream_task) = spawn_multi_block_bitswap_peer(vec![
+            (first_cid, first.to_vec()),
+            (second_cid, second.to_vec()),
+        ])
+        .await;
+
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let retriever = HttpRetriever::new(
+            freedom_ipfs_routing::DelegatedRoutingClient::new("http://127.0.0.1:9/routing/v1"),
+            store.clone(),
+        );
+        let provider =
+            Provider::from_parts(Some(peer_id.to_string()), vec![addr.to_string()]).unwrap();
+
+        let (block, source) = retriever
+            .fetch_from_providers_with_source(&first_cid, std::slice::from_ref(&provider))
+            .await
+            .unwrap();
+        assert_eq!(source, RetrievalSource::Bitswap);
+        assert_eq!(block.data(), first);
+
+        let (block, source) = retriever
+            .fetch_from_providers_with_source(&second_cid, &[provider])
+            .await
+            .unwrap();
+        assert_eq!(source, RetrievalSource::Bitswap);
+        assert_eq!(block.data(), second);
+        assert_eq!(store.get(&first_cid).unwrap().unwrap().data(), first);
+        assert_eq!(store.get(&second_cid).unwrap().unwrap().data(), second);
+
+        tokio::time::timeout(Duration::from_secs(5), stream_task)
+            .await
+            .unwrap()
+            .unwrap();
+        swarm_task.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     #[ignore = "requires KUBO_BIN=/path/to/ipfs; starts a loopback Kubo daemon"]
     async fn kubo_bitswap_retrieves_raw_block_from_loopback_daemon() {
         let kubo = std::env::var("KUBO_BIN").expect("set KUBO_BIN=/path/to/ipfs");
@@ -1768,6 +1909,88 @@ mod bitswap_tests {
             let entry = cancel.wantlist.unwrap().entries.remove(0);
             assert_eq!(entry.block, cid.to_bytes());
             assert!(entry.cancel);
+        });
+
+        (peer_id, addr, swarm_task, stream_task)
+    }
+
+    async fn spawn_multi_block_bitswap_peer(
+        blocks: Vec<(Cid, Vec<u8>)>,
+    ) -> (
+        PeerId,
+        Multiaddr,
+        tokio::task::JoinHandle<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let mut swarm = SwarmBuilder::with_new_identity()
+            .with_tokio()
+            .with_tcp(
+                tcp::Config::default(),
+                (tls::Config::new, noise::Config::new),
+                yamux::Config::default,
+            )
+            .unwrap()
+            .with_behaviour(|_| libp2p_stream::Behaviour::new())
+            .unwrap()
+            .build();
+        let peer_id = *swarm.local_peer_id();
+        let mut control = swarm.behaviour().new_control();
+        let mut incoming = control
+            .accept(StreamProtocol::new("/ipfs/bitswap/1.2.0"))
+            .unwrap();
+        swarm
+            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .unwrap();
+        let addr = loop {
+            if let libp2p::swarm::SwarmEvent::NewListenAddr { address, .. } =
+                swarm.select_next_some().await
+            {
+                break address;
+            }
+        };
+
+        let swarm_task = tokio::spawn(async move {
+            loop {
+                let _ = swarm.select_next_some().await;
+            }
+        });
+        let stream_task = tokio::spawn(async move {
+            let mut blocks = blocks.into_iter().collect::<HashMap<_, _>>();
+            while !blocks.is_empty() {
+                let (_peer, mut stream) = incoming.next().await.unwrap();
+                let want_bytes = read_length_prefixed(&mut stream, 1024).await.unwrap();
+                let want = BitswapMessage::decode(want_bytes.as_slice()).unwrap();
+                let entry = want.wantlist.unwrap().entries.remove(0);
+                assert!(!entry.cancel);
+                let mut cid_bytes = entry.block.as_slice();
+                let cid = Cid::read_bytes(&mut cid_bytes).unwrap();
+                let data = blocks.remove(&cid).expect("requested known block");
+
+                let response = BitswapMessage {
+                    payload: vec![BlockPayload {
+                        prefix: bitswap_payload_prefix(&cid),
+                        data,
+                        tokens: Vec::new(),
+                    }],
+                    ..BitswapMessage::default()
+                };
+                write_length_prefixed(&mut stream, &response.encode_to_vec())
+                    .await
+                    .unwrap();
+                stream.flush().await.unwrap();
+
+                let cancel_bytes = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    read_length_prefixed(&mut stream, 1024),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                let cancel = BitswapMessage::decode(cancel_bytes.as_slice()).unwrap();
+                let entry = cancel.wantlist.unwrap().entries.remove(0);
+                assert_eq!(entry.block, cid.to_bytes());
+                assert!(entry.cancel);
+            }
         });
 
         (peer_id, addr, swarm_task, stream_task)

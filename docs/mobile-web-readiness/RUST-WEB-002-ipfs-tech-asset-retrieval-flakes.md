@@ -2,8 +2,17 @@
 
 ## Status
 
-Open. Reproduced against the standalone Rust gateway on the
-`codex/mobile-web-readiness-lab` branch.
+Mitigated on `agent/mobile-web-reliability-and-latency`.
+
+The gateway no longer creates a fresh Bitswap swarm for each missing block.
+`HttpRetriever` now keeps one shared, bounded Bitswap swarm per retriever so page
+loads can reuse provider connections across root HTML and asset block reads. The
+shared client also routes incoming Bitswap streams to active block requests,
+which preserved the behavior that the previous one-shot swarms relied on.
+
+The harness now supports repeat/fresh-gateway measurement and groups failures by
+status/error, making this class of regression visible without hand-counting
+terminal output.
 
 ## Scenario
 
@@ -49,6 +58,50 @@ FAIL ipfs-tech-page-assets --asset-concurrency 2
   - /ipns/ipfs.tech/_nuxt/AKg0Znx-.js -> 504 after 10455ms
 ```
 
+Repeat-mode baseline on this branch before the retrieval fix:
+
+```text
+cargo run -p mobile-web-harness -- \
+  --case ipfs-tech-page-assets \
+  --repeat 5 \
+  --fresh-gateway-per-run \
+  --output /tmp/ipfs-tech-cold-before.json
+
+passed=0 failed=5 pass_rate=0.0%
+root_ttfb p50=11747ms p90=12193ms p95=12193ms max=12193ms
+asset_ttfb p50=5593ms p90=12510ms p95=30638ms max=42600ms
+failed asset kinds: script=11, stylesheet=2
+```
+
+After keeping a shared Bitswap swarm per retriever and aligning the harness
+spawned-gateway request cap with the gateway default of 8:
+
+```text
+cargo run -p mobile-web-harness -- \
+  --case ipfs-tech-page-assets \
+  --repeat 5 \
+  --fresh-gateway-per-run \
+  --output /tmp/ipfs-tech-cold-after-shared-default8-5.json
+
+passed=5 failed=0 pass_rate=100.0%
+root_ttfb p50=11772ms p90=11912ms p95=11912ms max=11912ms
+asset_ttfb p50=5611ms p90=6161ms p95=11421ms max=11788ms
+measured run totals: 45614ms, 46783ms, 46637ms, 46296ms, 46292ms
+```
+
+Warm-cache behavior against one reused gateway remained fast:
+
+```text
+cargo run -p mobile-web-harness -- \
+  --case ipfs-tech-page-assets \
+  --repeat 5 \
+  --output /tmp/ipfs-tech-repeat-after-shared-default8.json
+
+passed=5 failed=0 pass_rate=100.0%
+first measured run total=43202ms
+subsequent measured run totals: 355ms, 254ms, 354ms, 427ms
+```
+
 ## Expected
 
 All same-origin JS/CSS/image/font/media assets discovered from a reachable page
@@ -68,5 +121,12 @@ the Rust node feel "not yet Kubo-like" even when the root HTML request succeeds.
 - The failed URLs vary between runs, suggesting provider/retrieval reliability,
   timeout behavior, retry/fallback behavior, or cache/provider coalescing rather
   than one permanently bad path.
-- A later fix should make repeated `ipfs-tech-page-assets` runs pass without
-  raising `max_failed_assets`.
+- The main confirmed issue was Bitswap churn: every cold missing block built a
+  new libp2p swarm, redialed providers, and discarded any useful connections
+  immediately after the block request. Full-page asset fan-out amplified this
+  into flaky `504` responses.
+- Marking every Bitswap peer as bad after one block timeout was also too
+  aggressive for page workloads, because a timeout in one short-lived swarm does
+  not prove that provider is bad for all nearby blocks.
+- A later fix should reduce cold full-page time substantially. Reliability is
+  better, but a ~46s cold `ipfs.tech` load is still not a mobile-quality target.

@@ -49,7 +49,8 @@ TTFB/total-time p50/p90/p95/max summaries, failed asset kinds, and failed URLs
 grouped by status/error. Use `--warmup-runs` to separate warm-cache behavior, or
 `--fresh-gateway-per-run` when measuring repeated cold gateways. Spawning uses
 the same routing, DHT, request-concurrency, and asset-concurrency knobs as the
-single-run harness.
+single-run harness, with an 8-request spawned-gateway default matching the
+standalone gateway.
 
 The default live corpus is `tools/mobile-web-harness/corpus/mobile-web.json`.
 It captures browser-facing checks such as status, MIME type, byte ranges,
@@ -64,8 +65,9 @@ status, MIME type, byte count, and timing.
 
 - `RUST-WEB-001`: root UnixFS HTML could be served as `application/octet-stream`
   when the path lacked an extension. Fixed in this branch with a regression test.
-- `RUST-WEB-002`: `ipfs.tech` page asset crawls intermittently lose JS chunks to
-  gateway `502` / `504` responses. Open.
+- `RUST-WEB-002`: `ipfs.tech` page asset crawls intermittently lost JS chunks to
+  gateway `502` / `504` responses. Mitigated by the shared Bitswap client and
+  harness repeat reporting; cold latency remains a follow-up bottleneck.
 
 ## Next Scenario Targets
 

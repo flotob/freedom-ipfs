@@ -13,6 +13,7 @@ public enum FreedomIpfsRoutingMode: UInt32, Sendable {
     case auto = 0
     case delegated = 1
     case lightDht = 2
+    case offline = 3
 }
 
 public struct FreedomIpfsStats: Equatable, Sendable {

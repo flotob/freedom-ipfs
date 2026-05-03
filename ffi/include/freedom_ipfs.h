@@ -47,6 +47,7 @@ typedef struct FreedomIpfsDiagnostics {
 #define FREEDOM_IPFS_ROUTING_MODE_AUTO ((uint32_t)0)
 #define FREEDOM_IPFS_ROUTING_MODE_DELEGATED ((uint32_t)1)
 #define FREEDOM_IPFS_ROUTING_MODE_LIGHT_DHT ((uint32_t)2)
+#define FREEDOM_IPFS_ROUTING_MODE_OFFLINE ((uint32_t)3)
 
 char *freedom_ipfs_version(void);
 void freedom_ipfs_string_free(char *ptr);

@@ -430,6 +430,30 @@ enum FreedomIpfsSmoke {{
               !reader.diagnostics.isBackgrounded else {{
             fatalError("unexpected diagnostics after routing restart: \(reader.diagnostics)")
         }}
+        try reader.setRoutingMode(.offline, maxConcurrentRequests: 1)
+        guard reader.gatewayURL != nil,
+              reader.diagnostics.isGatewayRunning,
+              reader.activePreloadCount == 0 else {{
+            fatalError("offline routing mode did not leave the gateway running")
+        }}
+        guard let offlineURL = reader.localGatewayURL(for: "/ipfs/{fixture_cid}") else {{
+            fatalError("offline fixture gateway URL missing")
+        }}
+        let (offlineData, offlineResponse) = try await URLSession.shared.data(from: offlineURL)
+        guard (offlineResponse as? HTTPURLResponse)?.statusCode == 200,
+              offlineData == Data([{fixture_body}]) else {{
+            fatalError("fixture request after offline routing restart failed")
+        }}
+        guard reader.routingStats == FreedomIpfsRoutingCounters(
+            delegatedProviderLookups: 0,
+            delegatedProviderResults: 0,
+            delegatedProviderErrors: 0,
+            dhtProviderLookups: 0,
+            dhtProviderResults: 0,
+            dhtProviderErrors: 0
+        ) else {{
+            fatalError("offline routing mode unexpectedly performed routing: \(reader.routingStats)")
+        }}
         _ = reader.stopGateway()
     }}
 }}

@@ -28,6 +28,7 @@ const CACHE_DB_FILE: &str = "freedom-ipfs.sqlite3";
 const ROUTING_MODE_AUTO: u32 = 0;
 const ROUTING_MODE_DELEGATED: u32 = 1;
 const ROUTING_MODE_LIGHT_DHT: u32 = 2;
+const ROUTING_MODE_OFFLINE: u32 = 3;
 const PRELOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -575,7 +576,7 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config_v2(
     if gateway_is_running(node) {
         return true;
     }
-    let Some(parts) = online_gateway_router(
+    let Some(parts) = gateway_router_for_routing_mode(
         node,
         addr,
         delegated_router,
@@ -621,7 +622,7 @@ pub unsafe extern "C" fn freedom_ipfs_node_restart_gateway_online_with_config_v2
         return false;
     }
     let node = &*ptr;
-    let Some(parts) = online_gateway_router(
+    let Some(parts) = gateway_router_for_routing_mode(
         node,
         addr,
         delegated_router,
@@ -651,7 +652,7 @@ struct OnlineGatewayParts {
     routing_stats: RoutingStatsHandle,
 }
 
-unsafe fn online_gateway_router(
+unsafe fn gateway_router_for_routing_mode(
     node: &FreedomIpfsNode,
     addr: *const c_char,
     delegated_router: *const c_char,
@@ -661,6 +662,29 @@ unsafe fn online_gateway_router(
     dht_max_providers: usize,
 ) -> Option<OnlineGatewayParts> {
     let addr = parse_loopback_gateway_addr(addr)?;
+    let gateway_config = if max_concurrent_requests == 0 {
+        freedom_ipfs_gateway::GatewayConfig::default()
+    } else {
+        freedom_ipfs_gateway::GatewayConfig::new(max_concurrent_requests)
+    };
+    if routing_mode == ROUTING_MODE_OFFLINE {
+        let routing_stats = RoutingStatsHandle::default();
+        let provider = FetchingBlockProvider::new(
+            node.store.clone(),
+            ProviderRoutingClient::Offline.with_stats(routing_stats.clone()),
+        );
+        let router = freedom_ipfs_gateway::router_with_provider_config(
+            Arc::new(provider.clone()),
+            gateway_config,
+        );
+        return Some(OnlineGatewayParts {
+            addr,
+            router,
+            retrieval_provider: provider,
+            routing_stats,
+        });
+    }
+
     let delegated_routers = if delegated_router.is_null() {
         DEFAULT_DELEGATED_ROUTER.to_string()
     } else {
@@ -680,11 +704,6 @@ unsafe fn online_gateway_router(
     let routing_stats = RoutingStatsHandle::default();
     let routing = routing.with_stats(routing_stats.clone());
     let provider = FetchingBlockProvider::new(node.store.clone(), routing);
-    let gateway_config = if max_concurrent_requests == 0 {
-        freedom_ipfs_gateway::GatewayConfig::default()
-    } else {
-        freedom_ipfs_gateway::GatewayConfig::new(max_concurrent_requests)
-    };
     let name_resolver = CachedNameResolver::new(DefaultNameResolver::new(
         CloudflareDohResolver::default(),
         ipns_resolver(
@@ -1100,6 +1119,51 @@ mod tests {
             ));
 
             assert_gateway_health(node);
+
+            assert!(freedom_ipfs_node_stop_gateway(node));
+            freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
+    fn offline_routing_mode_is_cache_only() {
+        unsafe {
+            let node = freedom_ipfs_node_new_in_memory();
+            assert!(!node.is_null());
+
+            let data = b"offline routing mode";
+            let cid = cid_from_data(CODEC_RAW, data);
+            (*node).store.put_block(&cid, data).unwrap();
+
+            let addr = CString::new("127.0.0.1:0").unwrap();
+            assert!(freedom_ipfs_node_start_gateway_online_with_config_v2(
+                node,
+                addr.as_ptr(),
+                ptr::null(),
+                ROUTING_MODE_OFFLINE,
+                1,
+                0,
+                0,
+            ));
+
+            assert_gateway_health(node);
+            assert_gateway_path(node, &format!("/ipfs/{cid}"), data);
+            let ipns_response = gateway_response(node, "/ipns/example.com");
+            assert!(ipns_response.contains("404 Not Found"), "{ipns_response}");
+
+            let retrieval = freedom_ipfs_node_retrieval_stats(node);
+            assert!(retrieval.cache_hits > 0);
+            assert_eq!(retrieval.http_provider_blocks, 0);
+            assert_eq!(retrieval.bitswap_blocks, 0);
+            assert_eq!(
+                freedom_ipfs_node_routing_stats(node),
+                FreedomIpfsRoutingStats::default()
+            );
+            let diagnostics = freedom_ipfs_node_diagnostics(node);
+            assert!(diagnostics.cache_hits > 0);
+            assert_eq!(diagnostics.delegated_provider_lookups, 0);
+            assert_eq!(diagnostics.dht_provider_lookups, 0);
+            assert_eq!(diagnostics.gateway_running, 1);
 
             assert!(freedom_ipfs_node_stop_gateway(node));
             freedom_ipfs_node_free(node);

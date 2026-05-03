@@ -159,6 +159,7 @@ impl RoutingStatsHandle {
 
 #[derive(Debug, Clone)]
 pub enum ProviderRoutingClient {
+    Offline,
     Delegated(DelegatedRoutingClient),
     Auto(AutoRoutingClient),
     LightDht(LightDhtClient),
@@ -171,6 +172,7 @@ pub enum ProviderRoutingClient {
 impl ProviderRoutingClient {
     pub async fn providers(&self, cid: &Cid) -> Result<Vec<Provider>> {
         match self {
+            Self::Offline => Ok(Vec::new()),
             Self::Delegated(client) => client.providers(cid).await,
             Self::Auto(client) => client.providers(cid).await,
             Self::LightDht(client) => client.providers(cid).await,
@@ -194,6 +196,7 @@ impl ProviderRoutingClient {
         stats: &RoutingStatsHandle,
     ) -> Result<Vec<Provider>> {
         match self {
+            Self::Offline => Ok(Vec::new()),
             Self::Delegated(client) => {
                 stats.record_delegated_lookup();
                 match client.providers(cid).await {

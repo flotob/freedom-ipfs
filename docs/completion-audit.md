@@ -87,7 +87,7 @@ Results:
 | Routing modes | `auto`, `delegated`, `light_dht`, `offline` paths exist across CLI/mobile/gateway constructors. | Done |
 | iOS-first C ABI | `freedom-ipfs-mobile`, `ffi/include/freedom_ipfs.h`, and lifecycle/cache/gateway/preload APIs exist. | Done |
 | Swift wrapper | `ffi/swift/FreedomIpfsReader.swift` exists with gateway start/stop, stats, cache, lifecycle, preload/cancel, multi-router, and local URL mapping helpers. | Source present; not compiled here |
-| XCFramework build skeleton | `xtask build-xcframework` builds iOS targets and packages headers/module map on macOS. | Skeleton done; not produced on Linux |
+| XCFramework build skeleton | `xtask build-xcframework` builds iOS targets, packages headers/module map, and checks artifact structure/exported symbols on macOS. | Skeleton done; not produced on Linux |
 | XCFramework verifier | `xtask verify-xcframework` checks slices, headers, module maps, exported symbols, and a simulator Swift smoke on macOS. | Skeleton done; not run on macOS |
 | Simulator smoke link/start | `xtask verify-xcframework` builds a Swift simulator executable that imports a generated CAR fixture, starts the local gateway, fetches the fixture through loopback, and stops the gateway using `simctl spawn booted`. | Staged; needs macOS/Xcode with a booted simulator |
 | Real iPhone resource target under 60 MiB RSS beside Bee | Required by spec. | Missing, needs device |

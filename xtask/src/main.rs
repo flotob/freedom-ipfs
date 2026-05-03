@@ -106,7 +106,7 @@ fn build_xcframework() -> Result<()> {
         "xcodebuild -create-xcframework",
     )?;
 
-    verify_xcframework(&framework)?;
+    verify_xcframework(&framework, false)?;
     println!("created {}", framework.display());
     Ok(())
 }
@@ -118,9 +118,10 @@ fn verify_xcframework_command() -> Result<()> {
             env::consts::OS
         );
     }
-    verify_xcframework(&PathBuf::from(
-        "target/ios-xcframework/FreedomIpfs.xcframework",
-    ))
+    verify_xcframework(
+        &PathBuf::from("target/ios-xcframework/FreedomIpfs.xcframework"),
+        true,
+    )
 }
 
 fn stage_headers(headers_dir: &Path) -> Result<()> {
@@ -141,7 +142,7 @@ fn stage_headers(headers_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn verify_xcframework(framework: &Path) -> Result<()> {
+fn verify_xcframework(framework: &Path, run_simulator_smoke: bool) -> Result<()> {
     if !framework.exists() {
         bail!("{} does not exist", framework.display());
     }
@@ -179,7 +180,9 @@ fn verify_xcframework(framework: &Path) -> Result<()> {
         verify_exported_symbols(library)?;
     }
 
-    verify_swift_simulator_smoke(framework, &libraries)?;
+    if run_simulator_smoke {
+        verify_swift_simulator_smoke(framework, &libraries)?;
+    }
 
     println!("verified {}", framework.display());
     Ok(())

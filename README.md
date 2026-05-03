@@ -89,13 +89,13 @@ Tune light-DHT fallback budgets when testing mobile resource behavior:
 cargo run -p freedom-ipfs-gateway -- --online --dht-query-timeout-secs 15 --dht-max-providers 8
 ```
 
-On macOS with Xcode command line tools installed, build the iOS static libraries and XCFramework:
+On macOS with Xcode command line tools installed, build the iOS static libraries and XCFramework. This also checks the artifact structure and exported C symbols:
 
 ```bash
 cargo run -p xtask -- build-xcframework
 ```
 
-Verify an existing XCFramework artifact:
+Verify an existing XCFramework artifact. This requires a booted iOS simulator because it also runs the Swift gateway smoke through `simctl spawn booted`:
 
 ```bash
 cargo run -p xtask -- verify-xcframework

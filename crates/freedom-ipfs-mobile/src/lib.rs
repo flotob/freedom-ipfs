@@ -1,3 +1,4 @@
+use freedom_ipfs_core::parse_cid;
 use freedom_ipfs_namesys::{
     CachedNameResolver, CloudflareDohResolver, DefaultNameResolver, DelegatedIpnsResolver,
     FallbackIpnsResolver, IpnsResolver,
@@ -580,8 +581,9 @@ pub unsafe extern "C" fn freedom_ipfs_node_gateway_url(ptr: *mut FreedomIpfsNode
 /// # Safety
 ///
 /// `ptr` must be a valid node pointer. `path` must point to a NUL-terminated
-/// UTF-8 `/ipfs/...` or `/ipns/...` gateway path for the duration of this call.
-/// Returns 0 when the gateway is not running or the path is invalid.
+/// UTF-8 path or URI for the duration of this call. Accepted inputs are
+/// `/ipfs/...`, `/ipns/...`, `ipfs://...`, `ipns://...`, or a bare CID. Returns
+/// 0 when the gateway is not running or the path is invalid.
 #[no_mangle]
 pub unsafe extern "C" fn freedom_ipfs_node_preload_path(
     ptr: *mut FreedomIpfsNode,
@@ -592,7 +594,10 @@ pub unsafe extern "C" fn freedom_ipfs_node_preload_path(
     }
     let node = &*ptr;
     let path = match CStr::from_ptr(path).to_str() {
-        Ok(path) if is_preload_path(path) => path.to_string(),
+        Ok(path) => match normalize_preload_path(path) {
+            Some(path) => path,
+            None => return 0,
+        },
         _ => return 0,
     };
     let Ok(gateway_addr) = node.gateway_addr.lock() else {
@@ -688,8 +693,24 @@ fn prune_finished_preloads(node: &FreedomIpfsNode) {
     }
 }
 
-fn is_preload_path(path: &str) -> bool {
-    path.starts_with("/ipfs/") || path.starts_with("/ipns/")
+fn normalize_preload_path(path: &str) -> Option<String> {
+    let path = path.trim();
+    if path.starts_with("/ipfs/") || path.starts_with("/ipns/") {
+        return Some(path.to_string());
+    }
+    if let Some(rest) = path.strip_prefix("ipfs://") {
+        let rest = rest.trim_start_matches('/');
+        if !rest.is_empty() {
+            return Some(format!("/ipfs/{rest}"));
+        }
+    }
+    if let Some(rest) = path.strip_prefix("ipns://") {
+        let rest = rest.trim_start_matches('/');
+        if !rest.is_empty() {
+            return Some(format!("/ipns/{rest}"));
+        }
+    }
+    parse_cid(path).ok().map(|cid| format!("/ipfs/{cid}"))
 }
 
 #[cfg(test)]
@@ -839,6 +860,30 @@ mod tests {
 
             freedom_ipfs_node_free(node);
         }
+    }
+
+    #[test]
+    fn normalizes_preload_paths_and_uris() {
+        let cid = cid_from_data(CODEC_RAW, b"preload cid");
+
+        assert_eq!(
+            normalize_preload_path(&format!("{cid}")),
+            Some(format!("/ipfs/{cid}"))
+        );
+        assert_eq!(
+            normalize_preload_path(&format!("ipfs://{cid}/index.html?x=1")),
+            Some(format!("/ipfs/{cid}/index.html?x=1"))
+        );
+        assert_eq!(
+            normalize_preload_path("ipns://example.com/site"),
+            Some("/ipns/example.com/site".to_string())
+        );
+        assert_eq!(
+            normalize_preload_path(" /ipfs/bafyfixture "),
+            Some("/ipfs/bafyfixture".to_string())
+        );
+        assert_eq!(normalize_preload_path("https://example.com/ipfs/no"), None);
+        assert_eq!(normalize_preload_path("ipfs://"), None);
     }
 
     #[test]

@@ -91,7 +91,7 @@ Results:
 | Simulator smoke link/start | Required by spec. | Missing, needs macOS/Xcode |
 | Real iPhone resource target under 60 MiB RSS beside Bee | Required by spec. | Missing, needs device |
 | Lifecycle hooks | ABI/Swift hooks for background, foreground, low memory, network change; unit tests cover behavior. | Implemented; host-app/device wiring unverified |
-| Browser integration helpers | Local gateway URL, `ipfs://`/`ipns://`/gateway-style URL mapping helpers, preload/cancel, cache stats/control. | Source present; Swift compile/link unverified |
+| Browser integration helpers | Local gateway URL, `ipfs://`/`ipns://`/gateway-style URL mapping helpers, preload/cancel with path/URI/bare-CID normalization, cache stats/control. | Source present; Swift compile/link unverified |
 | Live ENS-backed smoke | `make live-smoke` resolves `vitalik.eth` and `daicowtf.eth` at runtime and fetches through local gateway. | Done on Linux |
 | Public CID corpus | Small checked-in corpus and opt-in smoke. | Started; should grow |
 | Kubo parity | Deterministic Kubo-generated UnixFS/HAMT parity tests. | Started; should grow |

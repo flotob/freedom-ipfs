@@ -4,7 +4,7 @@ Last audited: 2026-05-03
 
 Repository: `github.com/flotob/freedom-ipfs`
 
-Implementation audited code head: `766b26223a41c245f30d9959a936497699b8be0e`; latest Apple-platform implementation/workflow CI evidence is recorded below by head SHA
+Implementation audited code head: `083945e49acda74a6130f594ae932d849d91c8ec`; latest Apple-platform implementation/workflow CI evidence is recorded below by head SHA
 
 Spec: `/root/codex/mobile-rust-ipfs-node-spec.md`
 
@@ -34,9 +34,9 @@ make live-corpus
 Apple-platform CI evidence:
 
 ```text
-GitHub Actions iOS XCFramework run 25278547560 passed on 2026-05-03
-Head SHA: 766b26223a41c245f30d9959a936497699b8be0e
-Job URL: https://github.com/flotob/freedom-ipfs/actions/runs/25278547560/job/74112085566
+GitHub Actions iOS XCFramework run 25278943992 passed on 2026-05-03
+Head SHA: 083945e49acda74a6130f594ae932d849d91c8ec
+Job URL: https://github.com/flotob/freedom-ipfs/actions/runs/25278943992/job/74113075524
 ```
 
 Earlier checks for unchanged areas:
@@ -67,7 +67,7 @@ Results:
 - Kubo parity passed for generated CIDv1/raw-leaf UnixFS site files, CIDv0/DAG-PB UnixFS site files, empty files, percent-encoded browser paths, directory-index fallback, fixed/open-ended/suffix range reads, full/ranged `HEAD` requests, and HAMT directories.
 - Local cached-gateway soak passed: `500` requests, Linux RSS from `8960` KiB to `13312` KiB.
 - Host live-retrieval soak passed: `2` cold gateway rounds against `vitalik-home` and `daicowtf-home`, `883802` total bytes, retrieval stats `cache_hits=50 http_provider_blocks=4 bitswap_blocks=6`, Linux RSS from `11264` KiB to `42240` KiB.
-- GitHub Actions `iOS XCFramework` passed on `macos-15` with Xcode 16.4 using `actions/checkout@v6` and `actions/upload-artifact@v7`, both Node 24-backed releases. It built the real `FreedomIpfs.xcframework`, verified headers/module maps/exported C symbols, including the routing restart and mobile telemetry exports, booted an iOS simulator, compiled and linked the Swift wrapper smoke, asserted that Swift gateway start rejects a non-loopback bind address, started the local gateway in the simulator via `simctl spawn booted`, fetched the CAR fixture through loopback, checked Swift-visible cached retrieval/routing counters, stopped the gateway, built and installed a generated UIKit/WebKit simulator app, imported the same CAR fixture, started the gateway from app process, fetched `/ipfs/{cid}` through loopback with `URLSession`, rendered the HTML in `WKWebView`, verified the DOM marker with JavaScript, and uploaded `FreedomIpfs.xcframework` as artifact ID `6770540940` (`60063774` bytes).
+- GitHub Actions `iOS XCFramework` passed on `macos-15` with Xcode 16.4 using `actions/checkout@v6` and `actions/upload-artifact@v7`, both Node 24-backed releases. It built the real `FreedomIpfs.xcframework`, verified headers/module maps/exported C symbols, including the routing restart and mobile telemetry/diagnostics exports, booted an iOS simulator, compiled and linked the Swift wrapper smoke, asserted that Swift gateway start rejects a non-loopback bind address, started the local gateway in the simulator via `simctl spawn booted`, fetched the CAR fixture through loopback, checked Swift-visible cached retrieval/routing counters and the combined diagnostics snapshot, stopped the gateway, built and installed a generated UIKit/WebKit simulator app, imported the same CAR fixture, started the gateway from app process, fetched `/ipfs/{cid}` through loopback with `URLSession`, rendered the HTML in `WKWebView`, verified the DOM marker with JavaScript, and uploaded `FreedomIpfs.xcframework` as artifact ID `6770647062` (`60054298` bytes).
 - `xtask build-xcframework` and `xtask verify-xcframework` still correctly refuse to run on Linux with the macOS/Xcode requirement message.
 
 ## Prompt-To-Artifact Checklist
@@ -118,10 +118,10 @@ Results:
 | Lazy/idle network behavior | DHT swarms are per lookup; Bitswap sessions are bounded; host tests assert DHT and Bitswap client swarms start without listeners; no background maintenance loops are apparent. | Partially verified; device/network inspection still needed |
 | Routing modes | `auto`, `delegated`, `light_dht`, `offline` paths exist across CLI/mobile/gateway constructors; C ABI and Swift wrapper expose explicit online-gateway restart for Settings-style routing changes. | Done |
 | iOS-first C ABI | `freedom-ipfs-mobile`, `ffi/include/freedom_ipfs.h`, lifecycle/cache/gateway/preload APIs, retrieval/routing counter APIs, combined diagnostics snapshot, and active preload count API exist; mobile gateway start/restart accepts only loopback socket addresses. | Done |
-| Swift wrapper | `ffi/swift/FreedomIpfsReader.swift` exists with gateway start/stop/restart, routing-mode change, cache stats, retrieval/routing counters, combined diagnostics snapshot, active preload count, cache, lifecycle, preload/cancel, multi-router, and local URL mapping helpers; GitHub Actions Swift simulator smoke compiled and linked it against the XCFramework, checked non-loopback bind rejection, checked Swift-visible cached retrieval/routing counters, and a generated UIKit/WebKit app rendered a local gateway fixture through `WKWebView`. | Done for simulator smoke; Freedom app integration unverified |
+| Swift wrapper | `ffi/swift/FreedomIpfsReader.swift` exists with gateway start/stop/restart, routing-mode change, cache stats, retrieval/routing counters, combined diagnostics snapshot, active preload count, cache, lifecycle, preload/cancel, multi-router, and local URL mapping helpers; GitHub Actions Swift simulator smoke compiled and linked it against the XCFramework, checked non-loopback bind rejection, checked Swift-visible cached retrieval/routing counters and diagnostics, and a generated UIKit/WebKit app rendered a local gateway fixture through `WKWebView`. | Done for simulator smoke; Freedom app integration unverified |
 | XCFramework build skeleton | `xtask build-xcframework` builds iOS targets, packages headers/module map, checks artifact structure/exported symbols using Rust `llvm-nm`, and produced `FreedomIpfs.xcframework` in GitHub Actions. | Done in macOS CI |
-| XCFramework verifier | `xtask verify-xcframework` checks slices, headers, module maps, exported symbols including the routing restart and telemetry exports, a simulator Swift command-line gateway smoke, and a generated simulator app-rendering smoke on macOS; GitHub Actions run `25278547560` passed. | Done in macOS CI |
-| Simulator smoke link/start/render | `xtask verify-xcframework` builds a Swift simulator executable that checks non-loopback bind rejection, imports a generated CAR fixture, starts the local gateway, fetches the fixture through loopback, checks Swift-visible cached retrieval/routing counters, and stops the gateway using `simctl spawn booted`; it also builds, installs, and launches a generated UIKit/WebKit app that imports the fixture, serves it through the local gateway, and verifies `WKWebView` DOM content; GitHub Actions run `25278547560` passed. | Done in macOS CI |
+| XCFramework verifier | `xtask verify-xcframework` checks slices, headers, module maps, exported symbols including the routing restart and telemetry/diagnostics exports, a simulator Swift command-line gateway smoke, and a generated simulator app-rendering smoke on macOS; GitHub Actions run `25278943992` passed. | Done in macOS CI |
+| Simulator smoke link/start/render | `xtask verify-xcframework` builds a Swift simulator executable that checks non-loopback bind rejection, imports a generated CAR fixture, starts the local gateway, fetches the fixture through loopback, checks Swift-visible cached retrieval/routing counters and diagnostics, and stops the gateway using `simctl spawn booted`; it also builds, installs, and launches a generated UIKit/WebKit app that imports the fixture, serves it through the local gateway, and verifies `WKWebView` DOM content; GitHub Actions run `25278943992` passed. | Done in macOS CI |
 | Real iPhone resource target under 60 MiB RSS beside Bee | Required by spec. | Missing, needs device |
 | Lifecycle hooks | ABI/Swift hooks for background, foreground, low memory, network change; unit tests cover behavior. | Implemented; host-app/device wiring unverified |
 | Device/app verification runbook | `docs/ios-device-verification.md` defines app wiring, real-device matrix, Bee co-residency runs, live content cases, range checks, lifecycle checks, and acceptance targets. | Done; evidence still missing |

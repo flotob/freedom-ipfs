@@ -13,6 +13,7 @@ The remaining required evidence depends on the Freedom iOS app and target iPhone
 
 - Measure startup, idle RSS, CPU, network idleness, active retrieval, background/foreground, low-memory, network-change, and Bee co-residency behavior on target iPhones.
 - Integrate the Swift wrapper into the browser app and wire app lifecycle/network-path events.
+- Use `docs/ios-device-verification.md` as the device/app runbook and fill its evidence table.
 
 Do not mark the overall implementation goal complete until the device/app gates pass.
 
@@ -112,6 +113,7 @@ Results:
 | Simulator smoke link/start/render | `xtask verify-xcframework` builds a Swift simulator executable that imports a generated CAR fixture, starts the local gateway, fetches the fixture through loopback, and stops the gateway using `simctl spawn booted`; it also builds, installs, and launches a generated UIKit/WebKit app that imports the fixture, serves it through the local gateway, and verifies `WKWebView` DOM content; GitHub Actions run `25270803278` passed. | Done in macOS CI |
 | Real iPhone resource target under 60 MiB RSS beside Bee | Required by spec. | Missing, needs device |
 | Lifecycle hooks | ABI/Swift hooks for background, foreground, low memory, network change; unit tests cover behavior. | Implemented; host-app/device wiring unverified |
+| Device/app verification runbook | `docs/ios-device-verification.md` defines app wiring, real-device matrix, Bee co-residency runs, live content cases, range checks, lifecycle checks, and acceptance targets. | Done; evidence still missing |
 | Browser integration helpers | Local gateway URL, `ipfs://`/`ipns://`/gateway-style URL mapping helpers, preload/cancel with path/URI/bare-CID normalization, cache stats/control. | Swift compile/link and generated `WKWebView` app smoke verified in simulator; Freedom app integration unverified |
 | Live ENS-backed smoke | `make live-smoke` resolves `vitalik.eth` and `daicowtf.eth` at runtime, mounts the online IPNS/DNSLink resolver, and fetches through the local gateway. | Done on Linux |
 | Public IPFS/IPNS corpus | Checked-in opt-in corpus covers the ENS-derived immutable `/ipfs` paths plus DNSLink-backed `/ipns` paths for `ipfs.tech`, `dist.ipfs.tech`, and `cid.ipfs.tech`; `make live-corpus` passed with full-response and `bytes=0-127` range checks. | Expanded; should still grow with larger media cases |
@@ -121,8 +123,8 @@ Results:
 
 ## Remaining Work To Close The Goal
 
-1. Integrate the Swift wrapper into the Freedom iOS app and wire background/foreground, low-memory, and network-path events.
-2. Profile real devices with Bee running beside this node and record RSS, CPU, startup, active retrieval, and idle network behavior.
+1. Integrate the Swift wrapper into the Freedom iOS app and wire background/foreground, low-memory, and network-path events using `docs/ios-device-verification.md`.
+2. Profile real devices with Bee running beside this node and record RSS, CPU, startup, active retrieval, and idle network behavior in the runbook evidence table.
 3. Expand the public corpus with larger media cases and documented pass/fail notes.
 4. Add device soaks for live retrieval, background/foreground, and memory growth.
 

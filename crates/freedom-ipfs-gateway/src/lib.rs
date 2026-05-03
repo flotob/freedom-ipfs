@@ -8,7 +8,7 @@ use axum::Router;
 use bytes::Bytes;
 use cid::Cid;
 use freedom_ipfs_core::{parse_cid, BlockProvider};
-use freedom_ipfs_namesys::{CachedNameResolver, DefaultNameResolver, NameResolver};
+use freedom_ipfs_namesys::{NameResolver, NamesysError};
 use freedom_ipfs_store::SqliteBlockStore;
 use freedom_ipfs_unixfs::{file_size, read_file_range, UnixfsError};
 use futures::stream;
@@ -63,7 +63,7 @@ impl GatewayState {
     pub fn with_provider_config(provider: Arc<dyn BlockProvider>, config: GatewayConfig) -> Self {
         Self::with_provider_and_name_resolver_config(
             provider,
-            Arc::new(CachedNameResolver::new(DefaultNameResolver::default())),
+            Arc::new(OfflineNameResolver),
             config,
         )
     }
@@ -97,21 +97,14 @@ pub fn router(store: SqliteBlockStore) -> Router {
 }
 
 pub fn router_with_provider(provider: Arc<dyn BlockProvider>) -> Router {
-    router_with_provider_and_name_resolver(
-        provider,
-        Arc::new(CachedNameResolver::new(DefaultNameResolver::default())),
-    )
+    router_with_provider_and_name_resolver(provider, Arc::new(OfflineNameResolver))
 }
 
 pub fn router_with_provider_config(
     provider: Arc<dyn BlockProvider>,
     config: GatewayConfig,
 ) -> Router {
-    router_with_provider_and_name_resolver_config(
-        provider,
-        Arc::new(CachedNameResolver::new(DefaultNameResolver::default())),
-        config,
-    )
+    router_with_provider_and_name_resolver_config(provider, Arc::new(OfflineNameResolver), config)
 }
 
 pub fn router_with_provider_and_name_resolver(
@@ -135,6 +128,16 @@ pub fn router_with_provider_and_name_resolver_config(
             name_resolver,
             config,
         ))
+}
+
+#[derive(Debug, Clone)]
+struct OfflineNameResolver;
+
+#[async_trait::async_trait]
+impl NameResolver for OfflineNameResolver {
+    async fn resolve_name(&self, name: &str) -> freedom_ipfs_namesys::Result<String> {
+        Err(NamesysError::NotFound(name.to_string()))
+    }
 }
 
 pub async fn serve(store: SqliteBlockStore, addr: SocketAddr) -> std::io::Result<SocketAddr> {
@@ -291,7 +294,11 @@ async fn serve_ipns_path(
         };
         let (name, rest) = split_name_path(ipns)?;
         let resolved = name_resolver.resolve_name(name).await.map_err(|err| {
-            GatewayError::BadGateway(format!("ipns/dnslink resolution failed: {err}"))
+            if matches!(err, NamesysError::NotFound(_)) {
+                GatewayError::NotFound(format!("name not found: {name}"))
+            } else {
+                GatewayError::BadGateway(format!("ipns/dnslink resolution failed: {err}"))
+            }
         })?;
         target = append_path(&resolved, rest);
     }
@@ -441,6 +448,7 @@ fn parse_range_spec(spec: &str, len: u64) -> Result<(u64, u64), GatewayError> {
 #[derive(Debug)]
 enum GatewayError {
     BadRequest(String),
+    NotFound(String),
     Unixfs(UnixfsError),
     RangeNotSatisfiable,
     Busy,
@@ -451,6 +459,7 @@ enum GatewayError {
 fn gateway_error(err: GatewayError) -> Response {
     match err {
         GatewayError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg).into_response(),
+        GatewayError::NotFound(msg) => (StatusCode::NOT_FOUND, msg).into_response(),
         GatewayError::Unixfs(UnixfsError::NotFound(_))
         | GatewayError::Unixfs(UnixfsError::PathNotFound(_)) => {
             (StatusCode::NOT_FOUND, "not found").into_response()
@@ -587,6 +596,21 @@ mod tests {
         let url = format!("http://{addr}/ipfs/{cid}");
         let response = reqwest::get(url).await.unwrap();
         assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn default_router_does_not_resolve_names_online() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router(store);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{addr}/ipns/example.com");
+        let response = reqwest::get(url).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

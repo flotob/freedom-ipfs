@@ -50,6 +50,7 @@ Early implementation. Current code supports:
 - opt-in public CID corpus smoke that fetches documented immutable paths through the local gateway,
 - opt-in local gateway soak that repeats cached reads and checks bounded RSS growth on Linux,
 - configurable local-gateway request concurrency limiting,
+- bounded 16 MiB in-memory hot block cache in front of the SQLite cache,
 - CAR import/export for tests, diagnostics, and cache warmup,
 - mobile lifecycle hooks for background/foreground, low-memory cache trimming, and network-change provider cache hygiene,
 - an iOS staticlib/XCFramework build skeleton with staged C headers/module map, exported-symbol verification, and a Swift wrapper for persistent-cache node creation, cache import/export, cache trimming, routing-mode selection, multi-router configuration, local gateway URL mapping, lifecycle hooks, preload/cancel, and offline/online gateway start.

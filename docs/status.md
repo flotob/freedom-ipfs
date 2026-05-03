@@ -63,7 +63,7 @@ Observed live-corpus result:
 Observed local-soak result:
 
 - 500 cached local-gateway requests completed against an in-memory raw block.
-- Linux RSS moved from `8704` KiB to `13440` KiB, within the 32 MiB maximum growth budget.
+- Linux RSS moved from `8704` KiB to `13696` KiB, within the 32 MiB maximum growth budget.
 
 iOS packaging command was exercised on Linux and correctly refused to run:
 
@@ -85,7 +85,7 @@ M0 decisions and fixtures: partially complete. The repo, license, generated unit
 
 M1 workspace and mobile skeleton: mostly complete. Workspace, mobile C ABI, Swift wrapper source, gateway start/stop, stats, cache import/export, routing mode selection, multi-router configuration, local gateway URL mapping helpers, lifecycle hooks, preload/cancel, and an XCFramework build/verify skeleton exist. The build stages the C header plus module map and verifies exported C symbols on macOS. macOS/Xcode artifact production and simulator link/start remain unverified here.
 
-M2 CID, block verification, and store: complete for MVP. CID parse/format, verified block insertion, CAR import/export, SQLite cache, eviction, provider cache, bad-provider cache, clear, and trim are covered by tests.
+M2 CID, block verification, and store: complete for MVP. CID parse/format, verified block insertion, CAR import/export, bounded in-memory hot block cache, SQLite cache, eviction, provider cache, bad-provider cache, clear, and trim are covered by tests.
 
 M3 UnixFS reader and offline gateway: complete for MVP. Raw, dag-pb, multi-block files, directories, directory `index.html` fallback with path-based MIME headers, basic HAMT traversal, range reads, malformed/unsatisfiable byte-range rejection, streaming gateway responses, traversal-segment rejection, and Kubo-generated UnixFS/HAMT CAR import/gateway byte parity are implemented and tested.
 
@@ -97,7 +97,7 @@ M6 minimal Bitswap client: implemented for read-only retrieval. It dials bounded
 
 M7 light DHT fallback: implemented for provider lookup and IPNS record lookup. It uses Kademlia client mode, lazy per-lookup swarms, query timeout, provider fanout limits, libp2p identify/ping behaviours, and libp2p connection timeout/connection-limit guards. The routing crate includes deterministic local server-mode Kademlia peer tests for provider lookup and verified IPNS record lookup through the light-DHT client.
 
-M8 mobile resource hardening: partially complete. Cache trim, gateway concurrency limit, mobile background/foreground hooks, low-memory trim hook, network-change provider-cache hygiene, DHT timeout/fanout knobs, provider/badness caches, HTTP timeouts, libp2p identify/ping behaviours, libp2p connection timeouts, and libp2p connection-limit guards exist. Real idle RSS, CPU, network, startup, Bee concurrency, and host-app lifecycle behavior are not measured yet.
+M8 mobile resource hardening: partially complete. Bounded in-memory hot block cache, cache trim, gateway concurrency limit, mobile background/foreground hooks, low-memory trim hook, network-change provider-cache hygiene, DHT timeout/fanout knobs, provider/badness caches, HTTP timeouts, libp2p identify/ping behaviours, libp2p connection timeouts, and libp2p connection-limit guards exist. Real idle RSS, CPU, network, startup, Bee concurrency, and host-app lifecycle behavior are not measured yet.
 
 M9 browser integration: partially complete. The local gateway path, mobile ABI, Swift wrapper source, gateway URL mapping helpers for `ipfs://`, `ipns://`, `/ipfs`, and `/ipns` addresses, lifecycle hooks, and preload/cancel controls exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. Swift wrapper compilation/linking and app integration are not verified in this Linux environment.
 

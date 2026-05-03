@@ -2,7 +2,7 @@
 
 Last audited: 2026-05-03  
 Repository: `github.com/flotob/freedom-ipfs`  
-Implementation audited head: `50d40d1 Generalize DNSLink resolver wiring`  
+Implementation audited head: the commit containing this file version  
 Spec: `/root/codex/mobile-rust-ipfs-node-spec.md`
 
 ## Verdict
@@ -40,7 +40,7 @@ Results:
   - Retrieval stats: `cache_hits=25 http_provider_blocks=2 bitswap_blocks=3`.
 - Public corpus smoke passed for the checked-in `vitalik-home` and `daicowtf-home` entries with the same byte counts and retrieval stats.
 - Kubo parity passed for generated UnixFS site files/directories and HAMT directories.
-- Local cached-gateway soak passed: `500` requests, Linux RSS from `8832` KiB to `13568` KiB.
+- Local cached-gateway soak passed: `500` requests, Linux RSS from `8704` KiB to `13696` KiB.
 - `xtask build-xcframework` and `xtask verify-xcframework` correctly refused to run on Linux with the macOS/Xcode requirement message.
 
 ## Prompt-To-Artifact Checklist
@@ -54,6 +54,7 @@ Results:
 | CIDv0/CIDv1 parse/format | `freedom-ipfs-core` unit tests cover CID round-trip and verification. | Done |
 | Block verification before cache/serve | Core verification, store verified insertion, retrieval invalid HTTP block rejection. | Done |
 | Bounded SQLite cache | `freedom-ipfs-store` implements SQLite cache, LRU eviction, stats, clear, trim, provider and bad-provider caches. | Done |
+| Memory hot cache | Store has a bounded 16 MiB in-memory hot block cache in front of SQLite; tests cover clear/trim removing hot entries. | Done |
 | Default disk cache 256 MiB | CLI/mobile default to `256 * 1024 * 1024`. | Done |
 | CAR import/export for fixtures/cache warmup | Core CAR parse/encode and store import/export tests; CLI/mobile import/export APIs. | Done |
 | Max block guard | Core verifies blocks with a max block size path. | Done for MVP |

@@ -6,6 +6,7 @@ use freedom_ipfs_core::{
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 const DEFAULT_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+const DEFAULT_HOT_CACHE_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -30,6 +32,7 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 pub struct SqliteBlockStore {
     conn: Arc<Mutex<Connection>>,
     max_bytes: u64,
+    hot: Arc<Mutex<HotCache>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,13 +44,15 @@ pub struct CachedProviderRecord {
 impl SqliteBlockStore {
     pub fn open(path: impl AsRef<Path>, max_bytes: u64) -> Result<Self> {
         let conn = Connection::open(path)?;
+        let max_bytes = if max_bytes == 0 {
+            DEFAULT_CACHE_BYTES
+        } else {
+            max_bytes
+        };
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),
-            max_bytes: if max_bytes == 0 {
-                DEFAULT_CACHE_BYTES
-            } else {
-                max_bytes
-            },
+            max_bytes,
+            hot: Arc::new(Mutex::new(HotCache::new(hot_cache_bytes(max_bytes)))),
         };
         store.init()?;
         Ok(store)
@@ -55,13 +60,15 @@ impl SqliteBlockStore {
 
     pub fn in_memory(max_bytes: u64) -> Result<Self> {
         let conn = Connection::open_in_memory()?;
+        let max_bytes = if max_bytes == 0 {
+            DEFAULT_CACHE_BYTES
+        } else {
+            max_bytes
+        };
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),
-            max_bytes: if max_bytes == 0 {
-                DEFAULT_CACHE_BYTES
-            } else {
-                max_bytes
-            },
+            max_bytes,
+            hot: Arc::new(Mutex::new(HotCache::new(hot_cache_bytes(max_bytes)))),
         };
         store.init()?;
         Ok(store)
@@ -103,6 +110,7 @@ impl SqliteBlockStore {
 
     pub fn put_block(&self, cid: &Cid, data: &[u8]) -> Result<()> {
         verify_block(cid, data)?;
+        let cid_bytes = cid.to_bytes();
         let now = now_secs();
         self.conn.lock().execute(
             r#"
@@ -115,7 +123,7 @@ impl SqliteBlockStore {
                 last_accessed_at = excluded.last_accessed_at
             "#,
             params![
-                cid.to_bytes(),
+                &cid_bytes,
                 cid.codec() as i64,
                 data.len() as i64,
                 data,
@@ -123,6 +131,11 @@ impl SqliteBlockStore {
             ],
         )?;
         self.evict_if_needed()?;
+        if self.block_exists(&cid_bytes)? {
+            self.hot.lock().put(cid_bytes, data.to_vec());
+        } else {
+            self.hot.lock().remove(&cid_bytes);
+        }
         Ok(())
     }
 
@@ -132,6 +145,12 @@ impl SqliteBlockStore {
 
     pub fn get(&self, cid: &Cid) -> Result<Option<Block>> {
         let cid_bytes = cid.to_bytes();
+        if let Some(data) = self.hot.lock().get(&cid_bytes) {
+            verify_block(cid, &data)?;
+            self.touch(cid)?;
+            return Ok(Some(Block::unchecked(*cid, data)));
+        }
+
         let row = self
             .conn
             .lock()
@@ -146,6 +165,7 @@ impl SqliteBlockStore {
             Some(data) => {
                 verify_block(cid, &data)?;
                 self.touch(cid)?;
+                self.hot.lock().put(cid_bytes, data.clone());
                 Ok(Some(Block::unchecked(*cid, data)))
             }
             None => Ok(None),
@@ -292,6 +312,7 @@ impl SqliteBlockStore {
         self.conn.lock().execute("DELETE FROM blocks", [])?;
         self.conn.lock().execute("DELETE FROM provider_cache", [])?;
         self.conn.lock().execute("DELETE FROM bad_providers", [])?;
+        self.hot.lock().clear();
         Ok(())
     }
 
@@ -323,21 +344,45 @@ impl SqliteBlockStore {
             if total <= max_bytes {
                 return Ok(());
             }
-            let deleted = self.conn.lock().execute(
-                r#"
-                DELETE FROM blocks
-                WHERE cid = (
+            let cid_bytes = self
+                .conn
+                .lock()
+                .query_row(
+                    r#"
                     SELECT cid FROM blocks
                     ORDER BY last_accessed_at ASC, inserted_at ASC
                     LIMIT 1
+                    "#,
+                    [],
+                    |row| row.get::<_, Vec<u8>>(0),
                 )
-                "#,
-                [],
-            )?;
+                .optional()?;
+            let Some(cid_bytes) = cid_bytes else {
+                return Ok(());
+            };
+            let deleted = self
+                .conn
+                .lock()
+                .execute("DELETE FROM blocks WHERE cid = ?1", params![&cid_bytes])?;
             if deleted == 0 {
                 return Ok(());
             }
+            self.hot.lock().remove(&cid_bytes);
         }
+    }
+
+    fn block_exists(&self, cid_bytes: &[u8]) -> Result<bool> {
+        let exists = self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT 1 FROM blocks WHERE cid = ?1",
+                params![cid_bytes],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        Ok(exists)
     }
 }
 
@@ -357,6 +402,86 @@ fn now_secs() -> u64 {
 
 fn provider_cache_key(cid: &Cid) -> Vec<u8> {
     cid.hash().to_bytes()
+}
+
+fn hot_cache_bytes(max_bytes: u64) -> u64 {
+    max_bytes.min(DEFAULT_HOT_CACHE_BYTES)
+}
+
+struct HotCache {
+    max_bytes: u64,
+    bytes: u64,
+    clock: u64,
+    entries: HashMap<Vec<u8>, HotBlock>,
+}
+
+struct HotBlock {
+    data: Vec<u8>,
+    last_accessed: u64,
+}
+
+impl HotCache {
+    fn new(max_bytes: u64) -> Self {
+        Self {
+            max_bytes,
+            bytes: 0,
+            clock: 0,
+            entries: HashMap::new(),
+        }
+    }
+
+    fn get(&mut self, cid: &[u8]) -> Option<Vec<u8>> {
+        let entry = self.entries.get_mut(cid)?;
+        self.clock = self.clock.saturating_add(1);
+        entry.last_accessed = self.clock;
+        Some(entry.data.clone())
+    }
+
+    fn put(&mut self, cid: Vec<u8>, data: Vec<u8>) {
+        if self.max_bytes == 0 || data.len() as u64 > self.max_bytes {
+            self.remove(&cid);
+            return;
+        }
+        if let Some(existing) = self.entries.remove(&cid) {
+            self.bytes = self.bytes.saturating_sub(existing.data.len() as u64);
+        }
+        self.clock = self.clock.saturating_add(1);
+        self.bytes = self.bytes.saturating_add(data.len() as u64);
+        self.entries.insert(
+            cid,
+            HotBlock {
+                data,
+                last_accessed: self.clock,
+            },
+        );
+        self.evict_if_needed();
+    }
+
+    fn remove(&mut self, cid: &[u8]) {
+        if let Some(block) = self.entries.remove(cid) {
+            self.bytes = self.bytes.saturating_sub(block.data.len() as u64);
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+    }
+
+    fn evict_if_needed(&mut self) {
+        while self.bytes > self.max_bytes {
+            let Some(cid) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, block)| block.last_accessed)
+                .map(|(cid, _)| cid.clone())
+            else {
+                self.bytes = 0;
+                return;
+            };
+            self.remove(&cid);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -389,6 +514,33 @@ mod tests {
 
         assert!(store.total_bytes().unwrap() <= 20);
         assert_eq!(store.get(&second_cid).unwrap().unwrap().data(), second);
+    }
+
+    #[test]
+    fn clear_removes_hot_cache_entries() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let data = b"hot cache clear";
+        let cid = cid_from_data(CODEC_RAW, data);
+        store.put_block(&cid, data).unwrap();
+        assert_eq!(store.get(&cid).unwrap().unwrap().data(), data);
+
+        store.clear().unwrap();
+
+        assert!(store.get(&cid).unwrap().is_none());
+    }
+
+    #[test]
+    fn trim_removes_hot_cache_entries() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let data = b"hot cache trim";
+        let cid = cid_from_data(CODEC_RAW, data);
+        store.put_block(&cid, data).unwrap();
+        assert_eq!(store.get(&cid).unwrap().unwrap().data(), data);
+
+        store.trim_blocks_to(0).unwrap();
+
+        assert_eq!(store.block_count().unwrap(), 0);
+        assert!(store.get(&cid).unwrap().is_none());
     }
 
     #[test]

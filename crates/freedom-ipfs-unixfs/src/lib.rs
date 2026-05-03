@@ -91,6 +91,13 @@ pub enum NodeKind {
     HamtShard,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryEntry {
+    pub name: String,
+    pub cid: Cid,
+    pub size: Option<u64>,
+}
+
 pub fn resolve_path(provider: &dyn BlockProvider, root: &Cid, path: &str) -> Result<ResolvedNode> {
     let mut current = *root;
     let mut segments = path
@@ -139,6 +146,18 @@ pub fn read_file(provider: &dyn BlockProvider, root: &Cid, path: &str) -> Result
     read_file_cid(provider, &resolved.cid)
 }
 
+pub fn list_directory(
+    provider: &dyn BlockProvider,
+    root: &Cid,
+    path: &str,
+) -> Result<Vec<DirectoryEntry>> {
+    let resolved = resolve_path(provider, root, path)?;
+    match resolved.kind {
+        NodeKind::Directory | NodeKind::HamtShard => list_directory_cid(provider, &resolved.cid),
+        NodeKind::Raw | NodeKind::File => Err(UnixfsError::NotDirectory),
+    }
+}
+
 pub fn file_size(provider: &dyn BlockProvider, root: &Cid, path: &str) -> Result<u64> {
     let resolved = resolve_path(provider, root, path)?;
     match resolved.kind {
@@ -161,6 +180,104 @@ pub fn read_file_range(
         NodeKind::Raw | NodeKind::File => {}
     }
     read_file_cid_range(provider, &resolved.cid, start, end)
+}
+
+fn list_directory_cid(provider: &dyn BlockProvider, cid: &Cid) -> Result<Vec<DirectoryEntry>> {
+    let block = provider
+        .get_block(cid)
+        .map_err(|err| UnixfsError::Provider(err.to_string()))?
+        .ok_or(UnixfsError::NotFound(*cid))?;
+    if block.codec() != CODEC_DAG_PB {
+        return Err(UnixfsError::NotDirectory);
+    }
+
+    let node = decode_pb_node(block.data())?;
+    let data = decode_unixfs_data(&node)?;
+    let mut entries = match data_type(&data)? {
+        DataType::Directory => directory_entries(&node.links)?,
+        DataType::HamtShard => hamt_directory_entries(provider, &node, &data)?,
+        _ => return Err(UnixfsError::NotDirectory),
+    };
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(entries)
+}
+
+fn directory_entries(links: &[PbLink]) -> Result<Vec<DirectoryEntry>> {
+    let mut entries = Vec::new();
+    for link in links {
+        let Some(name) = link.name.as_ref().filter(|name| !name.is_empty()) else {
+            continue;
+        };
+        entries.push(DirectoryEntry {
+            name: name.clone(),
+            cid: link_cid(link)?,
+            size: link.tsize,
+        });
+    }
+    Ok(entries)
+}
+
+fn hamt_directory_entries(
+    provider: &dyn BlockProvider,
+    node: &PbNode,
+    data: &UnixfsData,
+) -> Result<Vec<DirectoryEntry>> {
+    validate_hamt(data)?;
+    let mut entries = Vec::new();
+    let mut pending = Vec::new();
+    collect_hamt_entries(&node.links, &mut entries, &mut pending)?;
+
+    let mut visited = 0usize;
+    while let Some(cid) = pending.pop() {
+        visited += 1;
+        if visited > HAMT_MAX_SHARDS_VISITED {
+            return Err(UnixfsError::InvalidDagPb(format!(
+                "HAMT traversal exceeded {HAMT_MAX_SHARDS_VISITED} shards"
+            )));
+        }
+
+        let block = provider
+            .get_block(&cid)
+            .map_err(|err| UnixfsError::Provider(err.to_string()))?
+            .ok_or(UnixfsError::NotFound(cid))?;
+        if block.codec() != CODEC_DAG_PB {
+            return Err(UnixfsError::NotDirectory);
+        }
+        let shard = decode_pb_node(block.data())?;
+        let shard_data = decode_unixfs_data(&shard)?;
+        if data_type(&shard_data)? != DataType::HamtShard {
+            return Err(UnixfsError::InvalidDagPb(
+                "HAMT bucket link did not resolve to a HAMT shard".into(),
+            ));
+        }
+        validate_hamt(&shard_data)?;
+        collect_hamt_entries(&shard.links, &mut entries, &mut pending)?;
+    }
+
+    Ok(entries)
+}
+
+fn collect_hamt_entries(
+    links: &[PbLink],
+    entries: &mut Vec<DirectoryEntry>,
+    pending: &mut Vec<Cid>,
+) -> Result<()> {
+    for link in links {
+        let Some(link_name) = link.name.as_deref() else {
+            continue;
+        };
+        let link_name = link_name.as_bytes();
+        if link_name.len() == HAMT_LINK_PREFIX_LEN {
+            pending.push(link_cid(link)?);
+        } else if link_name.len() > HAMT_LINK_PREFIX_LEN {
+            entries.push(DirectoryEntry {
+                name: String::from_utf8_lossy(&link_name[HAMT_LINK_PREFIX_LEN..]).to_string(),
+                cid: link_cid(link)?,
+                size: link.tsize,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn read_file_cid(provider: &dyn BlockProvider, cid: &Cid) -> Result<Vec<u8>> {
@@ -566,6 +683,42 @@ mod tests {
     }
 
     #[test]
+    fn lists_directory_entries_without_reading_child_blocks() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+
+        let alpha_data = b"alpha";
+        let alpha_cid = cid_from_data(CODEC_RAW, alpha_data);
+        let beta_data = b"beta";
+        let beta_cid = cid_from_data(CODEC_RAW, beta_data);
+
+        let dir_data = pb_directory(vec![
+            PbLink {
+                tsize: Some(5),
+                ..link("beta.txt", &beta_cid)
+            },
+            PbLink {
+                tsize: Some(4),
+                ..link("alpha.txt", &alpha_cid)
+            },
+        ]);
+        let dir_cid = cid_from_data(CODEC_DAG_PB, &dir_data);
+        store.put_block(&dir_cid, &dir_data).unwrap();
+
+        let entries = list_directory(&store, &dir_cid, "").unwrap();
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.cid, entry.size))
+                .collect::<Vec<_>>(),
+            vec![
+                ("alpha.txt", alpha_cid, Some(4)),
+                ("beta.txt", beta_cid, Some(5))
+            ]
+        );
+    }
+
+    #[test]
     fn reads_file_range_across_inline_and_linked_blocks() {
         let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
 
@@ -619,5 +772,33 @@ mod tests {
         store.put_block(&root_cid, &root_data).unwrap();
 
         assert_eq!(read_file(&store, &root_cid, "nested.txt").unwrap(), data);
+    }
+
+    #[test]
+    fn lists_nested_hamt_shard_entries() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let alpha_cid = cid_from_data(CODEC_RAW, b"alpha");
+        let nested_cid = cid_from_data(CODEC_RAW, b"nested");
+
+        let child_data = pb_hamt(vec![link("CDnested.txt", &nested_cid)]);
+        let child_cid = cid_from_data(CODEC_DAG_PB, &child_data);
+        store.put_block(&child_cid, &child_data).unwrap();
+
+        let root_data = pb_hamt(vec![
+            link("AB", &child_cid),
+            link("EFalpha.txt", &alpha_cid),
+        ]);
+        let root_cid = cid_from_data(CODEC_DAG_PB, &root_data);
+        store.put_block(&root_cid, &root_data).unwrap();
+
+        let entries = list_directory(&store, &root_cid, "").unwrap();
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.cid))
+                .collect::<Vec<_>>(),
+            vec![("alpha.txt", alpha_cid), ("nested.txt", nested_cid)]
+        );
     }
 }

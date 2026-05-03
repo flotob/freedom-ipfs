@@ -10,7 +10,9 @@ use cid::Cid;
 use freedom_ipfs_core::{parse_cid, BlockProvider};
 use freedom_ipfs_namesys::{NameResolver, NamesysError};
 use freedom_ipfs_store::SqliteBlockStore;
-use freedom_ipfs_unixfs::{file_size, read_file_range, UnixfsError};
+use freedom_ipfs_unixfs::{
+    file_size, list_directory, read_file_range, DirectoryEntry, UnixfsError,
+};
 use futures::stream;
 use std::collections::HashSet;
 use std::io;
@@ -234,33 +236,111 @@ async fn serve_ipfs_path(
     range: Option<&HeaderValue>,
 ) -> Result<Response, GatewayError> {
     let (cid, unixfs_path) = split_ipfs_path(path)?;
-    let (served_path, len) = served_file_path(provider.as_ref(), &cid, unixfs_path)?;
-    let mime = mime_guess::from_path(&served_path)
-        .first_or_octet_stream()
-        .to_string();
-
-    let response = if let Some(range) = range {
-        ranged_response(provider, cid, served_path, len, range, &mime)?
-    } else {
-        streaming_response(provider, cid, served_path, len, &mime)?
+    let response = match served_resource(provider.as_ref(), &cid, unixfs_path)? {
+        ServedResource::File { path, len } => {
+            let mime = mime_guess::from_path(&path)
+                .first_or_octet_stream()
+                .to_string();
+            if let Some(range) = range {
+                ranged_response(provider, cid, path, len, range, &mime)?
+            } else {
+                streaming_response(provider, cid, path, len, &mime)?
+            }
+        }
+        ServedResource::Directory { path, entries } => {
+            if range.is_some() {
+                return Err(GatewayError::BadRequest(
+                    "Range requests are not supported for directory listings".into(),
+                ));
+            }
+            directory_listing_response(&cid, &path, &entries)?
+        }
     };
     Ok(response)
 }
 
-fn served_file_path(
+enum ServedResource {
+    File {
+        path: String,
+        len: u64,
+    },
+    Directory {
+        path: String,
+        entries: Vec<DirectoryEntry>,
+    },
+}
+
+fn served_resource(
     provider: &dyn BlockProvider,
     cid: &Cid,
     unixfs_path: &str,
-) -> Result<(String, u64), GatewayError> {
+) -> Result<ServedResource, GatewayError> {
     match file_size(provider, cid, unixfs_path) {
-        Ok(len) => Ok((unixfs_path.to_string(), len)),
+        Ok(len) => Ok(ServedResource::File {
+            path: unixfs_path.to_string(),
+            len,
+        }),
         Err(UnixfsError::IsDirectory) => {
             let index_path = append_path(unixfs_path, "index.html");
-            let len = file_size(provider, cid, &index_path).map_err(GatewayError::Unixfs)?;
-            Ok((index_path, len))
+            match file_size(provider, cid, &index_path) {
+                Ok(len) => Ok(ServedResource::File {
+                    path: index_path,
+                    len,
+                }),
+                Err(UnixfsError::PathNotFound(_)) => Ok(ServedResource::Directory {
+                    path: unixfs_path.to_string(),
+                    entries: list_directory(provider, cid, unixfs_path)
+                        .map_err(GatewayError::Unixfs)?,
+                }),
+                Err(err) => Err(GatewayError::Unixfs(err)),
+            }
         }
         Err(err) => Err(GatewayError::Unixfs(err)),
     }
+}
+
+fn directory_listing_response(
+    cid: &Cid,
+    unixfs_path: &str,
+    entries: &[DirectoryEntry],
+) -> Result<Response, GatewayError> {
+    let display_path = if unixfs_path.is_empty() {
+        format!("/ipfs/{cid}")
+    } else {
+        format!("/ipfs/{cid}/{unixfs_path}")
+    };
+    let mut body = format!(
+        r#"<!doctype html><html><head><meta charset="utf-8"><title>Index of {title}</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><main><h1>Index of {title}</h1><ul>"#,
+        title = escape_html(&display_path)
+    );
+    for entry in entries {
+        let child_path = append_path(unixfs_path, &entry.name);
+        let href = format!("/ipfs/{cid}/{}", encode_gateway_path(&child_path));
+        let size = entry
+            .size
+            .map(|size| format!(" <small>{size} bytes</small>"))
+            .unwrap_or_default();
+        body.push_str(&format!(
+            r#"<li><a href="{href}">{name}</a>{size}</li>"#,
+            href = escape_html(&href),
+            name = escape_html(&entry.name),
+            size = size,
+        ));
+    }
+    body.push_str("</ul></main></body></html>");
+
+    let len = body.len();
+    let mut response = (StatusCode::OK, body).into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    response.headers_mut().insert(
+        CONTENT_LENGTH,
+        HeaderValue::from_str(&len.to_string())
+            .map_err(|err| GatewayError::Internal(err.to_string()))?,
+    );
+    Ok(response)
 }
 
 fn split_ipfs_path(path: &str) -> Result<(Cid, &str), GatewayError> {
@@ -388,6 +468,27 @@ fn append_path(base: &str, rest: &str) -> String {
             rest.trim_start_matches('/')
         )
     }
+}
+
+fn encode_gateway_path(path: &str) -> String {
+    path.split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(percent_encode_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn percent_encode_segment(segment: &str) -> String {
+    let mut out = String::new();
+    for byte in segment.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(*byte as char)
+            }
+            byte => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 fn streaming_response(
@@ -747,6 +848,60 @@ mod tests {
             HeaderValue::from_static("text/html")
         );
         assert_eq!(response.bytes().await.unwrap(), Bytes::from_static(index));
+    }
+
+    #[tokio::test]
+    async fn serves_directory_listing_when_index_is_missing() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let plain = b"plain";
+        let plain_cid = cid_from_data(CODEC_RAW, plain);
+        store.put_block(&plain_cid, plain).unwrap();
+        let spaced = b"spaced";
+        let spaced_cid = cid_from_data(CODEC_RAW, spaced);
+        store.put_block(&spaced_cid, spaced).unwrap();
+        let escaped = b"escaped";
+        let escaped_cid = cid_from_data(CODEC_RAW, escaped);
+        store.put_block(&escaped_cid, escaped).unwrap();
+
+        let dir_block = test_pb_directory(vec![
+            test_link("space name #1.txt", &spaced_cid),
+            test_link("plain.txt", &plain_cid),
+            test_link("<bad>.txt", &escaped_cid),
+        ]);
+        let dir_cid = cid_from_data(CODEC_DAG_PB, &dir_block);
+        store.put_block(&dir_cid, &dir_block).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router(store);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{addr}/ipfs/{dir_cid}");
+        let response = reqwest::get(url).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            HeaderValue::from_static("text/html; charset=utf-8")
+        );
+        let body = response.text().await.unwrap();
+        assert!(body.contains(&format!("Index of /ipfs/{dir_cid}")));
+        assert!(body.contains(&format!(r#"href="/ipfs/{dir_cid}/plain.txt""#)));
+        assert!(body.contains(&format!(
+            r#"href="/ipfs/{dir_cid}/space%20name%20%231.txt""#
+        )));
+        assert!(body.contains("&lt;bad&gt;.txt"));
+        assert!(!body.contains("<bad>.txt"));
+
+        let ranged = reqwest::Client::new()
+            .get(format!("http://{addr}/ipfs/{dir_cid}"))
+            .header(RANGE, "bytes=0-10")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ranged.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

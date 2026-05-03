@@ -385,13 +385,44 @@ This longer sample is the better reliability signal: the asset path remained
 much faster than the earlier shared-swarm baseline, but live root startup still
 has a public-provider tail that Kubo handles better.
 
+Interleaved Bitswap dials:
+
+The remaining root tail came from exhausting the connection-ready window across
+all provider peers, then succeeding on a same-provider retry. The dial loop was
+still attempting all addresses for one peer before moving to the next peer,
+which could spend the bounded pending-dial budget on later addresses for stale
+peers before every candidate got its best address attempted. The current code
+adds every provider address to the swarm address book, then dials by address
+rank across peers: first address for every peer, then second address for every
+peer, and so on.
+
+Focused root-only validation:
+
+```text
+ipfs-tech-root-html-range repeat=5, fresh gateway:
+passed=5 failed=0 pass_rate=100.0%
+root_ttfb p50=1510ms p90=2100ms max=2100ms
+bitswap_fetch count=10 total=7112ms p50=575ms p90=1132ms max=1286ms
+```
+
+Fresh full-page validation:
+
+```text
+ipfs-tech-page-assets repeat=5, fresh gateway, asset_concurrency=6:
+passed=5 failed=0 pass_rate=100.0%
+root_ttfb p50=1415ms p90=1796ms max=1796ms
+asset_ttfb p50=119ms p90=512ms p95=1186ms max=1510ms
+measured run totals: 3648ms, 2560ms, 3075ms, 3261ms, 3185ms
+bitswap_fetch count=104 total=29683ms p50=104ms p90=1033ms p95=1061ms max=1401ms
+```
+
 Secondary page validation:
 
 ```text
 daicowtf-page-assets repeat=3, fresh gateway, asset_concurrency=6:
 passed=3 failed=0 pass_rate=100.0%
-root_ttfb p50=1591ms p90=1714ms max=1714ms
-bitswap_fetch count=9 total=4097ms p50=158ms p90=1165ms max=1165ms
+root_ttfb p50=1746ms p90=1891ms max=1891ms
+bitswap_fetch count=9 total=4507ms p50=167ms p90=1346ms max=1346ms
 ```
 
 Resource impact:
@@ -410,6 +441,10 @@ Failed experiments:
   same-provider retry. The current implementation reintroduced a 750ms
   `WANT_HAVE` probe with those safeguards and kept the fresh validation above at
   3/3 pass rate.
+- Reducing the connection-ready window from 5s to 2s made root-only
+  `ipfs.tech` repeat=5 pass with a 4.3s max, but the full page regressed to 4/5:
+  one run returned 17 asset `504`s after 45s Bitswap request timeouts. Reverted
+  and replaced with interleaved provider dials.
 - One optimistic direct `WANT_BLOCK` attempt for an all-unknown peer set also
   regressed reliability: `ipfs-tech-page-assets` fresh repeat=5 passed 4/5,
   with one root 504 at 30.8s and run totals 14.3-30.8s. Reverted.

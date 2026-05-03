@@ -945,6 +945,7 @@ async fn run_shared_bitswap_swarm(
                 *pending_counts.entry(command.cid).or_default() += 1;
 
                 let mut peer_targets = Vec::new();
+                let mut dial_peers = Vec::new();
                 for peer in command.peers {
                     tracing::debug!(peer = %peer.id, addrs = ?peer.addrs, "adding bitswap peer");
                     let connection_ready = if connected_peers.contains_key(&peer.id) {
@@ -962,12 +963,16 @@ async fn run_shared_bitswap_swarm(
                         skip_want_have: peer.skip_want_have,
                         connection_ready,
                     });
-                    for addr in peer.addrs {
+                    for addr in &peer.addrs {
                         swarm.add_peer_address(peer.id, addr.clone());
-                        let dial_addr = addr.with_p2p(peer.id).unwrap_or_else(|addr| addr);
-                        if let Err(err) = swarm.dial(dial_addr) {
-                            tracing::debug!(peer = %peer.id, error = %err, "bitswap dial rejected");
-                        }
+                    }
+                    dial_peers.push(peer);
+                }
+
+                for (peer_id, addr) in interleaved_bitswap_dials(&dial_peers) {
+                    let dial_addr = addr.with_p2p(peer_id).unwrap_or_else(|addr| addr);
+                    if let Err(err) = swarm.dial(dial_addr) {
+                        tracing::debug!(peer = %peer_id, error = %err, "bitswap dial rejected");
                     }
                 }
 
@@ -1224,6 +1229,23 @@ fn merge_bitswap_peer(peers: &mut Vec<BitswapPeer>, id: PeerId, addrs: Vec<Multi
             skip_want_have: false,
         });
     }
+}
+
+fn interleaved_bitswap_dials(peers: &[BitswapPeer]) -> Vec<(PeerId, Multiaddr)> {
+    let max_addrs = peers
+        .iter()
+        .map(|peer| peer.addrs.len())
+        .max()
+        .unwrap_or_default();
+    let mut dials = Vec::new();
+    for addr_index in 0..max_addrs {
+        for peer in peers {
+            if let Some(addr) = peer.addrs.get(addr_index) {
+                dials.push((peer.id, addr.clone()));
+            }
+        }
+    }
+    dials
 }
 
 async fn expand_dnsaddr_records(addrs: &[String]) -> Vec<String> {
@@ -1988,6 +2010,48 @@ mod bitswap_tests {
         assert_eq!(
             peers[0].addrs[1].to_string(),
             "/ip4/164.92.225.199/tcp/4001"
+        );
+    }
+
+    #[test]
+    fn interleaves_bitswap_dials_by_address_rank() {
+        let first = parse_peer_id("12D3KooWLSFr3c4K1dxWavx5XFsUjeSXap3VPMuEbe28zeL5B1v3").unwrap();
+        let second = parse_peer_id("12D3KooWGU3fJrHaWtRSWyrrzCpdgFX5bxbS69hqL1MSdKMGez12").unwrap();
+        let peers = vec![
+            BitswapPeer {
+                id: first,
+                addrs: vec![
+                    "/ip4/127.0.0.1/tcp/1001".parse().unwrap(),
+                    "/ip4/127.0.0.1/tcp/1002".parse().unwrap(),
+                ],
+                skip_want_have: false,
+            },
+            BitswapPeer {
+                id: second,
+                addrs: vec![
+                    "/ip4/127.0.0.1/tcp/2001".parse().unwrap(),
+                    "/ip4/127.0.0.1/tcp/2002".parse().unwrap(),
+                ],
+                skip_want_have: false,
+            },
+        ];
+
+        let dials = interleaved_bitswap_dials(&peers);
+        let peer_order = dials.iter().map(|(peer, _)| *peer).collect::<Vec<_>>();
+        let addr_order = dials
+            .iter()
+            .map(|(_, addr)| addr.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(peer_order, vec![first, second, first, second]);
+        assert_eq!(
+            addr_order,
+            vec![
+                "/ip4/127.0.0.1/tcp/1001",
+                "/ip4/127.0.0.1/tcp/2001",
+                "/ip4/127.0.0.1/tcp/1002",
+                "/ip4/127.0.0.1/tcp/2002",
+            ]
         );
     }
 

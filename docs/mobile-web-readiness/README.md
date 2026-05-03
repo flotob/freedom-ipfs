@@ -99,7 +99,10 @@ status, MIME type, byte count, and timing.
   `ipfs.tech` root-only repeat=3 passed with a 3.6s root max, while
   `ipfs.tech-page-assets` repeat=3 passed with root p50 1.9s and max 8.5s.
   A longer repeat=5 also passed 5/5; assets stayed tight with p95 1.3s and max
-  1.8s, while live root TTFB still varied from 4.0s to 10.4s.
+  1.8s, while live root TTFB still varied from 4.0s to 10.4s. Interleaving
+  Bitswap dials by address rank then removed that root tail in the next
+  same-window sample: fresh `ipfs.tech-page-assets` repeat=5 passed 5/5 with
+  root p50 1.4s, root max 1.8s, asset p95 1.2s, and asset max 1.5s.
 
 ## Next Scenario Targets
 

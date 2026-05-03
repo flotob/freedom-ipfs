@@ -7,9 +7,11 @@ use freedom_ipfs_routing::{
 use freedom_ipfs_store::SqliteBlockStore;
 use std::env;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 
 const DEFAULT_CORPUS: &str = include_str!("../../../tests/fixtures/public_corpus.txt");
+const REQUEST_ATTEMPTS: usize = 3;
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "network corpus smoke test against documented public CIDs"]
@@ -46,9 +48,14 @@ async fn public_cid_corpus_fetches_through_local_gateway() {
     let client = reqwest::Client::new();
     for entry in entries {
         let url = format!("http://{addr}{}", entry.path);
-        let response = client.get(&url).send().await.unwrap();
-        let status = response.status();
-        let body = response.bytes().await.unwrap();
+        let (status, body) = fetch_gateway_body_with_retries(&client, &url, REQUEST_ATTEMPTS)
+            .await
+            .unwrap_or_else(|err| {
+                panic!(
+                    "public corpus request failed for {} ({}): {err}",
+                    entry.name, entry.path
+                )
+            });
         assert_eq!(
             status,
             StatusCode::OK,
@@ -82,6 +89,30 @@ async fn public_cid_corpus_fetches_through_local_gateway() {
         stats.cache_hits + stats.http_provider_blocks + stats.bitswap_blocks > 0,
         "public corpus smoke did not record any retrieval transport"
     );
+}
+
+async fn fetch_gateway_body_with_retries(
+    client: &reqwest::Client,
+    url: &str,
+    attempts: usize,
+) -> Result<(StatusCode, Vec<u8>), String> {
+    let mut last_error = None;
+    for attempt in 1..=attempts.max(1) {
+        match client.get(url).send().await {
+            Ok(response) => {
+                let status = response.status();
+                match response.bytes().await {
+                    Ok(body) => return Ok((status, body.to_vec())),
+                    Err(err) => last_error = Some(format!("response body error: {err}")),
+                }
+            }
+            Err(err) => last_error = Some(format!("request error: {err}")),
+        }
+        if attempt < attempts {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "request was not attempted".to_string()))
 }
 
 fn parse_corpus(corpus: &str) -> Vec<CorpusEntry> {

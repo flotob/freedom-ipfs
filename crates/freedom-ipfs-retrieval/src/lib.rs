@@ -936,6 +936,7 @@ fn timeout_http_client(timeout: Duration) -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(timeout)
         .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("HTTP provider client config is valid")
 }
@@ -1010,6 +1011,8 @@ struct BlockPresence {
 #[cfg(test)]
 mod bitswap_tests {
     use super::*;
+    use std::net::SocketAddr;
+    use tokio::io::{AsyncReadExt as TokioAsyncReadExt, AsyncWriteExt as TokioAsyncWriteExt};
 
     #[test]
     fn extracts_supported_peer_multiaddr() {
@@ -1158,6 +1161,73 @@ mod bitswap_tests {
             .unwrap()
             .unwrap();
         swarm_task.abort();
+    }
+
+    #[tokio::test]
+    async fn rejects_redirected_http_provider_blocks() {
+        let data = b"redirect target block";
+        let cid = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, data);
+        let (addr, server_task) = spawn_redirecting_http_provider(cid, data.to_vec()).await;
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let retriever = HttpRetriever::new(
+            freedom_ipfs_routing::DelegatedRoutingClient::new("http://127.0.0.1:9/routing/v1"),
+            store.clone(),
+        );
+        let provider = Provider::from_parts(
+            None,
+            vec![format!("/ip4/{}/tcp/{}/http", addr.ip(), addr.port())],
+        )
+        .unwrap_or_else(|_| panic!("failed to build HTTP provider for {addr}"));
+
+        let err = retriever
+            .fetch_from_providers_with_source(&cid, &[provider])
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, RetrievalError::NoHttpProviders));
+        assert!(store.get(&cid).unwrap().is_none());
+        server_task.abort();
+    }
+
+    async fn spawn_redirecting_http_provider(
+        cid: Cid,
+        data: Vec<u8>,
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let data = data.clone();
+                tokio::spawn(async move {
+                    let mut request = vec![0u8; 4096];
+                    let Ok(read) = stream.read(&mut request).await else {
+                        return;
+                    };
+                    let request = String::from_utf8_lossy(&request[..read]);
+                    let response = if request.starts_with("GET /redirected ") {
+                        format!(
+                            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                            data.len()
+                        )
+                        .into_bytes()
+                        .into_iter()
+                        .chain(data)
+                        .collect::<Vec<_>>()
+                    } else {
+                        let location = format!("/redirected?cid={cid}");
+                        format!(
+                            "HTTP/1.1 302 Found\r\nlocation: {location}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                        )
+                        .into_bytes()
+                    };
+                    let _ = stream.write_all(&response).await;
+                });
+            }
+        });
+        (addr, task)
     }
 
     fn bitswap_payload_prefix(cid: &Cid) -> Vec<u8> {

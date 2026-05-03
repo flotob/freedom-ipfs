@@ -209,14 +209,16 @@ fn collect_named_files(path: &Path, name: &str, files: &mut Vec<PathBuf>) -> Res
 }
 
 fn verify_exported_symbols(library: &Path) -> Result<()> {
-    let output = Command::new("xcrun")
-        .args(["llvm-nm", "--extern-only", "--defined-only"])
+    let llvm_nm = rust_llvm_nm()?;
+    let output = Command::new(&llvm_nm)
+        .args(["--extern-only", "--defined-only"])
         .arg(library)
         .output()
-        .with_context(|| format!("xcrun llvm-nm {}", library.display()))?;
+        .with_context(|| format!("{} {}", llvm_nm.display(), library.display()))?;
     if !output.status.success() {
         bail!(
-            "xcrun llvm-nm {} failed: {}",
+            "{} {} failed: {}",
+            llvm_nm.display(),
             library.display(),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -234,6 +236,43 @@ fn verify_exported_symbols(library: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn rust_llvm_nm() -> Result<PathBuf> {
+    let sysroot = command_stdout(
+        Command::new("rustc").args(["--print", "sysroot"]),
+        "rustc --print sysroot",
+    )?;
+    let host = rust_host_triple()?;
+    let llvm_nm = Path::new(sysroot.trim())
+        .join("lib")
+        .join("rustlib")
+        .join(host)
+        .join("bin")
+        .join("llvm-nm");
+    if !llvm_nm.exists() {
+        run(
+            Command::new("rustup").args(["component", "add", "llvm-tools-preview"]),
+            "rustup component add llvm-tools-preview",
+        )?;
+    }
+    if !llvm_nm.exists() {
+        bail!(
+            "{} is missing after installing llvm-tools-preview",
+            llvm_nm.display()
+        );
+    }
+    Ok(llvm_nm)
+}
+
+fn rust_host_triple() -> Result<String> {
+    let version = command_stdout(Command::new("rustc").arg("-vV"), "rustc -vV")?;
+    for line in version.lines() {
+        if let Some(host) = line.strip_prefix("host: ") {
+            return Ok(host.trim().to_string());
+        }
+    }
+    bail!("rustc -vV did not report a host triple")
 }
 
 fn verify_swift_simulator_smoke(framework: &Path, libraries: &[PathBuf]) -> Result<()> {

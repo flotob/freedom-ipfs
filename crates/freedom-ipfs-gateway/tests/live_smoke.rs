@@ -1,8 +1,13 @@
 use axum::http::StatusCode;
-use freedom_ipfs_gateway::router_with_provider;
+use freedom_ipfs_gateway::router_with_provider_and_name_resolver;
+use freedom_ipfs_namesys::{
+    CachedNameResolver, CloudflareDohResolver, DefaultNameResolver, DelegatedIpnsResolver,
+    FallbackIpnsResolver,
+};
 use freedom_ipfs_retrieval::FetchingBlockProvider;
 use freedom_ipfs_routing::{
-    AutoRoutingClient, DelegatedRoutingClient, LightDhtClient, DEFAULT_DELEGATED_ROUTER,
+    AutoRoutingClient, DelegatedRoutingClient, DhtIpnsResolver, LightDhtClient,
+    DEFAULT_DELEGATED_ROUTER,
 };
 use freedom_ipfs_store::SqliteBlockStore;
 use serde::Deserialize;
@@ -47,19 +52,27 @@ async fn live_gateway_fetches_real_paths_without_public_gateway_fallback() {
     let router = env::var("FREEDOM_IPFS_DELEGATED_ROUTER")
         .unwrap_or_else(|_| DEFAULT_DELEGATED_ROUTER.to_string());
     let store = SqliteBlockStore::in_memory(256 * 1024 * 1024).unwrap();
-    let routing = AutoRoutingClient::new(
-        DelegatedRoutingClient::new(router),
-        LightDhtClient::default(),
-    );
+    let dht = LightDhtClient::default();
+    let routing = AutoRoutingClient::new(DelegatedRoutingClient::new(router.clone()), dht.clone());
     let provider = Arc::new(FetchingBlockProvider::new(store, routing));
     let stats_provider = provider.clone();
+    let name_resolver = Arc::new(CachedNameResolver::new(DefaultNameResolver::new(
+        CloudflareDohResolver::default(),
+        FallbackIpnsResolver::new(
+            DelegatedIpnsResolver::new(router),
+            DhtIpnsResolver::new(dht),
+        ),
+    )));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, router_with_provider(provider))
-            .await
-            .unwrap();
+        axum::serve(
+            listener,
+            router_with_provider_and_name_resolver(provider, name_resolver),
+        )
+        .await
+        .unwrap();
     });
     eprintln!("local gateway listening on http://{addr} with auto routing");
 

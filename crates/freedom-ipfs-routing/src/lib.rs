@@ -199,6 +199,11 @@ impl LightDhtClient {
         self
     }
 
+    pub fn with_max_providers(mut self, max_providers: usize) -> Self {
+        self.max_providers = max_providers.max(1);
+        self
+    }
+
     pub async fn providers(&self, cid: &Cid) -> Result<Vec<Provider>> {
         let mut swarm = self.bootstrapped_swarm().await?;
 
@@ -657,6 +662,22 @@ mod tests {
             "QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa"
         );
         assert_eq!(addr.to_string(), "/dnsaddr/ny5.bootstrap.libp2p.io");
+    }
+
+    #[test]
+    fn configures_max_dht_providers_with_floor() {
+        assert_eq!(
+            LightDhtClient::default()
+                .with_max_providers(4)
+                .max_providers,
+            4
+        );
+        assert_eq!(
+            LightDhtClient::default()
+                .with_max_providers(0)
+                .max_providers,
+            1
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

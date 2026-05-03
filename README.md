@@ -24,7 +24,7 @@ Early implementation. Current code supports:
 - offline gateway constructors keep name resolution cache-only/no-network by default,
 - short-lived in-memory DNSLink/IPNS name-resolution cache,
 - delegated routing provider lookup,
-- client-mode light DHT provider lookup fallback,
+- client-mode light DHT provider/IPNS lookup fallback with configurable provider fanout,
 - short-lived multihash-keyed provider-result cache and bad-provider suppression,
 - verified HTTP raw-block retrieval from HTTP-capable providers,
 - client-only Bitswap retrieval over TCP, WebSocket, and QUIC libp2p streams for Bitswap-only providers,

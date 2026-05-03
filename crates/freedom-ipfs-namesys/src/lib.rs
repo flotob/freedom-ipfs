@@ -45,6 +45,15 @@ pub type Result<T> = std::result::Result<T, NamesysError>;
 #[async_trait]
 pub trait DnsTxtResolver: Send + Sync {
     async fn txt_lookup(&self, name: &str) -> Result<Vec<String>>;
+
+    async fn txt_lookup_with_ttl(&self, name: &str) -> Result<Vec<DnsTxtRecord>> {
+        Ok(self
+            .txt_lookup(name)
+            .await?
+            .into_iter()
+            .map(DnsTxtRecord::new)
+            .collect())
+    }
 }
 
 #[async_trait]
@@ -65,6 +74,54 @@ where
 #[async_trait]
 pub trait NameResolver: Send + Sync {
     async fn resolve_name(&self, name: &str) -> Result<String>;
+
+    async fn resolve_name_with_ttl(&self, name: &str) -> Result<ResolvedName> {
+        self.resolve_name(name).await.map(ResolvedName::new)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DnsTxtRecord {
+    pub value: String,
+    pub ttl: Option<Duration>,
+}
+
+impl DnsTxtRecord {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            ttl: None,
+        }
+    }
+
+    pub fn with_ttl(value: impl Into<String>, ttl: Duration) -> Self {
+        Self {
+            value: value.into(),
+            ttl: Some(ttl),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedName {
+    pub value: String,
+    pub ttl: Option<Duration>,
+}
+
+impl ResolvedName {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            ttl: None,
+        }
+    }
+
+    pub fn with_ttl(value: impl Into<String>, ttl: Duration) -> Self {
+        Self {
+            value: value.into(),
+            ttl: Some(ttl),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -94,13 +151,19 @@ where
     R: NameResolver,
 {
     async fn resolve_name(&self, name: &str) -> Result<String> {
+        self.resolve_name_with_ttl(name)
+            .await
+            .map(|resolved| resolved.value)
+    }
+
+    async fn resolve_name_with_ttl(&self, name: &str) -> Result<ResolvedName> {
         if let Some(value) = self.cached(name) {
-            return Ok(value);
+            return Ok(ResolvedName::new(value));
         }
 
-        let value = self.inner.resolve_name(name).await?;
-        self.store(name, &value);
-        Ok(value)
+        let resolved = self.inner.resolve_name_with_ttl(name).await?;
+        self.store(name, &resolved.value, resolved.ttl);
+        Ok(resolved)
     }
 }
 
@@ -115,16 +178,18 @@ impl<R> CachedNameResolver<R> {
         None
     }
 
-    fn store(&self, name: &str, value: &str) {
-        if self.ttl.is_zero() {
+    fn store(&self, name: &str, value: &str, ttl: Option<Duration>) {
+        let ttl = ttl.map_or(self.ttl, |ttl| ttl.min(self.ttl));
+        if ttl.is_zero() {
             return;
         }
+        let expires_at = Instant::now().checked_add(ttl).unwrap_or_else(Instant::now);
         if let Ok(mut cache) = self.cache.lock() {
             cache.insert(
                 name.to_string(),
                 CachedName {
                     value: value.to_string(),
-                    expires_at: Instant::now() + self.ttl,
+                    expires_at,
                 },
             );
         }
@@ -164,6 +229,15 @@ impl CloudflareDohResolver {
 #[async_trait]
 impl DnsTxtResolver for CloudflareDohResolver {
     async fn txt_lookup(&self, name: &str) -> Result<Vec<String>> {
+        Ok(self
+            .txt_lookup_with_ttl(name)
+            .await?
+            .into_iter()
+            .map(|record| record.value)
+            .collect())
+    }
+
+    async fn txt_lookup_with_ttl(&self, name: &str) -> Result<Vec<DnsTxtRecord>> {
         let response = self
             .client
             .get(&self.endpoint)
@@ -179,7 +253,10 @@ impl DnsTxtResolver for CloudflareDohResolver {
             .answer
             .unwrap_or_default()
             .into_iter()
-            .map(|answer| unquote_txt(&answer.data))
+            .map(|answer| DnsTxtRecord {
+                value: unquote_txt(&answer.data),
+                ttl: answer.ttl.map(Duration::from_secs),
+            })
             .collect())
     }
 }
@@ -259,13 +336,17 @@ where
     I: IpnsResolver,
 {
     async fn resolve_name(&self, name: &str) -> Result<String> {
-        match resolve_dnslink(&self.dnslink, name).await {
+        self.resolve_name_with_ttl(name)
+            .await
+            .map(|resolved| resolved.value)
+    }
+
+    async fn resolve_name_with_ttl(&self, name: &str) -> Result<ResolvedName> {
+        match resolve_dnslink_with_ttl(&self.dnslink, name).await {
             Ok(path) => Ok(path),
-            Err(NamesysError::NotFound(_)) if is_ipns_name(name) => self
-                .ipns
-                .resolve_ipns(name)
-                .await
-                .map(|record| record.value),
+            Err(NamesysError::NotFound(_)) if is_ipns_name(name) => {
+                self.ipns.resolve_ipns(name).await.map(resolved_ipns_record)
+            }
             Err(err) => Err(err),
         }
     }
@@ -303,18 +384,37 @@ where
 }
 
 pub async fn resolve_dnslink(resolver: &dyn DnsTxtResolver, domain: &str) -> Result<String> {
+    resolve_dnslink_with_ttl(resolver, domain)
+        .await
+        .map(|resolved| resolved.value)
+}
+
+pub async fn resolve_dnslink_with_ttl(
+    resolver: &dyn DnsTxtResolver,
+    domain: &str,
+) -> Result<ResolvedName> {
     let lookup = if domain.starts_with("_dnslink.") {
         domain.to_string()
     } else {
         format!("_dnslink.{domain}")
     };
-    let records = resolver.txt_lookup(&lookup).await?;
+    let records = resolver.txt_lookup_with_ttl(&lookup).await?;
     for record in records {
-        if let Some(value) = parse_dnslink_txt(&record)? {
-            return Ok(value);
+        if let Some(value) = parse_dnslink_txt(&record.value)? {
+            return Ok(ResolvedName {
+                value,
+                ttl: record.ttl,
+            });
         }
     }
     Err(NamesysError::NotFound(domain.to_string()))
+}
+
+fn resolved_ipns_record(record: IpnsRecord) -> ResolvedName {
+    ResolvedName {
+        value: record.value,
+        ttl: (record.ttl > 0).then(|| Duration::from_nanos(record.ttl)),
+    }
 }
 
 pub fn parse_dnslink_txt(record: &str) -> Result<Option<String>> {
@@ -572,6 +672,8 @@ struct DohResponse {
 #[derive(Debug, Deserialize)]
 struct DohAnswer {
     data: String,
+    #[serde(rename = "TTL")]
+    ttl: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -660,8 +762,8 @@ mod tests {
             StaticDnsTxtResolver {
                 expected_name: "_dnslink.example.test",
                 records: vec![
-                    "unrelated=txt".to_string(),
-                    "dnslink=/ipfs/bafkqaddwgevxmmraojswg33smq".to_string(),
+                    DnsTxtRecord::new("unrelated=txt"),
+                    DnsTxtRecord::new("dnslink=/ipfs/bafkqaddwgevxmmraojswg33smq"),
                 ],
             },
             StaticIpnsResolver { record: None },
@@ -673,11 +775,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dnslink_resolution_preserves_dns_ttl() {
+        let resolver = StaticDnsTxtResolver {
+            expected_name: "_dnslink.example.test",
+            records: vec![DnsTxtRecord::with_ttl(
+                "dnslink=/ipfs/bafkqaddwgevxmmraojswg33smq",
+                Duration::from_secs(42),
+            )],
+        };
+
+        let resolved = resolve_dnslink_with_ttl(&resolver, "example.test")
+            .await
+            .unwrap();
+
+        assert_eq!(resolved.value, "/ipfs/bafkqaddwgevxmmraojswg33smq");
+        assert_eq!(resolved.ttl, Some(Duration::from_secs(42)));
+    }
+
+    #[tokio::test]
+    async fn cloudflare_doh_resolver_preserves_answer_ttl() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut request)
+                .await
+                .unwrap();
+            let body = r#"{"Answer":[{"data":"\"dnslink=/ipfs/bafkqaddwgevxmmraojswg33smq\"","TTL":120}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/dns-json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes())
+                .await
+                .unwrap();
+        });
+
+        let resolver = CloudflareDohResolver::new(format!("http://{addr}/dns-query"));
+        let records = resolver
+            .txt_lookup_with_ttl("_dnslink.example.test")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            records,
+            vec![DnsTxtRecord::with_ttl(
+                "dnslink=/ipfs/bafkqaddwgevxmmraojswg33smq",
+                Duration::from_secs(120)
+            )]
+        );
+    }
+
+    #[tokio::test]
     async fn cached_name_resolver_reuses_successful_resolution() {
         let count = Arc::new(AtomicUsize::new(0));
         let resolver = CachedNameResolver::with_ttl(
             CountingNameResolver {
                 count: count.clone(),
+                ttl: None,
             },
             Duration::from_secs(60),
         );
@@ -691,6 +848,51 @@ mod tests {
             "/ipfs/1"
         );
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn cached_name_resolver_honors_dynamic_zero_ttl() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let resolver = CachedNameResolver::with_ttl(
+            CountingNameResolver {
+                count: count.clone(),
+                ttl: Some(Duration::ZERO),
+            },
+            Duration::from_secs(60),
+        );
+
+        assert_eq!(
+            resolver.resolve_name("example.test").await.unwrap(),
+            "/ipfs/1"
+        );
+        assert_eq!(
+            resolver.resolve_name("example.test").await.unwrap(),
+            "/ipfs/2"
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn cached_name_resolver_caps_dynamic_ttl() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let resolver = CachedNameResolver::with_ttl(
+            CountingNameResolver {
+                count: count.clone(),
+                ttl: Some(Duration::from_secs(60)),
+            },
+            Duration::from_millis(1),
+        );
+
+        assert_eq!(
+            resolver.resolve_name("example.test").await.unwrap(),
+            "/ipfs/1"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            resolver.resolve_name("example.test").await.unwrap(),
+            "/ipfs/2"
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -832,6 +1034,7 @@ mod tests {
 
     struct CountingNameResolver {
         count: Arc<AtomicUsize>,
+        ttl: Option<Duration>,
     }
 
     #[async_trait]
@@ -839,6 +1042,14 @@ mod tests {
         async fn resolve_name(&self, _name: &str) -> Result<String> {
             let value = self.count.fetch_add(1, Ordering::SeqCst) + 1;
             Ok(format!("/ipfs/{value}"))
+        }
+
+        async fn resolve_name_with_ttl(&self, _name: &str) -> Result<ResolvedName> {
+            let value = self.count.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(ResolvedName {
+                value: format!("/ipfs/{value}"),
+                ttl: self.ttl,
+            })
         }
     }
 
@@ -848,12 +1059,21 @@ mod tests {
 
     struct StaticDnsTxtResolver {
         expected_name: &'static str,
-        records: Vec<String>,
+        records: Vec<DnsTxtRecord>,
     }
 
     #[async_trait]
     impl DnsTxtResolver for StaticDnsTxtResolver {
         async fn txt_lookup(&self, name: &str) -> Result<Vec<String>> {
+            Ok(self
+                .txt_lookup_with_ttl(name)
+                .await?
+                .into_iter()
+                .map(|record| record.value)
+                .collect())
+        }
+
+        async fn txt_lookup_with_ttl(&self, name: &str) -> Result<Vec<DnsTxtRecord>> {
             if name == self.expected_name {
                 Ok(self.records.clone())
             } else {

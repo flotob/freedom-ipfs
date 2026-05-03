@@ -63,7 +63,7 @@ Observed live-corpus result:
 Observed local-soak result:
 
 - 500 cached local-gateway requests completed against an in-memory raw block.
-- Linux RSS moved from `8704` KiB to `13696` KiB, within the 32 MiB maximum growth budget.
+- Linux RSS moved from `9216` KiB to `13696` KiB, within the 32 MiB maximum growth budget.
 
 iOS packaging command was exercised on Linux and correctly refused to run:
 
@@ -89,7 +89,7 @@ M2 CID, block verification, and store: complete for MVP. CID parse/format, verif
 
 M3 UnixFS reader and offline gateway: complete for MVP. Raw, dag-pb, multi-block files, directories, directory `index.html` fallback with path-based MIME headers, basic HAMT traversal, range reads, malformed/unsatisfiable byte-range rejection, streaming gateway responses, traversal-segment rejection, and Kubo-generated UnixFS/HAMT CAR import/gateway byte parity are implemented and tested.
 
-M4 IPNS and DNSLink: implemented. DNSLink uses a pluggable TXT resolver trait and a generic default resolver wrapper, with Cloudflare DoH as the current shipped backend. IPNS delegated lookup, light-DHT fallback, v2 verification, expiry checks, recursion-limit failure, and name caching are implemented and tested. Native/system TXT lookup remains a follow-up.
+M4 IPNS and DNSLink: implemented. DNSLink uses a pluggable TXT resolver trait and a generic default resolver wrapper, with Cloudflare DoH as the current shipped backend. DNS TXT TTLs are preserved when available and capped by the name cache. IPNS delegated lookup, light-DHT fallback, v2 verification, expiry checks, recursion-limit failure, and name caching are implemented and tested. Native/system TXT lookup remains a follow-up.
 
 M5 delegated routing and verified HTTP retrieval: implemented. Delegated Routing V1 parsing, optional comma-separated multi-router race/failover for provider discovery, malformed/oversized routing response rejection, bounded delegated response size/provider fanout, provider caching, bounded HTTP raw block retrieval, CID verification, invalid/redirected/oversized provider block rejection, bad-provider suppression, and HTTP timeouts are implemented.
 
@@ -112,7 +112,7 @@ M11 optional features: not started except CAR export/import support, which was p
 - Real iPhone resource targets are unverified, including the provisional under-60-MiB idle RSS target beside Bee.
 - iOS lifecycle hooks exist at the ABI/Swift level, but actual host-app background/foreground, low-memory, and network-path event wiring is not verified on iOS.
 - DHT-only retrieval of `daicowtf.eth` is not reliable on the public DHT; current auto mode succeeds because delegated routing returns usable providers.
-- DNSLink still defaults to Cloudflare DoH. Native/system TXT lookup should be evaluated for artifact size and iOS behavior.
+- DNSLink still defaults to Cloudflare DoH, with TTL-aware caching. Native/system TXT lookup should be evaluated for artifact size and iOS behavior.
 - The checked-in public CID corpus is intentionally small; it needs more IPNS, DNSLink, large/range-media, and documented pass/fail cases.
 - The local soak is host-side only; long network soaks and iOS device memory-growth soaks are still missing.
 - No broad Kubo parity matrix exists yet for deterministic cross-implementation gateway/routing regression coverage.

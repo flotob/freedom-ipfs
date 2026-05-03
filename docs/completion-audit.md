@@ -69,7 +69,8 @@ Results:
 | Useful gateway status codes | Tests cover invalid path/range, not found/name not found, timeout, busy, and traversal cases. | Mostly done |
 | Bounded gateway concurrency | Gateway semaphore and concurrency-limit test. | Done |
 | IPNS support in first product-usable release | Delegated IPNS, light-DHT IPNS fallback, v2 verification, expiry, tamper, recursion-limit tests. | Done |
-| DNSLink support | DNSLink parser, pluggable TXT resolver trait, generic default resolver wrapper, Cloudflare DoH backend, tests. | Done |
+| DNSLink support | DNSLink parser, pluggable TXT resolver trait, generic default resolver wrapper, Cloudflare DoH backend, TTL-aware records, tests. | Done |
+| DNSLink cache TTL | DNSLink resolution preserves DNS TXT TTLs where the resolver supplies them; `CachedNameResolver` caps dynamic TTLs with a conservative max. | Done |
 | Native/system TXT resolver | Explicit follow-up in spec/status. | Not required for MVP; open |
 | ENS excluded from node | Live smoke resolves ENS/contenthash outside the node, then feeds `/ipfs` paths to the local gateway. | Done |
 | Delegated Routing V1 | Routing parser/client, JSON/NDJSON tests, response byte cap, provider fanout cap. | Done |

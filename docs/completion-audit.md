@@ -84,13 +84,13 @@ Results:
 | Lazy/idle network behavior | DHT swarms are per lookup; Bitswap sessions are bounded; no background maintenance loops are apparent. | Partially verified; device/network inspection still needed |
 | Routing modes | `auto`, `delegated`, `light_dht`, `offline` paths exist across CLI/mobile/gateway constructors. | Done |
 | iOS-first C ABI | `freedom-ipfs-mobile`, `ffi/include/freedom_ipfs.h`, and lifecycle/cache/gateway/preload APIs exist. | Done |
-| Swift wrapper | `ffi/swift/FreedomIpfsReader.swift` exists. | Source present; not compiled here |
+| Swift wrapper | `ffi/swift/FreedomIpfsReader.swift` exists with gateway start/stop, stats, cache, lifecycle, preload/cancel, multi-router, and local URL mapping helpers. | Source present; not compiled here |
 | XCFramework build skeleton | `xtask build-xcframework` builds iOS targets and packages headers/module map on macOS. | Skeleton done; not produced on Linux |
 | XCFramework verifier | `xtask verify-xcframework` checks slices, headers, module maps, exported symbols on macOS. | Skeleton done; not run on macOS |
 | Simulator smoke link/start | Required by spec. | Missing, needs macOS/Xcode |
 | Real iPhone resource target under 60 MiB RSS beside Bee | Required by spec. | Missing, needs device |
 | Lifecycle hooks | ABI/Swift hooks for background, foreground, low memory, network change; unit tests cover behavior. | Implemented; host-app/device wiring unverified |
-| Browser integration helpers | Local gateway URL, preload/cancel, cache stats/control. | Partially done |
+| Browser integration helpers | Local gateway URL, `ipfs://`/`ipns://`/gateway-style URL mapping helpers, preload/cancel, cache stats/control. | Source present; Swift compile/link unverified |
 | Live ENS-backed smoke | `make live-smoke` resolves `vitalik.eth` and `daicowtf.eth` at runtime and fetches through local gateway. | Done on Linux |
 | Public CID corpus | Small checked-in corpus and opt-in smoke. | Started; should grow |
 | Kubo parity | Deterministic Kubo-generated UnixFS/HAMT parity tests. | Started; should grow |

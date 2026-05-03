@@ -52,7 +52,7 @@ Early implementation. Current code supports:
 - configurable local-gateway request concurrency limiting,
 - CAR import/export for tests, diagnostics, and cache warmup,
 - mobile lifecycle hooks for background/foreground, low-memory cache trimming, and network-change provider cache hygiene,
-- an iOS staticlib/XCFramework build skeleton with staged C headers/module map, exported-symbol verification, and a Swift wrapper for persistent-cache node creation, cache import/export, cache trimming, routing-mode selection, lifecycle hooks, preload/cancel, and offline/online gateway start.
+- an iOS staticlib/XCFramework build skeleton with staged C headers/module map, exported-symbol verification, and a Swift wrapper for persistent-cache node creation, cache import/export, cache trimming, routing-mode selection, multi-router configuration, local gateway URL mapping, lifecycle hooks, preload/cancel, and offline/online gateway start.
 
 Still incomplete: production iOS packaging validation, resource profiling on device, network path integration in the host app, and hardened DHT-only retrieval for sites whose DHT providers are slow or stale. See [docs/completion-audit.md](docs/completion-audit.md) for the current prompt-to-artifact checklist.
 

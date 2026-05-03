@@ -106,12 +106,84 @@ public final class FreedomIpfsReader {
         }
     }
 
+    public func startOnlineGateway(
+        address: String = "127.0.0.1:0",
+        delegatedRouters: [String],
+        routingMode: FreedomIpfsRoutingMode = .auto,
+        maxConcurrentRequests: Int = 0,
+        dhtQueryTimeoutSeconds: UInt64 = 0,
+        dhtMaxProviders: Int = 0
+    ) throws {
+        let routerList = delegatedRouters
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: ",")
+        try startOnlineGateway(
+            address: address,
+            delegatedRouter: routerList.isEmpty ? nil : routerList,
+            routingMode: routingMode,
+            maxConcurrentRequests: maxConcurrentRequests,
+            dhtQueryTimeoutSeconds: dhtQueryTimeoutSeconds,
+            dhtMaxProviders: dhtMaxProviders
+        )
+    }
+
     public var gatewayURL: URL? {
         guard let handle, let ptr = freedom_ipfs_node_gateway_url(handle) else {
             return nil
         }
         defer { freedom_ipfs_string_free(ptr) }
         return URL(string: String(cString: ptr))
+    }
+
+    public func localGatewayURL(for address: String) -> URL? {
+        guard
+            let gatewayURL,
+            let path = Self.gatewayPathParts(for: address),
+            var components = URLComponents(url: gatewayURL, resolvingAgainstBaseURL: false)
+        else {
+            return nil
+        }
+        components.percentEncodedPath = path.percentEncodedPath
+        components.percentEncodedQuery = path.percentEncodedQuery
+        components.percentEncodedFragment = path.percentEncodedFragment
+        return components.url
+    }
+
+    public static func gatewayPath(for address: String) -> String? {
+        gatewayPathParts(for: address)?.rendered
+    }
+
+    private static func gatewayPathParts(for address: String) -> GatewayPath? {
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+
+        if let direct = GatewayPath(gatewayStyleAddress: trimmed) {
+            return direct
+        }
+
+        guard
+            let components = URLComponents(string: trimmed),
+            let scheme = components.scheme?.lowercased(),
+            scheme == "ipfs" || scheme == "ipns"
+        else {
+            return nil
+        }
+
+        let authority = components.host ?? ""
+        guard !authority.isEmpty else {
+            return nil
+        }
+
+        let prefix = scheme == "ipfs" ? "/ipfs/" : "/ipns/"
+        let path = prefix + authority + components.percentEncodedPath
+        return GatewayPath(
+            percentEncodedPath: path,
+            percentEncodedQuery: components.percentEncodedQuery,
+            percentEncodedFragment: components.percentEncodedFragment
+        )
     }
 
     public func preload(path: String) -> UInt64 {
@@ -218,5 +290,45 @@ public final class FreedomIpfsReader {
             return Data()
         }
         return Data(bytes: data, count: buffer.len)
+    }
+}
+
+private struct GatewayPath {
+    let percentEncodedPath: String
+    let percentEncodedQuery: String?
+    let percentEncodedFragment: String?
+
+    init(percentEncodedPath: String, percentEncodedQuery: String?, percentEncodedFragment: String?) {
+        self.percentEncodedPath = percentEncodedPath
+        self.percentEncodedQuery = percentEncodedQuery
+        self.percentEncodedFragment = percentEncodedFragment
+    }
+
+    init?(gatewayStyleAddress: String) {
+        guard
+            let components = URLComponents(string: gatewayStyleAddress),
+            components.scheme == nil,
+            components.host == nil,
+            components.percentEncodedPath.hasPrefix("/ipfs/")
+                || components.percentEncodedPath.hasPrefix("/ipns/")
+        else {
+            return nil
+        }
+        self.init(
+            percentEncodedPath: components.percentEncodedPath,
+            percentEncodedQuery: components.percentEncodedQuery,
+            percentEncodedFragment: components.percentEncodedFragment
+        )
+    }
+
+    var rendered: String {
+        var output = percentEncodedPath
+        if let percentEncodedQuery {
+            output += "?\(percentEncodedQuery)"
+        }
+        if let percentEncodedFragment {
+            output += "#\(percentEncodedFragment)"
+        }
+        return output
     }
 }

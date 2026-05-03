@@ -698,6 +698,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_ipns_resolution_loops() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router_with_provider_and_name_resolver(
+            Arc::new(store),
+            Arc::new(StaticNameResolver {
+                name: "loop.example".to_string(),
+                target: "/ipns/loop.example".to_string(),
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{addr}/ipns/loop.example");
+        let response = reqwest::get(url).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(response
+            .text()
+            .await
+            .unwrap()
+            .contains("recursion limit exceeded"));
+    }
+
+    #[tokio::test]
     async fn rejects_path_traversal_segments() {
         let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
         let data = b"do not traverse";

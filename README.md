@@ -19,6 +19,7 @@ Early implementation. Current code supports:
 
 - cache-backed local gateway for `/ipfs` and DNSLink/IPNS-backed `/ipns`,
 - IPNS record retrieval and v2 signature/validity verification,
+- pluggable DNSLink TXT resolver wiring, with Cloudflare DoH as the current default,
 - shared delegated endpoint configuration for provider routing and delegated IPNS lookup,
 - binary `/ipns/` light-DHT record lookup fallback for IPNS in `auto` and `light_dht` modes,
 - deterministic in-process light-DHT IPNS record lookup test coverage,

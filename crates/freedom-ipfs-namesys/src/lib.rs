@@ -241,20 +241,21 @@ impl IpnsResolver for DelegatedIpnsResolver {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct DefaultNameResolver<I = DelegatedIpnsResolver> {
-    dnslink: CloudflareDohResolver,
+pub struct DefaultNameResolver<D = CloudflareDohResolver, I = DelegatedIpnsResolver> {
+    dnslink: D,
     ipns: I,
 }
 
-impl<I> DefaultNameResolver<I> {
-    pub fn new(dnslink: CloudflareDohResolver, ipns: I) -> Self {
+impl<D, I> DefaultNameResolver<D, I> {
+    pub fn new(dnslink: D, ipns: I) -> Self {
         Self { dnslink, ipns }
     }
 }
 
 #[async_trait]
-impl<I> NameResolver for DefaultNameResolver<I>
+impl<D, I> NameResolver for DefaultNameResolver<D, I>
 where
+    D: DnsTxtResolver,
     I: IpnsResolver,
 {
     async fn resolve_name(&self, name: &str) -> Result<String> {
@@ -654,6 +655,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn default_name_resolver_uses_pluggable_dnslink_resolver() {
+        let resolver = DefaultNameResolver::new(
+            StaticDnsTxtResolver {
+                expected_name: "_dnslink.example.test",
+                records: vec![
+                    "unrelated=txt".to_string(),
+                    "dnslink=/ipfs/bafkqaddwgevxmmraojswg33smq".to_string(),
+                ],
+            },
+            StaticIpnsResolver { record: None },
+        );
+
+        let resolved = resolver.resolve_name("example.test").await.unwrap();
+
+        assert_eq!(resolved, "/ipfs/bafkqaddwgevxmmraojswg33smq");
+    }
+
+    #[tokio::test]
     async fn cached_name_resolver_reuses_successful_resolution() {
         let count = Arc::new(AtomicUsize::new(0));
         let resolver = CachedNameResolver::with_ttl(
@@ -825,6 +844,22 @@ mod tests {
 
     struct StaticIpnsResolver {
         record: Option<IpnsRecord>,
+    }
+
+    struct StaticDnsTxtResolver {
+        expected_name: &'static str,
+        records: Vec<String>,
+    }
+
+    #[async_trait]
+    impl DnsTxtResolver for StaticDnsTxtResolver {
+        async fn txt_lookup(&self, name: &str) -> Result<Vec<String>> {
+            if name == self.expected_name {
+                Ok(self.records.clone())
+            } else {
+                Err(NamesysError::NotFound(name.to_string()))
+            }
+        }
     }
 
     #[async_trait]

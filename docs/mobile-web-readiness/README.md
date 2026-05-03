@@ -66,7 +66,10 @@ path traversal, MIME sniffing, and gateway limiter behavior during live runs.
 
 The default live corpus is `tools/mobile-web-harness/corpus/mobile-web.json`.
 It captures browser-facing checks such as status, MIME type, byte ranges,
-minimum body size, body snippets, TTFB, and total response time.
+minimum body size, body snippets, TTFB, and total response time. The corpus now
+covers ENS-derived immutable HTML snapshots, DNSLink/IPNS page crawls, a
+DNSLink image byte-range case, and a small independent Wikipedia-on-IPFS
+DNSLink root.
 
 Entries can also enable a page crawl. A crawl fetches the root HTML, extracts
 same-origin browser subresources from HTML and CSS, resolves root-relative paths

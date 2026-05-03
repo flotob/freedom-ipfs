@@ -31,6 +31,17 @@
       }
     },
     {
+      "id": "vitalik-root-html-range",
+      "description": "ENS-resolved immutable vitalik.eth home snapshot. Adds a second CID-only HTML/range shape outside the DAICO page.",
+      "path": "/ipfs/bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u",
+      "range": "bytes=0-127",
+      "expect_status": 206,
+      "expect_content_type_prefix": "text/html",
+      "expect_content_range_prefix": "bytes 0-127/",
+      "min_bytes": 128,
+      "max_ttfb_ms": 30000
+    },
+    {
       "id": "ipfs-tech-root-html-range",
       "description": "DNSLink-backed IPNS website root. Exercises name resolution plus HTML gateway serving.",
       "path": "/ipns/ipfs.tech/",
@@ -59,6 +70,26 @@
         "include_css_assets": true,
         "asset_max_bytes": 2000000
       }
+    },
+    {
+      "id": "ipfs-tech-developers-hero-range",
+      "description": "DNSLink-backed image range from the ipfs.tech page bundle. Exercises media byte ranges without fetching the full image.",
+      "path": "/ipns/ipfs.tech/_nuxt/developers-hero.BRuJDQyf.jpg",
+      "range": "bytes=0-4095",
+      "expect_status": 206,
+      "expect_content_type_prefix": "image/",
+      "expect_content_range_prefix": "bytes 0-4095/",
+      "min_bytes": 4096,
+      "max_ttfb_ms": 45000
+    },
+    {
+      "id": "wikipedia-on-ipfs-root",
+      "description": "Small independent DNSLink root outside ipfs.tech. Keeps a non-IPFS-project IPNS/DNSLink target in the mobile-web harness.",
+      "path": "/ipns/en.wikipedia-on-ipfs.org",
+      "expect_status": 200,
+      "expect_content_type_prefix": "text/html",
+      "min_bytes": 128,
+      "max_ttfb_ms": 30000
     },
     {
       "id": "daicowtf-dot-eth-is-not-ipns",

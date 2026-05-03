@@ -333,7 +333,7 @@ pub unsafe extern "C" fn freedom_ipfs_node_handle_network_change(
 /// # Safety
 ///
 /// `ptr` must be a valid node pointer. `addr` must point to a NUL-terminated
-/// UTF-8 socket address string for the duration of this call.
+/// UTF-8 loopback socket address string for the duration of this call.
 #[no_mangle]
 pub unsafe extern "C" fn freedom_ipfs_node_start_gateway(
     ptr: *mut FreedomIpfsNode,
@@ -343,11 +343,7 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway(
         return false;
     }
     let node = &*ptr;
-    let addr = match CStr::from_ptr(addr)
-        .to_str()
-        .ok()
-        .and_then(|s| s.parse::<SocketAddr>().ok())
-    {
+    let addr = match parse_loopback_gateway_addr(addr) {
         Some(addr) => addr,
         None => return false,
     };
@@ -359,9 +355,10 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway(
 /// # Safety
 ///
 /// `ptr` must be a valid node pointer. `addr` must point to a NUL-terminated
-/// UTF-8 socket address string for the duration of this call. `delegated_router`
-/// may be null to use the default delegated routing endpoint, otherwise it must
-/// point to a NUL-terminated UTF-8 URL string or comma-separated URL list.
+/// UTF-8 loopback socket address string for the duration of this call.
+/// `delegated_router` may be null to use the default delegated routing
+/// endpoint, otherwise it must point to a NUL-terminated UTF-8 URL string or
+/// comma-separated URL list.
 #[no_mangle]
 pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online(
     ptr: *mut FreedomIpfsNode,
@@ -380,9 +377,10 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online(
 /// # Safety
 ///
 /// `ptr` must be a valid node pointer. `addr` must point to a NUL-terminated
-/// UTF-8 socket address string for the duration of this call. `delegated_router`
-/// may be null to use the default delegated routing endpoint, otherwise it must
-/// point to a NUL-terminated UTF-8 URL string or comma-separated URL list.
+/// UTF-8 loopback socket address string for the duration of this call.
+/// `delegated_router` may be null to use the default delegated routing
+/// endpoint, otherwise it must point to a NUL-terminated UTF-8 URL string or
+/// comma-separated URL list.
 /// `routing_mode` must be one of the `FREEDOM_IPFS_ROUTING_MODE_*` constants
 /// from the C header.
 #[no_mangle]
@@ -407,9 +405,10 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config(
 /// # Safety
 ///
 /// `ptr` must be a valid node pointer. `addr` must point to a NUL-terminated
-/// UTF-8 socket address string for the duration of this call. `delegated_router`
-/// may be null to use the default delegated routing endpoint, otherwise it must
-/// point to a NUL-terminated UTF-8 URL string or comma-separated URL list.
+/// UTF-8 loopback socket address string for the duration of this call.
+/// `delegated_router` may be null to use the default delegated routing
+/// endpoint, otherwise it must point to a NUL-terminated UTF-8 URL string or
+/// comma-separated URL list.
 /// `routing_mode` must be one of the `FREEDOM_IPFS_ROUTING_MODE_*` constants
 /// from the C header. `dht_*` values may be 0 to use the built-in mobile
 /// defaults.
@@ -445,9 +444,10 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config_v2(
 /// # Safety
 ///
 /// `ptr` must be a valid node pointer. `addr` must point to a NUL-terminated
-/// UTF-8 socket address string for the duration of this call. `delegated_router`
-/// may be null to use the default delegated routing endpoint, otherwise it must
-/// point to a NUL-terminated UTF-8 URL string or comma-separated URL list.
+/// UTF-8 loopback socket address string for the duration of this call.
+/// `delegated_router` may be null to use the default delegated routing
+/// endpoint, otherwise it must point to a NUL-terminated UTF-8 URL string or
+/// comma-separated URL list.
 /// `routing_mode` must be one of the `FREEDOM_IPFS_ROUTING_MODE_*` constants
 /// from the C header. `dht_*` values may be 0 to use the built-in mobile
 /// defaults. On success this cancels active preloads, stops the current gateway,
@@ -493,10 +493,7 @@ unsafe fn online_gateway_router(
     dht_query_timeout_secs: u64,
     dht_max_providers: usize,
 ) -> Option<(SocketAddr, axum::Router)> {
-    let addr = CStr::from_ptr(addr)
-        .to_str()
-        .ok()
-        .and_then(|s| s.parse::<SocketAddr>().ok())?;
+    let addr = parse_loopback_gateway_addr(addr)?;
     let delegated_routers = if delegated_router.is_null() {
         DEFAULT_DELEGATED_ROUTER.to_string()
     } else {
@@ -535,6 +532,14 @@ unsafe fn online_gateway_router(
             gateway_config,
         ),
     ))
+}
+
+unsafe fn parse_loopback_gateway_addr(addr: *const c_char) -> Option<SocketAddr> {
+    let addr = CStr::from_ptr(addr)
+        .to_str()
+        .ok()
+        .and_then(|s| s.parse::<SocketAddr>().ok())?;
+    addr.ip().is_loopback().then_some(addr)
 }
 
 fn light_dht_client(dht_query_timeout_secs: u64, dht_max_providers: usize) -> LightDhtClient {
@@ -796,6 +801,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_loopback_gateway_bind_addresses() {
+        unsafe {
+            let node = freedom_ipfs_node_new_in_memory();
+            assert!(!node.is_null());
+
+            for bind_addr in ["0.0.0.0:0", "[::]:0"] {
+                let addr = CString::new(bind_addr).unwrap();
+                assert!(!freedom_ipfs_node_start_gateway(node, addr.as_ptr()));
+                assert!(freedom_ipfs_node_gateway_url(node).is_null());
+            }
+
+            let ipv6_loopback = CString::new("[::1]:0").unwrap();
+            assert!(parse_loopback_gateway_addr(ipv6_loopback.as_ptr()).is_some());
+
+            freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
     fn starts_online_gateway_and_reports_bound_url() {
         unsafe {
             let node = freedom_ipfs_node_new_in_memory();
@@ -889,6 +913,19 @@ mod tests {
                 addr.as_ptr(),
                 router.as_ptr(),
                 99,
+                1,
+                0,
+                0,
+            ));
+            assert_eq!(gateway_url_string(node), first_url);
+            assert_gateway_health(node);
+
+            let non_loopback_addr = CString::new("0.0.0.0:0").unwrap();
+            assert!(!freedom_ipfs_node_restart_gateway_online_with_config_v2(
+                node,
+                non_loopback_addr.as_ptr(),
+                router.as_ptr(),
+                ROUTING_MODE_AUTO,
                 1,
                 0,
                 0,

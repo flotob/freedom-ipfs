@@ -53,6 +53,8 @@ Early implementation. Current code supports:
 - opt-in local gateway soak that repeats cached reads and checks bounded RSS growth on Linux,
 - opt-in live retrieval soak that repeats cold public-network gateway rounds and checks bounded RSS growth on Linux,
 - configurable local-gateway request concurrency limiting,
+- mobile gateway start/restart rejects non-loopback bind addresses so the iOS
+  data plane stays local-only,
 - bounded 16 MiB in-memory hot block cache in front of the SQLite cache,
 - CAR import/export for tests, diagnostics, and cache warmup,
 - mobile lifecycle hooks for background/foreground, low-memory cache trimming, and network-change provider cache hygiene,

@@ -39,6 +39,7 @@ bool freedom_ipfs_node_enter_background(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_enter_foreground(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_handle_low_memory(FreedomIpfsNode *ptr, uint64_t max_cache_bytes);
 bool freedom_ipfs_node_handle_network_change(FreedomIpfsNode *ptr);
+/* Gateway start/restart functions accept only loopback socket addresses. */
 bool freedom_ipfs_node_start_gateway(FreedomIpfsNode *ptr, const char *addr);
 bool freedom_ipfs_node_start_gateway_online(
     FreedomIpfsNode *ptr,

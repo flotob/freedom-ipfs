@@ -162,6 +162,34 @@ public final class FreedomIpfsReader {
         return freedom_ipfs_node_trim_cache(handle, maxBytes)
     }
 
+    public func enterBackground() -> Bool {
+        guard let handle else {
+            return false
+        }
+        return freedom_ipfs_node_enter_background(handle)
+    }
+
+    public func enterForeground() -> Bool {
+        guard let handle else {
+            return false
+        }
+        return freedom_ipfs_node_enter_foreground(handle)
+    }
+
+    public func handleLowMemory(maxCacheBytes: UInt64 = 0) -> Bool {
+        guard let handle else {
+            return false
+        }
+        return freedom_ipfs_node_handle_low_memory(handle, maxCacheBytes)
+    }
+
+    public func handleNetworkChange() -> Bool {
+        guard let handle else {
+            return false
+        }
+        return freedom_ipfs_node_handle_network_change(handle)
+    }
+
     public func importCar(_ data: Data) throws {
         guard let handle else {
             throw FreedomIpfsReaderError.invalidNode

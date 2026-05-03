@@ -56,7 +56,7 @@ Error: build-xcframework requires macOS with Xcode command line tools; current h
 
 M0 decisions and fixtures: partially complete. The repo, license, generated unit-test fixtures, deterministic libp2p fixtures, and Kubo-generated UnixFS/HAMT CAR parity smokes exist. A larger checked-in public fixture corpus is still useful.
 
-M1 workspace and mobile skeleton: mostly complete. Workspace, mobile C ABI, Swift wrapper source, gateway start/stop, stats, cache import/export, routing mode selection, preload/cancel, and XCFramework build skeleton exist. macOS/Xcode artifact production and simulator link/start remain unverified here.
+M1 workspace and mobile skeleton: mostly complete. Workspace, mobile C ABI, Swift wrapper source, gateway start/stop, stats, cache import/export, routing mode selection, lifecycle hooks, preload/cancel, and XCFramework build skeleton exist. macOS/Xcode artifact production and simulator link/start remain unverified here.
 
 M2 CID, block verification, and store: complete for MVP. CID parse/format, verified block insertion, CAR import/export, SQLite cache, eviction, provider cache, bad-provider cache, clear, and trim are covered by tests.
 
@@ -70,9 +70,9 @@ M6 minimal Bitswap client: implemented for read-only retrieval. It dials bounded
 
 M7 light DHT fallback: implemented for provider lookup and IPNS record lookup. It uses Kademlia client mode, lazy per-lookup swarms, query timeout, provider fanout limits, and libp2p connection timeout/connection-limit guards. The routing crate includes deterministic local server-mode Kademlia peer tests for provider lookup and verified IPNS record lookup through the light-DHT client.
 
-M8 mobile resource hardening: partially complete. Cache trim, gateway concurrency limit, DHT timeout/fanout knobs, provider/badness caches, HTTP timeouts, libp2p connection timeouts, and libp2p connection-limit guards exist. Real idle RSS, CPU, network, startup, Bee concurrency, background/foreground, and low-memory behavior are not measured yet.
+M8 mobile resource hardening: partially complete. Cache trim, gateway concurrency limit, mobile background/foreground hooks, low-memory trim hook, network-change provider-cache hygiene, DHT timeout/fanout knobs, provider/badness caches, HTTP timeouts, libp2p connection timeouts, and libp2p connection-limit guards exist. Real idle RSS, CPU, network, startup, Bee concurrency, and host-app lifecycle behavior are not measured yet.
 
-M9 browser integration: partially complete. The local gateway path, mobile ABI, Swift wrapper source, and preload/cancel controls exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. Swift wrapper compilation/linking and app integration are not verified in this Linux environment.
+M9 browser integration: partially complete. The local gateway path, mobile ABI, Swift wrapper source, lifecycle hooks, and preload/cancel controls exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. Swift wrapper compilation/linking and app integration are not verified in this Linux environment.
 
 M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, Kubo-generated UnixFS/HAMT parity smoke, and live smoke exist, but a larger public CID corpus, broader Kubo parity matrix, and long soak tests remain follow-up work.
 
@@ -83,6 +83,7 @@ M11 optional features: not started except CAR export/import support, which was p
 - Real iOS XCFramework creation and symbol/link verification require macOS with Xcode.
 - Swift wrapper source exists, but `swift` is not installed in this Linux environment, and sample app link/start/stop tests require macOS/Xcode.
 - Real iPhone resource targets are unverified, including the provisional under-60-MiB idle RSS target beside Bee.
+- iOS lifecycle hooks exist at the ABI/Swift level, but actual host-app background/foreground, low-memory, and network-path event wiring is not verified on iOS.
 - DHT-only retrieval of `daicowtf.eth` is not reliable on the public DHT; current auto mode succeeds because delegated routing returns usable providers.
 - DNSLink still defaults to Cloudflare DoH. Native/system TXT lookup should be evaluated for artifact size and iOS behavior.
 - No broad Kubo parity matrix exists yet for deterministic cross-implementation gateway/routing regression coverage.

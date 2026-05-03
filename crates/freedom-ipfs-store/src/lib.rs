@@ -295,6 +295,12 @@ impl SqliteBlockStore {
         Ok(())
     }
 
+    pub fn clear_provider_metadata(&self) -> Result<()> {
+        self.conn.lock().execute("DELETE FROM provider_cache", [])?;
+        self.conn.lock().execute("DELETE FROM bad_providers", [])?;
+        Ok(())
+    }
+
     pub fn trim_blocks_to(&self, max_bytes: u64) -> Result<()> {
         self.evict_until(max_bytes)
     }
@@ -471,6 +477,32 @@ mod tests {
         store
             .mark_bad_provider("peer", "timeout", Duration::ZERO)
             .unwrap();
+        assert!(!store.is_bad_provider("peer").unwrap());
+    }
+
+    #[test]
+    fn clears_provider_metadata_without_removing_blocks() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let cid = cid_from_data(CODEC_RAW, b"provider metadata");
+        store.put_block(&cid, b"provider metadata").unwrap();
+        store
+            .put_provider_records(
+                &cid,
+                &[CachedProviderRecord {
+                    id: Some("peer".to_string()),
+                    addrs: vec!["/ip4/127.0.0.1/tcp/4001".to_string()],
+                }],
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        store
+            .mark_bad_provider("peer", "timeout", Duration::from_secs(60))
+            .unwrap();
+
+        store.clear_provider_metadata().unwrap();
+
+        assert!(store.get(&cid).unwrap().is_some());
+        assert_eq!(store.get_provider_records(&cid).unwrap(), None);
         assert!(!store.is_bad_provider("peer").unwrap());
     }
 }

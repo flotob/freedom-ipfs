@@ -22,17 +22,25 @@ use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
 
 const DEFAULT_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+const LOW_MEMORY_CACHE_BYTES: u64 = 32 * 1024 * 1024;
 const CACHE_DB_FILE: &str = "freedom-ipfs.sqlite3";
 const ROUTING_MODE_AUTO: u32 = 0;
 const ROUTING_MODE_DELEGATED: u32 = 1;
 const ROUTING_MODE_LIGHT_DHT: u32 = 2;
 const PRELOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LifecycleState {
+    Foreground,
+    Background,
+}
+
 pub struct FreedomIpfsNode {
     runtime: Runtime,
     store: SqliteBlockStore,
     gateway_addr: Mutex<Option<SocketAddr>>,
     gateway_task: Mutex<Option<JoinHandle<()>>>,
+    lifecycle_state: Mutex<LifecycleState>,
     next_preload_id: AtomicU64,
     preload_tasks: Mutex<HashMap<u64, JoinHandle<()>>>,
 }
@@ -112,6 +120,7 @@ fn node_from_store(store: SqliteBlockStore) -> *mut FreedomIpfsNode {
         store,
         gateway_addr: Mutex::new(None),
         gateway_task: Mutex::new(None),
+        lifecycle_state: Mutex::new(LifecycleState::Foreground),
         next_preload_id: AtomicU64::new(1),
         preload_tasks: Mutex::new(HashMap::new()),
     }))
@@ -247,6 +256,77 @@ pub unsafe extern "C" fn freedom_ipfs_node_trim_cache(
     }
     let node = &*ptr;
     node.store.trim_blocks_to(max_bytes).is_ok()
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_enter_background(ptr: *mut FreedomIpfsNode) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    let node = &*ptr;
+    stop_preloads(node);
+    let Ok(mut state) = node.lifecycle_state.lock() else {
+        return false;
+    };
+    *state = LifecycleState::Background;
+    true
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_enter_foreground(ptr: *mut FreedomIpfsNode) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    let node = &*ptr;
+    prune_finished_preloads(node);
+    let Ok(mut state) = node.lifecycle_state.lock() else {
+        return false;
+    };
+    *state = LifecycleState::Foreground;
+    true
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer. `max_cache_bytes` may be 0 to use the
+/// built-in low-memory trim target.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_handle_low_memory(
+    ptr: *mut FreedomIpfsNode,
+    max_cache_bytes: u64,
+) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    let node = &*ptr;
+    stop_preloads(node);
+    let max_cache_bytes = if max_cache_bytes == 0 {
+        LOW_MEMORY_CACHE_BYTES
+    } else {
+        max_cache_bytes
+    };
+    node.store.trim_blocks_to(max_cache_bytes).is_ok()
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_handle_network_change(
+    ptr: *mut FreedomIpfsNode,
+) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    let node = &*ptr;
+    stop_preloads(node);
+    node.store.clear_provider_metadata().is_ok()
 }
 
 /// # Safety
@@ -576,6 +656,12 @@ fn stop_preloads(node: &FreedomIpfsNode) {
     }
 }
 
+fn prune_finished_preloads(node: &FreedomIpfsNode) {
+    if let Ok(mut tasks) = node.preload_tasks.lock() {
+        tasks.retain(|_, task| !task.is_finished());
+    }
+}
+
 fn is_preload_path(path: &str) -> bool {
     path.starts_with("/ipfs/") || path.starts_with("/ipns/")
 }
@@ -584,6 +670,7 @@ fn is_preload_path(path: &str) -> bool {
 mod tests {
     use super::*;
     use freedom_ipfs_core::{cid_from_data, parse_car_v1, CODEC_RAW};
+    use freedom_ipfs_store::CachedProviderRecord;
     use std::io::{Read, Write};
 
     #[test]
@@ -776,6 +863,82 @@ mod tests {
             assert!(freedom_ipfs_node_trim_cache(node, 20));
             assert!(freedom_ipfs_node_total_bytes(node) <= 20);
             assert_eq!(freedom_ipfs_node_block_count(node), 1);
+
+            freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
+    fn lifecycle_hooks_cancel_preloads_and_trim_cache() {
+        unsafe {
+            let node = freedom_ipfs_node_new_in_memory();
+            assert!(!node.is_null());
+
+            let first = vec![1u8; 16];
+            let second = vec![2u8; 16];
+            let first_cid = cid_from_data(CODEC_RAW, &first);
+            let second_cid = cid_from_data(CODEC_RAW, &second);
+            (*node).store.put_block(&first_cid, &first).unwrap();
+            (*node).store.put_block(&second_cid, &second).unwrap();
+
+            let addr = CString::new("127.0.0.1:0").unwrap();
+            assert!(freedom_ipfs_node_start_gateway(node, addr.as_ptr()));
+            let path = CString::new(format!("/ipfs/{first_cid}")).unwrap();
+            let task_id = freedom_ipfs_node_preload_path(node, path.as_ptr());
+            assert!(task_id > 0);
+
+            assert!(freedom_ipfs_node_enter_background(node));
+            assert!(!freedom_ipfs_node_cancel_preload(node, task_id));
+            assert_eq!(
+                *(*node).lifecycle_state.lock().unwrap(),
+                LifecycleState::Background
+            );
+            assert_gateway_health(node);
+
+            assert!(freedom_ipfs_node_enter_foreground(node));
+            assert_eq!(
+                *(*node).lifecycle_state.lock().unwrap(),
+                LifecycleState::Foreground
+            );
+
+            assert!(freedom_ipfs_node_handle_low_memory(node, 20));
+            assert!(freedom_ipfs_node_total_bytes(node) <= 20);
+            assert_eq!(freedom_ipfs_node_block_count(node), 1);
+
+            freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
+    fn network_change_clears_provider_metadata_without_blocks() {
+        unsafe {
+            let node = freedom_ipfs_node_new_in_memory();
+            assert!(!node.is_null());
+
+            let data = b"mobile provider metadata";
+            let cid = cid_from_data(CODEC_RAW, data);
+            (*node).store.put_block(&cid, data).unwrap();
+            (*node)
+                .store
+                .put_provider_records(
+                    &cid,
+                    &[CachedProviderRecord {
+                        id: Some("peer".to_string()),
+                        addrs: vec!["/ip4/127.0.0.1/tcp/4001".to_string()],
+                    }],
+                    Duration::from_secs(60),
+                )
+                .unwrap();
+            (*node)
+                .store
+                .mark_bad_provider("peer", "timeout", Duration::from_secs(60))
+                .unwrap();
+
+            assert!(freedom_ipfs_node_handle_network_change(node));
+
+            assert_eq!(freedom_ipfs_node_block_count(node), 1);
+            assert_eq!((*node).store.get_provider_records(&cid).unwrap(), None);
+            assert!(!(*node).store.is_bad_provider("peer").unwrap());
 
             freedom_ipfs_node_free(node);
         }

@@ -1,4 +1,7 @@
-use axum::http::StatusCode;
+use axum::http::{
+    header::{CONTENT_RANGE, RANGE},
+    StatusCode,
+};
 use freedom_ipfs_gateway::router_with_provider_and_name_resolver;
 use freedom_ipfs_namesys::{
     CachedNameResolver, CloudflareDohResolver, DefaultNameResolver, DelegatedIpnsResolver,
@@ -61,14 +64,15 @@ async fn public_corpus_fetches_through_local_gateway() {
     let client = reqwest::Client::new();
     for entry in entries {
         let url = format!("http://{addr}{}", entry.path);
-        let (status, body) = fetch_gateway_body_with_retries(&client, &url, REQUEST_ATTEMPTS)
-            .await
-            .unwrap_or_else(|err| {
-                panic!(
-                    "public corpus request failed for {} ({}): {err}",
-                    entry.name, entry.path
-                )
-            });
+        let (status, headers, body) =
+            fetch_gateway_body_with_retries(&client, &url, None, REQUEST_ATTEMPTS)
+                .await
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "public corpus request failed for {} ({}): {err}",
+                        entry.name, entry.path
+                    )
+                });
         assert_eq!(
             status,
             StatusCode::OK,
@@ -91,6 +95,69 @@ async fn public_corpus_fetches_through_local_gateway() {
             entry.path,
             body.len()
         );
+
+        if let Some(range_bytes) = entry.range_bytes {
+            assert!(
+                body.len() >= range_bytes,
+                "public corpus response too small for range check on {} ({}): {} bytes, expected at least {}",
+                entry.name,
+                entry.path,
+                body.len(),
+                range_bytes
+            );
+            assert!(
+                headers.get(CONTENT_RANGE).is_none(),
+                "full response unexpectedly included content-range for {} ({})",
+                entry.name,
+                entry.path
+            );
+
+            let range_end = range_bytes - 1;
+            let range_header = format!("bytes=0-{range_end}");
+            let (range_status, range_headers, range_body) = fetch_gateway_body_with_retries(
+                &client,
+                &url,
+                Some(&range_header),
+                REQUEST_ATTEMPTS,
+            )
+            .await
+            .unwrap_or_else(|err| {
+                panic!(
+                    "public corpus range request failed for {} ({}): {err}",
+                    entry.name, entry.path
+                )
+            });
+            assert_eq!(
+                range_status,
+                StatusCode::PARTIAL_CONTENT,
+                "public corpus range request returned wrong status for {} ({})",
+                entry.name,
+                entry.path
+            );
+            assert_eq!(
+                range_body,
+                body[..range_bytes],
+                "public corpus range response did not match full response prefix for {} ({})",
+                entry.name,
+                entry.path
+            );
+            let content_range = range_headers
+                .get(CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("");
+            assert!(
+                content_range.starts_with(&format!("bytes 0-{range_end}/")),
+                "invalid content-range for {} ({}): {content_range}",
+                entry.name,
+                entry.path
+            );
+            eprintln!(
+                "range checked corpus entry {} {} through local gateway: {} bytes",
+                entry.name,
+                entry.path,
+                range_body.len()
+            );
+        }
     }
 
     let stats = stats_provider.stats();
@@ -107,15 +174,21 @@ async fn public_corpus_fetches_through_local_gateway() {
 async fn fetch_gateway_body_with_retries(
     client: &reqwest::Client,
     url: &str,
+    range: Option<&str>,
     attempts: usize,
-) -> Result<(StatusCode, Vec<u8>), String> {
+) -> Result<(StatusCode, reqwest::header::HeaderMap, Vec<u8>), String> {
     let mut last_error = None;
     for attempt in 1..=attempts.max(1) {
-        match client.get(url).send().await {
+        let mut request = client.get(url);
+        if let Some(range) = range {
+            request = request.header(RANGE, range);
+        }
+        match request.send().await {
             Ok(response) => {
                 let status = response.status();
+                let headers = response.headers().clone();
                 match response.bytes().await {
-                    Ok(body) => return Ok((status, body.to_vec())),
+                    Ok(body) => return Ok((status, headers, body.to_vec())),
                     Err(err) => last_error = Some(format!("response body error: {err}")),
                 }
             }
@@ -135,18 +208,29 @@ fn parse_corpus(corpus: &str) -> Vec<CorpusEntry> {
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(|line| {
             let fields = line.split_whitespace().collect::<Vec<_>>();
-            assert_eq!(fields.len(), 3, "invalid corpus line: {line}");
+            assert!(
+                fields.len() == 3 || fields.len() == 4,
+                "invalid corpus line: {line}"
+            );
             let path = fields[1].to_string();
             assert!(
                 path.starts_with("/ipfs/") || path.starts_with("/ipns/"),
                 "corpus path must be a local gateway path: {path}"
             );
+            let range_bytes = fields.get(3).map(|value| {
+                let parsed = value
+                    .parse()
+                    .unwrap_or_else(|_| panic!("invalid range_bytes in corpus line: {line}"));
+                assert!(parsed > 0, "range_bytes must be greater than zero: {line}");
+                parsed
+            });
             CorpusEntry {
                 name: fields[0].to_string(),
                 path,
                 min_bytes: fields[2]
                     .parse()
                     .unwrap_or_else(|_| panic!("invalid min_bytes in corpus line: {line}")),
+                range_bytes,
             }
         })
         .collect()
@@ -156,6 +240,7 @@ struct CorpusEntry {
     name: String,
     path: String,
     min_bytes: usize,
+    range_bytes: Option<usize>,
 }
 
 #[cfg(test)]
@@ -167,7 +252,7 @@ mod tests {
         let entries = parse_corpus(
             r#"
             # comment
-            example /ipfs/bafyexample 42
+            example /ipfs/bafyexample 42 16
             ipns-example /ipns/example.net 7
             "#,
         );
@@ -176,8 +261,10 @@ mod tests {
         assert_eq!(entries[0].name, "example");
         assert_eq!(entries[0].path, "/ipfs/bafyexample");
         assert_eq!(entries[0].min_bytes, 42);
+        assert_eq!(entries[0].range_bytes, Some(16));
         assert_eq!(entries[1].name, "ipns-example");
         assert_eq!(entries[1].path, "/ipns/example.net");
         assert_eq!(entries[1].min_bytes, 7);
+        assert_eq!(entries[1].range_bytes, None);
     }
 }

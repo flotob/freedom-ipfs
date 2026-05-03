@@ -1,13 +1,13 @@
 # Public paths used by the opt-in live corpus smoke.
-# Format: name path min_bytes
+# Format: name path min_bytes optional_range_bytes
 # Last verified from this repository on 2026-05-03 with `make live-corpus`.
-vitalik-home /ipfs/bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u 1024
-daicowtf-home /ipfs/bafybeidznfolm74c5cephzdycedx7hk76iawno45wemcvkflieotzo2lne 1024
+vitalik-home /ipfs/bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u 1024 128
+daicowtf-home /ipfs/bafybeidznfolm74c5cephzdycedx7hk76iawno45wemcvkflieotzo2lne 1024 128
 
 # DNSLink-backed /ipns paths. These are intentionally mutable and exercise the
 # node's DNSLink resolver, /ipns gateway path, delegated routing, and Bitswap
 # retrieval through the local gateway. Exclude heavier domains here if they
 # make the opt-in smoke flaky.
-ipfs-tech /ipns/ipfs.tech 1024
-dist-ipfs-tech /ipns/dist.ipfs.tech 1024
-cid-ipfs-tech /ipns/cid.ipfs.tech 1024
+ipfs-tech /ipns/ipfs.tech 1024 128
+dist-ipfs-tech /ipns/dist.ipfs.tech 1024 128
+cid-ipfs-tech /ipns/cid.ipfs.tech 1024 128

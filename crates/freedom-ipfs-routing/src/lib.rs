@@ -18,8 +18,8 @@ use thiserror::Error;
 use url::Url;
 
 pub const DEFAULT_DELEGATED_ROUTER: &str = "https://delegated-ipfs.dev/routing/v1";
-const DEFAULT_DHT_QUERY_TIMEOUT: Duration = Duration::from_secs(25);
-const DEFAULT_MAX_DHT_PROVIDERS: usize = 32;
+pub const DEFAULT_DHT_QUERY_TIMEOUT: Duration = Duration::from_secs(25);
+pub const DEFAULT_MAX_DHT_PROVIDERS: usize = 32;
 const DEFAULT_BOOTSTRAP_PEERS: &[&str] = &[
     "/dnsaddr/sg1.bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
     "/dnsaddr/sv15.bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
@@ -195,7 +195,11 @@ impl LightDhtClient {
     }
 
     pub fn with_query_timeout(mut self, timeout: Duration) -> Self {
-        self.query_timeout = timeout;
+        self.query_timeout = if timeout.is_zero() {
+            Duration::from_secs(1)
+        } else {
+            timeout
+        };
         self
     }
 
@@ -677,6 +681,22 @@ mod tests {
                 .with_max_providers(0)
                 .max_providers,
             1
+        );
+    }
+
+    #[test]
+    fn configures_dht_query_timeout_with_floor() {
+        assert_eq!(
+            LightDhtClient::default()
+                .with_query_timeout(Duration::from_secs(7))
+                .query_timeout,
+            Duration::from_secs(7)
+        );
+        assert_eq!(
+            LightDhtClient::default()
+                .with_query_timeout(Duration::ZERO)
+                .query_timeout,
+            Duration::from_secs(1)
         );
     }
 

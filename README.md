@@ -25,6 +25,7 @@ Early implementation. Current code supports:
 - short-lived in-memory DNSLink/IPNS name-resolution cache,
 - delegated routing provider lookup,
 - client-mode light DHT provider/IPNS lookup fallback with configurable provider fanout,
+- CLI/mobile knobs for DHT query timeout and provider fanout,
 - short-lived multihash-keyed provider-result cache and bad-provider suppression,
 - verified HTTP raw-block retrieval from HTTP-capable providers,
 - client-only Bitswap retrieval over TCP, WebSocket, and QUIC libp2p streams for Bitswap-only providers,
@@ -57,6 +58,12 @@ Limit local-gateway request concurrency for mobile resource testing:
 
 ```bash
 cargo run -p freedom-ipfs-gateway -- --online --max-concurrent-requests 4
+```
+
+Tune light-DHT fallback budgets when testing mobile resource behavior:
+
+```bash
+cargo run -p freedom-ipfs-gateway -- --online --dht-query-timeout-secs 15 --dht-max-providers 8
 ```
 
 On macOS with Xcode command line tools installed, build the iOS static libraries and XCFramework:

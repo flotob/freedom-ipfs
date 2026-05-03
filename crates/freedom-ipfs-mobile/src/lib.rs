@@ -14,6 +14,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
@@ -302,6 +303,35 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config(
     routing_mode: u32,
     max_concurrent_requests: usize,
 ) -> bool {
+    freedom_ipfs_node_start_gateway_online_with_config_v2(
+        ptr,
+        addr,
+        delegated_router,
+        routing_mode,
+        max_concurrent_requests,
+        0,
+        0,
+    )
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer. `addr` must point to a NUL-terminated
+/// UTF-8 socket address string for the duration of this call. `delegated_router`
+/// may be null to use the default delegated routing endpoint, otherwise it must
+/// point to a NUL-terminated UTF-8 URL string. `routing_mode` must be one of the
+/// `FREEDOM_IPFS_ROUTING_MODE_*` constants from the C header. `dht_*` values may
+/// be 0 to use the built-in mobile defaults.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config_v2(
+    ptr: *mut FreedomIpfsNode,
+    addr: *const c_char,
+    delegated_router: *const c_char,
+    routing_mode: u32,
+    max_concurrent_requests: usize,
+    dht_query_timeout_secs: u64,
+    dht_max_providers: usize,
+) -> bool {
     if ptr.is_null() || addr.is_null() {
         return false;
     }
@@ -324,13 +354,13 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config(
     };
 
     let delegated = DelegatedRoutingClient::new(delegated_router.clone());
+    let dht = light_dht_client(dht_query_timeout_secs, dht_max_providers);
     let routing = match routing_mode {
-        ROUTING_MODE_AUTO => ProviderRoutingClient::from(AutoRoutingClient::new(
-            delegated,
-            LightDhtClient::default(),
-        )),
+        ROUTING_MODE_AUTO => {
+            ProviderRoutingClient::from(AutoRoutingClient::new(delegated, dht.clone()))
+        }
         ROUTING_MODE_DELEGATED => ProviderRoutingClient::from(delegated),
-        ROUTING_MODE_LIGHT_DHT => ProviderRoutingClient::from(LightDhtClient::default()),
+        ROUTING_MODE_LIGHT_DHT => ProviderRoutingClient::from(dht.clone()),
         _ => return false,
     };
     let provider = FetchingBlockProvider::new(node.store.clone(), routing);
@@ -341,7 +371,7 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config(
     };
     let name_resolver = CachedNameResolver::new(DefaultNameResolver::new(
         CloudflareDohResolver::default(),
-        ipns_resolver(routing_mode, delegated_router),
+        ipns_resolver(routing_mode, delegated_router, dht),
     ));
     start_gateway_with_router(
         node,
@@ -354,14 +384,29 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config(
     )
 }
 
-fn ipns_resolver(routing_mode: u32, delegated_router: String) -> Arc<dyn IpnsResolver> {
+fn light_dht_client(dht_query_timeout_secs: u64, dht_max_providers: usize) -> LightDhtClient {
+    let mut dht = LightDhtClient::default();
+    if dht_query_timeout_secs != 0 {
+        dht = dht.with_query_timeout(Duration::from_secs(dht_query_timeout_secs));
+    }
+    if dht_max_providers != 0 {
+        dht = dht.with_max_providers(dht_max_providers);
+    }
+    dht
+}
+
+fn ipns_resolver(
+    routing_mode: u32,
+    delegated_router: String,
+    dht: LightDhtClient,
+) -> Arc<dyn IpnsResolver> {
     match routing_mode {
         ROUTING_MODE_AUTO => Arc::new(FallbackIpnsResolver::new(
             DelegatedIpnsResolver::new(delegated_router),
-            DhtIpnsResolver::default(),
+            DhtIpnsResolver::new(dht),
         )),
         ROUTING_MODE_DELEGATED => Arc::new(DelegatedIpnsResolver::new(delegated_router)),
-        ROUTING_MODE_LIGHT_DHT => Arc::new(DhtIpnsResolver::default()),
+        ROUTING_MODE_LIGHT_DHT => Arc::new(DhtIpnsResolver::new(dht)),
         _ => Arc::new(DelegatedIpnsResolver::new(delegated_router)),
     }
 }
@@ -500,6 +545,31 @@ mod tests {
                 router.as_ptr(),
                 ROUTING_MODE_DELEGATED,
                 1,
+            ));
+
+            assert_gateway_health(node);
+
+            assert!(freedom_ipfs_node_stop_gateway(node));
+            freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
+    fn starts_online_gateway_with_dht_budget_config() {
+        unsafe {
+            let node = freedom_ipfs_node_new_in_memory();
+            assert!(!node.is_null());
+
+            let addr = CString::new("127.0.0.1:0").unwrap();
+            let router = CString::new("http://127.0.0.1:9/routing/v1").unwrap();
+            assert!(freedom_ipfs_node_start_gateway_online_with_config_v2(
+                node,
+                addr.as_ptr(),
+                router.as_ptr(),
+                ROUTING_MODE_AUTO,
+                1,
+                5,
+                2,
             ));
 
             assert_gateway_health(node);

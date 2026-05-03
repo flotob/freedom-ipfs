@@ -46,6 +46,14 @@ bool freedom_ipfs_node_start_gateway_online_with_config(
     const char *delegated_router,
     uint32_t routing_mode,
     size_t max_concurrent_requests);
+bool freedom_ipfs_node_start_gateway_online_with_config_v2(
+    FreedomIpfsNode *ptr,
+    const char *addr,
+    const char *delegated_router,
+    uint32_t routing_mode,
+    size_t max_concurrent_requests,
+    uint64_t dht_query_timeout_secs,
+    size_t dht_max_providers);
 char *freedom_ipfs_node_gateway_url(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_stop_gateway(FreedomIpfsNode *ptr);
 

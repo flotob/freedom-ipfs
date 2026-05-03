@@ -1107,6 +1107,52 @@ mod tests {
     }
 
     #[test]
+    fn online_gateway_idles_without_network_work_before_requests() {
+        unsafe {
+            let node = freedom_ipfs_node_new_in_memory();
+            assert!(!node.is_null());
+
+            let addr = CString::new("127.0.0.1:0").unwrap();
+            let router = CString::new("http://127.0.0.1:9/routing/v1").unwrap();
+            assert!(freedom_ipfs_node_start_gateway_online_with_config_v2(
+                node,
+                addr.as_ptr(),
+                router.as_ptr(),
+                ROUTING_MODE_AUTO,
+                1,
+                1,
+                1,
+            ));
+
+            assert_gateway_health(node);
+            std::thread::sleep(Duration::from_millis(100));
+
+            assert_eq!(
+                freedom_ipfs_node_retrieval_stats(node),
+                FreedomIpfsRetrievalStats::default()
+            );
+            assert_eq!(
+                freedom_ipfs_node_routing_stats(node),
+                FreedomIpfsRoutingStats::default()
+            );
+            let diagnostics = freedom_ipfs_node_diagnostics(node);
+            assert_eq!(diagnostics.block_count, 0);
+            assert_eq!(diagnostics.total_bytes, 0);
+            assert_eq!(diagnostics.cache_hits, 0);
+            assert_eq!(diagnostics.http_provider_blocks, 0);
+            assert_eq!(diagnostics.bitswap_blocks, 0);
+            assert_eq!(diagnostics.delegated_provider_lookups, 0);
+            assert_eq!(diagnostics.dht_provider_lookups, 0);
+            assert_eq!(diagnostics.active_preload_count, 0);
+            assert_eq!(diagnostics.gateway_running, 1);
+            assert_eq!(diagnostics.lifecycle_background, 0);
+
+            assert!(freedom_ipfs_node_stop_gateway(node));
+            freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
     fn reports_mobile_transport_and_routing_stats() {
         unsafe {
             let node = freedom_ipfs_node_new_in_memory();

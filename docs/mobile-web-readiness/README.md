@@ -52,6 +52,12 @@ the same routing, DHT, request-concurrency, and asset-concurrency knobs as the
 single-run harness, with an 8-request gateway default and a 6-asset crawl
 default to model bounded browser pressure.
 
+For fresh-process warm-store measurements, pass `--gateway-db /tmp/cache.db`
+while the harness is spawning the gateway. This forwards the path to the
+gateway's SQLite cache. Combined with `--fresh-gateway-per-run --warmup-runs 1`,
+the warmup process populates the DB and measured runs start new gateway
+processes against the same persistent cache.
+
 For gateway phase tracing, pass `--trace-output /tmp/run.jsonl`. When the
 harness spawns the Rust gateway it forwards this path to the gateway, parses the
 JSONL events, and adds a phase summary to the report. This is the preferred way

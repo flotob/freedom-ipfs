@@ -30,6 +30,9 @@ struct Args {
     /// Standalone gateway binary to spawn when --gateway-url is not provided.
     #[arg(long, env = "FREEDOM_IPFS_GATEWAY_BIN")]
     gateway_bin: Option<PathBuf>,
+    /// SQLite cache DB path for spawned gateways; useful for fresh-process warm-store runs.
+    #[arg(long)]
+    gateway_db: Option<PathBuf>,
     /// JSON corpus file.
     #[arg(long, default_value = DEFAULT_CORPUS)]
     corpus: PathBuf,
@@ -94,7 +97,19 @@ async fn run_harness(args: &Args, corpus: &Corpus) -> Result<RunReport> {
     if args.gateway_url.is_some() && args.fresh_gateway_per_run {
         bail!("--fresh-gateway-per-run cannot be used with --gateway-url");
     }
+    if args.gateway_url.is_some() && args.gateway_db.is_some() {
+        bail!("--gateway-db can only be used when the harness spawns the gateway");
+    }
     if args.gateway_url.is_none() {
+        if let Some(gateway_db) = &args.gateway_db {
+            if let Some(parent) = gateway_db
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("create gateway DB parent {}", parent.display()))?;
+            }
+        }
         if let Some(trace_output) = &args.trace_output {
             match std::fs::remove_file(trace_output) {
                 Ok(()) => {}
@@ -187,6 +202,10 @@ async fn run_harness(args: &Args, corpus: &Corpus) -> Result<RunReport> {
         warmup_runs: args.warmup_runs,
         fresh_gateway_per_run: args.fresh_gateway_per_run,
         asset_concurrency: args.asset_concurrency,
+        gateway_db: args
+            .gateway_db
+            .as_ref()
+            .map(|path| path.display().to_string()),
         trace_output: args
             .trace_output
             .as_ref()
@@ -330,6 +349,9 @@ fn print_summary(report: &RunReport) {
         "gateway: {}",
         report.gateway_url.as_deref().unwrap_or("fresh per run")
     );
+    if let Some(gateway_db) = &report.gateway_db {
+        println!("gateway_db: {gateway_db}");
+    }
     println!(
         "runs: measured={} warmup={} fresh_gateway_per_run={} asset_concurrency={}",
         report.repeat, report.warmup_runs, report.fresh_gateway_per_run, report.asset_concurrency
@@ -1312,6 +1334,9 @@ impl SpawnedGateway {
         if let Some(trace_output) = &args.trace_output {
             command.arg("--trace-output").arg(trace_output);
         }
+        if let Some(gateway_db) = &args.gateway_db {
+            command.arg("--db").arg(gateway_db);
+        }
         let mut child = command.spawn().with_context(|| {
             format!(
                 "spawn {}; build it first with `cargo build -p freedom-ipfs-gateway`",
@@ -1404,6 +1429,7 @@ struct RunReport {
     warmup_runs: usize,
     fresh_gateway_per_run: bool,
     asset_concurrency: usize,
+    gateway_db: Option<String>,
     trace_output: Option<String>,
     trace_summary: Option<TraceSummary>,
     summary: RepeatSummary,

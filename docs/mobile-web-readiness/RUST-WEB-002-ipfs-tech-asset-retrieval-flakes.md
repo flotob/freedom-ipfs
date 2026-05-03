@@ -167,6 +167,9 @@ used the trace to make two retrieval changes:
   later block requests in the same process try that peer without a preliminary
   `WANT_HAVE`; unknown peers keep the conservative `WANT_HAVE` flow.
 
+The harness also gained `--gateway-db` so fresh gateway processes can be
+measured against the same persistent SQLite cache.
+
 Commands:
 
 ```sh
@@ -212,6 +215,28 @@ passed=5 failed=0 pass_rate=100.0%
 root_ttfb p50=37ms p90=47ms p95=47ms max=47ms
 asset_ttfb p50=39ms p90=106ms p95=144ms max=278ms
 measured run totals: 342ms, 427ms, 407ms, 331ms, 266ms
+```
+
+Fresh process with persistent warm store:
+
+```sh
+rm -f /tmp/freedom-ipfs-ipfs-tech-persistent.db
+cargo run -p mobile-web-harness -- \
+  --case ipfs-tech-page-assets \
+  --warmup-runs 1 \
+  --repeat 3 \
+  --fresh-gateway-per-run \
+  --asset-concurrency 6 \
+  --gateway-db /tmp/freedom-ipfs-ipfs-tech-persistent.db \
+  --trace-output /tmp/ipfs-tech-persistent-warm-3-trace.jsonl \
+  --output /tmp/ipfs-tech-persistent-warm-3.json
+```
+
+```text
+passed=3 failed=0 pass_rate=100.0%
+root_ttfb p50=91ms p90=198ms p95=198ms max=198ms
+asset_ttfb p50=32ms p90=87ms p95=121ms max=216ms
+measured run totals: 428ms, 363ms, 484ms
 ```
 
 Trace evidence:

@@ -1,3 +1,4 @@
+use axum::http::header::{CONTENT_RANGE, RANGE};
 use axum::http::StatusCode;
 use freedom_ipfs_gateway::router;
 use freedom_ipfs_store::SqliteBlockStore;
@@ -66,6 +67,30 @@ async fn kubo_generated_unixfs_site_matches_local_gateway_bytes() {
             expected.as_slice()
         );
     }
+
+    let range_start = 123_456usize;
+    let range_end = 124_567usize;
+    let url = format!("http://{addr}/ipfs/{root}/assets/blob.bin");
+    let response = reqwest::Client::new()
+        .get(url)
+        .header(RANGE, format!("bytes={range_start}-{range_end}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_RANGE)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        format!("bytes {range_start}-{range_end}/{}", large.len())
+    );
+    assert_eq!(
+        response.bytes().await.unwrap().as_ref(),
+        &large[range_start..=range_end]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

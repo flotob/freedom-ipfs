@@ -10,6 +10,12 @@ This runbook is the remaining evidence gate for calling the first mobile reader 
 - Xcode Instruments or `xctrace` access for memory, CPU, and network captures.
 - A copy of `docs/ios-device-evidence-template.csv` for recording measurements and trace links.
 
+Validate the template before measuring:
+
+```bash
+make validate-ios-device-evidence
+```
+
 ## App Wiring Checklist
 
 Wire the Swift wrapper into the browser app before measuring:
@@ -140,3 +146,9 @@ Use `docs/ios-device-evidence-template.csv` for the full structured record. The 
 | soak |  | on/off | mixed | pass/fail |  |  |  |  |  |  |  |  |
 
 When this table is filled with passing evidence and linked traces, update `docs/completion-audit.md` and only then mark the overall implementation goal complete.
+
+Before updating the audit, run the filled evidence through the stricter validator:
+
+```bash
+cargo run -p xtask -- validate-ios-device-evidence path/to/device-results.csv --filled
+```

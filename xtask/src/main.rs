@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use freedom_ipfs_core::{cid_from_data, encode_car_v1, CarBlock, CODEC_RAW};
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,12 @@ struct Args {
 enum XtaskCommand {
     BuildXcframework,
     VerifyXcframework,
+    ValidateIosDeviceEvidence {
+        #[arg(default_value = "docs/ios-device-evidence-template.csv")]
+        path: PathBuf,
+        #[arg(long)]
+        filled: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -25,7 +32,320 @@ fn main() -> Result<()> {
     match args.command {
         XtaskCommand::BuildXcframework => build_xcframework(),
         XtaskCommand::VerifyXcframework => verify_xcframework_command(),
+        XtaskCommand::ValidateIosDeviceEvidence { path, filled } => {
+            validate_ios_device_evidence(&path, filled)
+        }
     }
+}
+
+const IOS_DEVICE_EVIDENCE_HEADER: [&str; 25] = [
+    "case_id",
+    "device_model",
+    "ios_version",
+    "app_commit",
+    "freedom_ipfs_commit",
+    "bee_commit",
+    "xcframework_artifact",
+    "bee_state",
+    "cache_state",
+    "routing_mode",
+    "network_type",
+    "result",
+    "rss_baseline_mib",
+    "rss_idle_mib",
+    "rss_idle_delta_mib",
+    "rss_peak_mib",
+    "cpu_idle_percent",
+    "network_idle_bytes_per_minute",
+    "first_byte_ms",
+    "complete_load_ms",
+    "retrieval_delta",
+    "routing_delta",
+    "active_preloads",
+    "trace_links",
+    "notes",
+];
+
+const IOS_DEVICE_CASES: [&str; 11] = [
+    "cold_idle",
+    "vitalik_eth",
+    "daicowtf_eth",
+    "dnslink_ipns",
+    "byte_range",
+    "background_foreground",
+    "low_memory",
+    "network_change",
+    "retrieval_soak",
+    "cold_idle_baseline_bee_only",
+    "cold_idle_ipfs_only",
+];
+
+fn validate_ios_device_evidence(path: &Path, filled: bool) -> Result<()> {
+    let contents = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let rows =
+        validate_ios_device_evidence_contents(&path.display().to_string(), &contents, filled)?;
+    let mode = if filled {
+        "filled evidence"
+    } else {
+        "template"
+    };
+    println!("validated {rows} {mode} rows in {}", path.display());
+    Ok(())
+}
+
+fn validate_ios_device_evidence_contents(
+    label: &str,
+    contents: &str,
+    filled: bool,
+) -> Result<usize> {
+    let mut records = Vec::new();
+    for (line_index, line) in contents.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let fields =
+            parse_csv_record(line).with_context(|| format!("{label}:{}", line_index + 1))?;
+        records.push((line_index + 1, fields));
+    }
+
+    let Some((_, header)) = records.first() else {
+        bail!("{label} is empty");
+    };
+    let expected_header = IOS_DEVICE_EVIDENCE_HEADER
+        .iter()
+        .map(|field| field.to_string())
+        .collect::<Vec<_>>();
+    if header != &expected_header {
+        bail!(
+            "{label}: header mismatch; expected {}",
+            IOS_DEVICE_EVIDENCE_HEADER.join(",")
+        );
+    }
+    if records.len() == 1 {
+        bail!("{label}: no evidence rows");
+    }
+
+    let mut seen_cases = BTreeSet::new();
+    for (line_no, fields) in records.iter().skip(1) {
+        if fields.len() != IOS_DEVICE_EVIDENCE_HEADER.len() {
+            bail!(
+                "{label}:{line_no}: expected {} columns, found {}",
+                IOS_DEVICE_EVIDENCE_HEADER.len(),
+                fields.len()
+            );
+        }
+        validate_ios_device_evidence_row(label, *line_no, fields, filled)?;
+        seen_cases.insert(fields[0].trim().to_string());
+    }
+
+    for case_id in IOS_DEVICE_CASES {
+        if !seen_cases.contains(case_id) {
+            bail!("{label}: missing required case_id {case_id}");
+        }
+    }
+
+    Ok(records.len() - 1)
+}
+
+fn validate_ios_device_evidence_row(
+    label: &str,
+    line_no: usize,
+    fields: &[String],
+    filled: bool,
+) -> Result<()> {
+    let case_id = fields[0].trim();
+    ensure_allowed(label, line_no, "case_id", case_id, &IOS_DEVICE_CASES)?;
+    ensure_allowed(
+        label,
+        line_no,
+        "bee_state",
+        fields[7].trim(),
+        &["on", "off", "baseline_on_ipfs_off"],
+    )?;
+    ensure_allowed(
+        label,
+        line_no,
+        "cache_state",
+        fields[8].trim(),
+        &["clean", "warm", "mixed"],
+    )?;
+    ensure_allowed(
+        label,
+        line_no,
+        "routing_mode",
+        fields[9].trim(),
+        &["auto", "delegated", "light_dht", "offline", "none"],
+    )?;
+    ensure_allowed(
+        label,
+        line_no,
+        "network_type",
+        fields[10].trim(),
+        &["wifi", "cellular", "wifi_to_cellular", "offline", "mixed"],
+    )?;
+    let result = fields[11].trim();
+    ensure_allowed(
+        label,
+        line_no,
+        "result",
+        result,
+        &["pass", "fail", "pass/fail", "pending"],
+    )?;
+    if filled && matches!(result, "pass/fail" | "pending") {
+        bail!("{label}:{line_no}: filled evidence row still has placeholder result {result}");
+    }
+
+    for index in [12, 13, 14, 15, 16, 17, 18, 19] {
+        parse_optional_f64(
+            label,
+            line_no,
+            IOS_DEVICE_EVIDENCE_HEADER[index],
+            &fields[index],
+        )?;
+    }
+    parse_optional_u64(label, line_no, "active_preloads", &fields[22])?;
+
+    if filled && result == "pass" {
+        validate_passing_ios_device_evidence_row(label, line_no, fields)?;
+    }
+    if filled && result == "fail" && fields[23].trim().is_empty() && fields[24].trim().is_empty() {
+        bail!("{label}:{line_no}: fail rows must include trace_links or notes");
+    }
+
+    Ok(())
+}
+
+fn validate_passing_ios_device_evidence_row(
+    label: &str,
+    line_no: usize,
+    fields: &[String],
+) -> Result<()> {
+    for index in [1, 2, 3, 4, 5, 6, 12, 13, 14, 15, 16, 17, 22, 23] {
+        if fields[index].trim().is_empty() {
+            bail!(
+                "{label}:{line_no}: pass row is missing {}",
+                IOS_DEVICE_EVIDENCE_HEADER[index]
+            );
+        }
+    }
+
+    let rss_idle_delta = parse_required_f64(label, line_no, "rss_idle_delta_mib", &fields[14])?;
+    if fields[9].trim() != "none" && rss_idle_delta > 60.0 {
+        bail!("{label}:{line_no}: pass row exceeds 60 MiB RSS idle delta ({rss_idle_delta})");
+    }
+    let cpu_idle = parse_required_f64(label, line_no, "cpu_idle_percent", &fields[16])?;
+    if cpu_idle > 1.0 {
+        bail!("{label}:{line_no}: pass row exceeds 1% idle CPU ({cpu_idle})");
+    }
+    let active_preloads = parse_required_u64(label, line_no, "active_preloads", &fields[22])?;
+    if active_preloads != 0 {
+        bail!("{label}:{line_no}: pass row has active_preloads={active_preloads}");
+    }
+
+    if requires_retrieval_measurements(fields[0].trim()) {
+        for index in [18, 19, 20, 21] {
+            if fields[index].trim().is_empty() {
+                bail!(
+                    "{label}:{line_no}: pass row is missing {}",
+                    IOS_DEVICE_EVIDENCE_HEADER[index]
+                );
+            }
+        }
+        let first_byte = parse_required_f64(label, line_no, "first_byte_ms", &fields[18])?;
+        let complete = parse_required_f64(label, line_no, "complete_load_ms", &fields[19])?;
+        if first_byte <= 0.0 {
+            bail!("{label}:{line_no}: first_byte_ms must be positive");
+        }
+        if complete < first_byte {
+            bail!("{label}:{line_no}: complete_load_ms is smaller than first_byte_ms");
+        }
+    }
+
+    Ok(())
+}
+
+fn requires_retrieval_measurements(case_id: &str) -> bool {
+    matches!(
+        case_id,
+        "vitalik_eth"
+            | "daicowtf_eth"
+            | "dnslink_ipns"
+            | "byte_range"
+            | "background_foreground"
+            | "low_memory"
+            | "network_change"
+            | "retrieval_soak"
+    )
+}
+
+fn ensure_allowed(
+    label: &str,
+    line_no: usize,
+    field: &str,
+    value: &str,
+    allowed: &[&str],
+) -> Result<()> {
+    if allowed.contains(&value) {
+        return Ok(());
+    }
+    bail!(
+        "{label}:{line_no}: invalid {field} value {value:?}; expected one of {}",
+        allowed.join(", ")
+    )
+}
+
+fn parse_optional_f64(label: &str, line_no: usize, field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        return Ok(());
+    }
+    parse_required_f64(label, line_no, field, value).map(|_| ())
+}
+
+fn parse_required_f64(label: &str, line_no: usize, field: &str, value: &str) -> Result<f64> {
+    value
+        .trim()
+        .parse::<f64>()
+        .with_context(|| format!("{label}:{line_no}: {field} must be numeric"))
+}
+
+fn parse_optional_u64(label: &str, line_no: usize, field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        return Ok(());
+    }
+    parse_required_u64(label, line_no, field, value).map(|_| ())
+}
+
+fn parse_required_u64(label: &str, line_no: usize, field: &str, value: &str) -> Result<u64> {
+    value
+        .trim()
+        .parse::<u64>()
+        .with_context(|| format!("{label}:{line_no}: {field} must be an unsigned integer"))
+}
+
+fn parse_csv_record(line: &str) -> Result<Vec<String>> {
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut chars = line.chars().peekable();
+    let mut in_quotes = false;
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if in_quotes && chars.peek() == Some(&'"') => {
+                field.push('"');
+                let _ = chars.next();
+            }
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                fields.push(field);
+                field = String::new();
+            }
+            _ => field.push(ch),
+        }
+    }
+    if in_quotes {
+        bail!("unterminated quoted CSV field");
+    }
+    fields.push(field);
+    Ok(fields)
 }
 
 fn build_xcframework() -> Result<()> {
@@ -801,4 +1121,61 @@ fn format_swift_byte_array(bytes: &[u8]) -> String {
         .map(u8::to_string)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_quoted_csv_fields() {
+        let fields = parse_csv_record(r#"case,"trace,with,commas","escaped "" quote""#).unwrap();
+        assert_eq!(fields, ["case", "trace,with,commas", "escaped \" quote"]);
+    }
+
+    #[test]
+    fn validates_checked_in_ios_device_evidence_template() {
+        let template = include_str!("../../docs/ios-device-evidence-template.csv");
+        let rows = validate_ios_device_evidence_contents("template", template, false).unwrap();
+        assert_eq!(rows, IOS_DEVICE_CASES.len());
+    }
+
+    #[test]
+    fn filled_pass_row_rejects_resource_target_miss() {
+        let mut lines = vec![IOS_DEVICE_EVIDENCE_HEADER.join(",")];
+        for case_id in IOS_DEVICE_CASES {
+            let mut row = vec![""; IOS_DEVICE_EVIDENCE_HEADER.len()];
+            row[0] = case_id;
+            row[1] = "iPhone";
+            row[2] = "17.0";
+            row[3] = "app";
+            row[4] = "freedom";
+            row[5] = "bee";
+            row[6] = "artifact";
+            row[7] = "on";
+            row[8] = "clean";
+            row[9] = "auto";
+            row[10] = "wifi";
+            row[11] = "pass";
+            row[12] = "100";
+            row[13] = "161";
+            row[14] = if case_id == "cold_idle" { "61" } else { "10" };
+            row[15] = "170";
+            row[16] = "0.5";
+            row[17] = "0";
+            if requires_retrieval_measurements(case_id) {
+                row[18] = "100";
+                row[19] = "200";
+                row[20] = "cache_hits=1";
+                row[21] = "delegated_lookups=1";
+            }
+            row[22] = "0";
+            row[23] = "trace";
+            lines.push(row.join(","));
+        }
+
+        let error =
+            validate_ios_device_evidence_contents("filled", &lines.join("\n"), true).unwrap_err();
+        assert!(error.to_string().contains("exceeds 60 MiB"), "{error:#}");
+    }
 }

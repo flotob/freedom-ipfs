@@ -40,6 +40,7 @@ Early implementation. Current code supports:
 - verified caching of extra CIDv0/CIDv1 blocks returned in Bitswap payload responses,
 - deterministic in-process libp2p Bitswap retrieval test coverage,
 - basic HAMT-sharded UnixFS directory traversal,
+- directory `index.html` fallback with path-based MIME headers,
 - UnixFS range reads that avoid assembling entire multi-block files for byte-range responses,
 - gateway rejection of malformed and unsatisfiable byte-range requests,
 - full local-gateway responses streamed in bounded UnixFS chunks instead of one full-file buffer,

@@ -922,6 +922,7 @@ dependencies = [
  "futures",
  "http",
  "mime_guess",
+ "prost",
  "reqwest",
  "serde",
  "serde_json",

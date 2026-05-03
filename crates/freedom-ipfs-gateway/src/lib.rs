@@ -555,8 +555,11 @@ fn is_timeout_error(err: &UnixfsError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use freedom_ipfs_core::{cid_from_data, Block, CoreError, Result as CoreResult, CODEC_RAW};
+    use freedom_ipfs_core::{
+        cid_from_data, Block, CoreError, Result as CoreResult, CODEC_DAG_PB, CODEC_RAW,
+    };
     use freedom_ipfs_namesys::{NamesysError, Result as NamesysResult};
+    use prost::Message;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
     use tokio::net::TcpListener;
@@ -579,6 +582,35 @@ mod tests {
         let response = reqwest::get(url).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.bytes().await.unwrap(), Bytes::from_static(data));
+    }
+
+    #[tokio::test]
+    async fn serves_directory_index_with_path_based_mime_type() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let index = b"<main>browser data plane</main>";
+        let index_block = test_pb_file(index);
+        let index_cid = cid_from_data(CODEC_DAG_PB, &index_block);
+        store.put_block(&index_cid, &index_block).unwrap();
+
+        let dir_block = test_pb_directory(vec![test_link("index.html", &index_cid)]);
+        let dir_cid = cid_from_data(CODEC_DAG_PB, &dir_block);
+        store.put_block(&dir_cid, &dir_block).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router(store);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{addr}/ipfs/{dir_cid}");
+        let response = reqwest::get(url).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            HeaderValue::from_static("text/html")
+        );
+        assert_eq!(response.bytes().await.unwrap(), Bytes::from_static(index));
     }
 
     #[tokio::test]
@@ -858,6 +890,83 @@ mod tests {
     impl BlockProvider for TimeoutProvider {
         fn get_block(&self, _cid: &Cid) -> CoreResult<Option<Block>> {
             Err(CoreError::Storage("bitswap request timed out".into()))
+        }
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct TestPbNode {
+        #[prost(bytes = "vec", optional, tag = "1")]
+        data: Option<Vec<u8>>,
+        #[prost(message, repeated, tag = "2")]
+        links: Vec<TestPbLink>,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct TestPbLink {
+        #[prost(bytes = "vec", optional, tag = "1")]
+        hash: Option<Vec<u8>>,
+        #[prost(string, optional, tag = "2")]
+        name: Option<String>,
+        #[prost(uint64, optional, tag = "3")]
+        tsize: Option<u64>,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct TestUnixfsData {
+        #[prost(enumeration = "TestDataType", optional, tag = "1")]
+        r#type: Option<i32>,
+        #[prost(bytes = "vec", optional, tag = "2")]
+        data: Option<Vec<u8>>,
+        #[prost(uint64, optional, tag = "3")]
+        filesize: Option<u64>,
+        #[prost(uint64, repeated, tag = "4")]
+        blocksizes: Vec<u64>,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
+    #[repr(i32)]
+    enum TestDataType {
+        Directory = 1,
+        File = 2,
+    }
+
+    fn test_pb_file(data: &[u8]) -> Vec<u8> {
+        TestPbNode {
+            data: Some(
+                TestUnixfsData {
+                    r#type: Some(TestDataType::File as i32),
+                    data: Some(data.to_vec()),
+                    filesize: Some(data.len() as u64),
+                    blocksizes: Vec::new(),
+                }
+                .encode_to_vec(),
+            ),
+            links: Vec::new(),
+        }
+        .encode_to_vec()
+    }
+
+    fn test_pb_directory(links: Vec<TestPbLink>) -> Vec<u8> {
+        TestPbNode {
+            data: Some(
+                TestUnixfsData {
+                    r#type: Some(TestDataType::Directory as i32),
+                    data: Some(Vec::new()),
+                    filesize: Some(0),
+                    blocksizes: Vec::new(),
+                }
+                .encode_to_vec(),
+            ),
+            links,
+        }
+        .encode_to_vec()
+    }
+
+    fn test_link(name: &str, cid: &Cid) -> TestPbLink {
+        TestPbLink {
+            hash: Some(cid.to_bytes()),
+            name: Some(name.to_string()),
+            tsize: None,
         }
     }
 }

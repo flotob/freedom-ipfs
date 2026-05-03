@@ -85,7 +85,7 @@ Results:
 | Stream eviction guard | Gateway stream scopes retain blocks they read; SQLite LRU eviction and explicit trim skip retained blocks until the stream scope releases them. | Done |
 | HTTP range support | Gateway range tests cover success, malformed ranges, and unsatisfiable ranges. | Done |
 | Browser MIME behavior | Directory `index.html` fallback with path-based `text/html` test. | Done for MVP |
-| Useful gateway status codes | Tests cover invalid path/range, not found/name not found, timeout, busy, and traversal cases. | Mostly done |
+| Useful gateway status codes and browser error pages | Tests cover invalid path/range, not found/name not found, timeout, busy, traversal cases, `text/html` browser-facing error pages, and escaped error details. | Done |
 | Bounded gateway concurrency | Gateway semaphore and concurrency-limit test. | Done |
 | IPNS support in first product-usable release | Delegated IPNS, light-DHT IPNS fallback, v2 verification, expiry, tamper, recursion-limit tests. | Done |
 | DNSLink support | DNSLink parser, pluggable TXT resolver trait, generic default resolver wrapper, Cloudflare DoH backend, TTL-aware records, tests. | Done |

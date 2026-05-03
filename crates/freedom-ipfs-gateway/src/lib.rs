@@ -577,33 +577,77 @@ enum GatewayError {
 }
 
 fn gateway_error(err: GatewayError) -> Response {
-    match err {
-        GatewayError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg).into_response(),
-        GatewayError::NotFound(msg) => (StatusCode::NOT_FOUND, msg).into_response(),
+    let (status, title, detail) = match err {
+        GatewayError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "Bad Request", msg),
+        GatewayError::NotFound(msg) => (StatusCode::NOT_FOUND, "Not Found", msg),
         GatewayError::Unixfs(UnixfsError::NotFound(_))
         | GatewayError::Unixfs(UnixfsError::PathNotFound(_)) => {
-            (StatusCode::NOT_FOUND, "not found").into_response()
+            (StatusCode::NOT_FOUND, "Not Found", "not found".into())
         }
         GatewayError::Unixfs(UnixfsError::IsDirectory) => (
             StatusCode::BAD_REQUEST,
-            "directory listing is not implemented yet",
-        )
-            .into_response(),
+            "Bad Request",
+            "directory listing is not implemented yet".into(),
+        ),
         GatewayError::Unixfs(err) if is_timeout_error(&err) => (
             StatusCode::GATEWAY_TIMEOUT,
+            "Gateway Timeout",
             format!("retrieval timeout: {err}"),
-        )
-            .into_response(),
-        GatewayError::Unixfs(err) => {
-            (StatusCode::BAD_GATEWAY, format!("unixfs error: {err}")).into_response()
+        ),
+        GatewayError::Unixfs(err) => (
+            StatusCode::BAD_GATEWAY,
+            "Bad Gateway",
+            format!("unixfs error: {err}"),
+        ),
+        GatewayError::RangeNotSatisfiable => (
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            "Range Not Satisfiable",
+            "range not satisfiable".into(),
+        ),
+        GatewayError::Busy => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Service Unavailable",
+            "gateway busy".into(),
+        ),
+        GatewayError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, "Bad Gateway", msg),
+        GatewayError::Internal(msg) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal Server Error",
+            msg,
+        ),
+    };
+
+    html_error_response(status, title, &detail)
+}
+
+fn html_error_response(status: StatusCode, title: &str, detail: &str) -> Response {
+    let body = format!(
+        r#"<!doctype html><html><head><meta charset="utf-8"><title>{code} {title}</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><main><h1>{title}</h1><p>{detail}</p></main></body></html>"#,
+        code = status.as_u16(),
+        title = escape_html(title),
+        detail = escape_html(detail)
+    );
+    let mut response = (status, body).into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    response
+}
+
+fn escape_html(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(ch),
         }
-        GatewayError::RangeNotSatisfiable => {
-            (StatusCode::RANGE_NOT_SATISFIABLE, "range not satisfiable").into_response()
-        }
-        GatewayError::Busy => (StatusCode::SERVICE_UNAVAILABLE, "gateway busy").into_response(),
-        GatewayError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, msg).into_response(),
-        GatewayError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response(),
     }
+    escaped
 }
 
 fn is_timeout_error(err: &UnixfsError) -> bool {
@@ -727,6 +771,47 @@ mod tests {
             let response = client.get(&url).header(RANGE, range).send().await.unwrap();
             assert_eq!(response.status(), status, "{range}");
         }
+    }
+
+    #[tokio::test]
+    async fn returns_browser_facing_html_error_pages() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let data = b"do not traverse";
+        let cid = cid_from_data(CODEC_RAW, data);
+        store.put_block(&cid, data).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router(store);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{addr}/ipfs/{cid}/%2e%2e/index.html");
+        let response = reqwest::get(url).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            HeaderValue::from_static("text/html; charset=utf-8")
+        );
+        let body = response.text().await.unwrap();
+        assert!(body.contains("<!doctype html>"));
+        assert!(body.contains("<h1>Bad Request</h1>"));
+        assert!(body.contains("<p>"));
+    }
+
+    #[tokio::test]
+    async fn html_error_pages_escape_details() {
+        let response = gateway_error(GatewayError::BadRequest(
+            r#"<script>alert("cid")</script> & bad"#.into(),
+        ));
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("&lt;script&gt;alert(&quot;cid&quot;)&lt;/script&gt; &amp; bad"));
+        assert!(!body.contains("<script>"));
     }
 
     #[tokio::test]

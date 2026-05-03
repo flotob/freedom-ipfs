@@ -645,10 +645,11 @@ async fn fetch_bitswap_over_streams(
                 };
                 match read_bitswap_blocks(&mut stream).await {
                     Ok(blocks) => {
-                        let _ = write_empty_bitswap_message(&mut stream).await;
                         if let Some(result) = collect_bitswap_result(&cid, blocks) {
+                            let _ = write_bitswap_cancel(&mut stream, &cid).await;
                             return Ok(result);
                         }
+                        let _ = write_empty_bitswap_message(&mut stream).await;
                     }
                     Err(err) => failures.push(err.to_string()),
                 }
@@ -699,6 +700,7 @@ async fn request_bitswap_block(
             }
         };
         if let Some(result) = collect_bitswap_result(&cid, blocks) {
+            let _ = write_bitswap_cancel(&mut stream, &cid).await;
             return Ok(result);
         }
         failures.push(format!("{protocol_name}: no valid block returned"));
@@ -721,12 +723,27 @@ async fn write_bitswap_want<T>(io: &mut T, cid: &Cid) -> io::Result<()>
 where
     T: AsyncWrite + Unpin,
 {
-    let message = BitswapMessage {
+    let message = bitswap_want_message(cid, false);
+    write_length_prefixed(io, &message.encode_to_vec()).await?;
+    io.flush().await
+}
+
+async fn write_bitswap_cancel<T>(io: &mut T, cid: &Cid) -> io::Result<()>
+where
+    T: AsyncWrite + Unpin,
+{
+    let message = bitswap_want_message(cid, true);
+    write_length_prefixed(io, &message.encode_to_vec()).await?;
+    io.flush().await
+}
+
+fn bitswap_want_message(cid: &Cid, cancel: bool) -> BitswapMessage {
+    BitswapMessage {
         wantlist: Some(Wantlist {
             entries: vec![WantEntry {
                 block: cid.to_bytes(),
                 priority: 1,
-                cancel: false,
+                cancel,
                 want_type: WantType::Block as i32,
                 send_dont_have: true,
                 tokens: Vec::new(),
@@ -738,9 +755,7 @@ where
         block_presences: Vec::new(),
         pending_bytes: 0,
         tokens: Vec::new(),
-    };
-    write_length_prefixed(io, &message.encode_to_vec()).await?;
-    io.flush().await
+    }
 }
 
 async fn write_empty_bitswap_message<T>(io: &mut T) -> io::Result<()>
@@ -1066,6 +1081,19 @@ mod bitswap_tests {
 
         assert_eq!(result.requested_block, requested_data);
         assert_eq!(result.extra_blocks, vec![(extra, extra_data.to_vec())]);
+    }
+
+    #[test]
+    fn cancel_bitswap_message_revokes_block_want() {
+        let data = b"cancel me";
+        let cid = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, data);
+        let message = bitswap_want_message(&cid, true);
+        let wantlist = message.wantlist.unwrap();
+        let entry = wantlist.entries.first().unwrap();
+
+        assert!(entry.cancel);
+        assert_eq!(entry.block, cid.to_bytes());
+        assert_eq!(entry.want_type, WantType::Block as i32);
     }
 
     fn bitswap_payload_prefix(cid: &Cid) -> Vec<u8> {

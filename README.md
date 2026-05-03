@@ -26,6 +26,7 @@ Early implementation. Current code supports:
 - verified HTTP raw-block retrieval from HTTP-capable providers,
 - client-only Bitswap retrieval over TCP, WebSocket, and QUIC libp2p streams for Bitswap-only providers,
 - bounded Bitswap peer/address fanout with one provider-refresh retry after stale-provider failures,
+- Bitswap cancel messages after successful block receipt,
 - verified caching of extra CIDv0/CIDv1 blocks returned in Bitswap payload responses,
 - basic HAMT-sharded UnixFS directory traversal,
 - UnixFS range reads that avoid assembling entire multi-block files for byte-range responses,

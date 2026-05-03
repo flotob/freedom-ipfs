@@ -235,6 +235,15 @@ async fn serve_ipfs_path(
     path: &str,
     range: Option<&HeaderValue>,
 ) -> Result<Response, GatewayError> {
+    serve_ipfs_path_with_listing_path(provider, path, range, None).await
+}
+
+async fn serve_ipfs_path_with_listing_path(
+    provider: Arc<dyn BlockProvider>,
+    path: &str,
+    range: Option<&HeaderValue>,
+    listing_path: Option<&DirectoryListingPath>,
+) -> Result<Response, GatewayError> {
     let (cid, unixfs_path) = split_ipfs_path(path)?;
     let response = match served_resource(provider.as_ref(), &cid, unixfs_path)? {
         ServedResource::File { path, len } => {
@@ -253,7 +262,14 @@ async fn serve_ipfs_path(
                     "Range requests are not supported for directory listings".into(),
                 ));
             }
-            directory_listing_response(&cid, &path, &entries)?
+            let default_listing_path;
+            let listing_path = if let Some(listing_path) = listing_path {
+                listing_path
+            } else {
+                default_listing_path = DirectoryListingPath::ipfs(&cid, &path);
+                &default_listing_path
+            };
+            directory_listing_response(listing_path, &entries)?
         }
     };
     Ok(response)
@@ -268,6 +284,34 @@ enum ServedResource {
         path: String,
         entries: Vec<DirectoryEntry>,
     },
+}
+
+struct DirectoryListingPath {
+    display: String,
+    href_base: String,
+}
+
+impl DirectoryListingPath {
+    fn ipfs(cid: &Cid, unixfs_path: &str) -> Self {
+        let display = if unixfs_path.is_empty() {
+            format!("/ipfs/{cid}")
+        } else {
+            format!("/ipfs/{cid}/{unixfs_path}")
+        };
+        let href_base = if unixfs_path.is_empty() {
+            format!("/ipfs/{cid}")
+        } else {
+            format!("/ipfs/{cid}/{}", encode_gateway_path(unixfs_path))
+        };
+        Self { display, href_base }
+    }
+
+    fn ipns(path: &str) -> Self {
+        Self {
+            display: format!("/ipns/{path}"),
+            href_base: format!("/ipns/{}", encode_gateway_path(path)),
+        }
+    }
 }
 
 fn served_resource(
@@ -300,22 +344,18 @@ fn served_resource(
 }
 
 fn directory_listing_response(
-    cid: &Cid,
-    unixfs_path: &str,
+    listing_path: &DirectoryListingPath,
     entries: &[DirectoryEntry],
 ) -> Result<Response, GatewayError> {
-    let display_path = if unixfs_path.is_empty() {
-        format!("/ipfs/{cid}")
-    } else {
-        format!("/ipfs/{cid}/{unixfs_path}")
-    };
     let mut body = format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><title>Index of {title}</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><main><h1>Index of {title}</h1><ul>"#,
-        title = escape_html(&display_path)
+        title = escape_html(&listing_path.display)
     );
     for entry in entries {
-        let child_path = append_path(unixfs_path, &entry.name);
-        let href = format!("/ipfs/{cid}/{}", encode_gateway_path(&child_path));
+        let href = append_path(
+            &listing_path.href_base,
+            &percent_encode_segment(&entry.name),
+        );
         let size = entry
             .size
             .map(|size| format!(" <small>{size} bytes</small>"))
@@ -363,11 +403,18 @@ async fn serve_ipns_path(
     path: &str,
     range: Option<&HeaderValue>,
 ) -> Result<Response, GatewayError> {
+    let listing_path = DirectoryListingPath::ipns(path);
     let mut target = format!("/ipns/{path}");
 
     for _ in 0..4 {
         if let Some(ipfs) = target.strip_prefix("/ipfs/") {
-            return serve_ipfs_path(provider.clone(), ipfs, range).await;
+            return serve_ipfs_path_with_listing_path(
+                provider.clone(),
+                ipfs,
+                range,
+                Some(&listing_path),
+            )
+            .await;
         }
 
         let Some(ipns) = target.strip_prefix("/ipns/") else {
@@ -1266,11 +1313,17 @@ mod tests {
     #[tokio::test]
     async fn serves_directory_listing_through_ipns_resolution() {
         let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
-        let data = b"ipns linked file";
-        let file_cid = cid_from_data(CODEC_RAW, data);
-        store.put_block(&file_cid, data).unwrap();
+        let plain = b"ipns linked file";
+        let plain_cid = cid_from_data(CODEC_RAW, plain);
+        store.put_block(&plain_cid, plain).unwrap();
+        let spaced = b"ipns linked file with escaped path";
+        let spaced_cid = cid_from_data(CODEC_RAW, spaced);
+        store.put_block(&spaced_cid, spaced).unwrap();
 
-        let dir_block = test_pb_directory(vec![test_link("plain.txt", &file_cid)]);
+        let dir_block = test_pb_directory(vec![
+            test_link("plain.txt", &plain_cid),
+            test_link("space name #1.txt", &spaced_cid),
+        ]);
         let dir_cid = cid_from_data(CODEC_DAG_PB, &dir_block);
         store.put_block(&dir_cid, &dir_block).unwrap();
 
@@ -1297,8 +1350,9 @@ mod tests {
             HeaderValue::from_static("text/html; charset=utf-8")
         );
         let body = response.text().await.unwrap();
-        assert!(body.contains(&format!("Index of /ipfs/{dir_cid}")));
-        assert!(body.contains(&format!(r#"href="/ipfs/{dir_cid}/plain.txt""#)));
+        assert!(body.contains("Index of /ipns/example.com"));
+        assert!(body.contains(r#"href="/ipns/example.com/plain.txt""#));
+        assert!(body.contains(r#"href="/ipns/example.com/space%20name%20%231.txt""#));
 
         let response = client.head(&url).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);

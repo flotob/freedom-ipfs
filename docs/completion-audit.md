@@ -105,7 +105,7 @@ Results:
 | UnixFS raw/dag-pb files | `freedom-ipfs-unixfs` tests cover raw and dag-pb files. | Done |
 | Multi-block UnixFS raw leaves | Range-across-inline-and-linked-block tests plus Kubo CIDv1/raw-leaf parity. | Done |
 | CIDv0 DAG-PB UnixFS compatibility | Kubo-generated CIDv0 DAG-PB parity test covers directory index fallback, nested paths, multi-block files, no-index directory listings, and byte ranges through the local gateway. | Done |
-| Directories and path resolution | UnixFS directory/path tests, HAMT listing tests, gateway directory index test, escaped gateway directory listing tests for `/ipfs` and resolved `/ipns` directories without `index.html`, and Kubo-generated no-index directory listing parity across raw-leaf, CIDv0 DAG-PB, and HAMT fixtures. | Done |
+| Directories and path resolution | UnixFS directory/path tests, HAMT listing tests, gateway directory index test, escaped gateway directory listing tests for `/ipfs` and resolved `/ipns` directories without `index.html`, namespace-preserving `/ipns` listing links, and Kubo-generated no-index directory listing parity across raw-leaf, CIDv0 DAG-PB, and HAMT fixtures. | Done |
 | Percent-encoded browser paths | Gateway unit test and Kubo-generated parity cover files with spaces and reserved characters requested through encoded URL paths. | Done |
 | HAMT directories | UnixFS HAMT tests and Kubo-generated HAMT file/listing parity. | Done for basic real-world compatibility |
 | Local HTTP gateway data plane | Gateway crate and binary serve `/health`, `/ipfs`, `/ipns`; live smoke uses the local gateway; mobile FFI start/restart rejects non-loopback bind addresses. | Done |

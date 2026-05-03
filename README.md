@@ -23,7 +23,7 @@ Early implementation. Current code supports:
 - shared delegated endpoint configuration for provider routing and delegated IPNS lookup,
 - binary `/ipns/` light-DHT record lookup fallback for IPNS in `auto` and `light_dht` modes,
 - deterministic in-process light-DHT IPNS record lookup test coverage,
-- offline gateway constructors keep name resolution cache-only/no-network by default,
+- explicit offline routing mode and offline gateway constructors keep name resolution cache-only/no-network by default,
 - short-lived in-memory DNSLink/IPNS name-resolution cache,
 - delegated routing provider lookup, including optional comma-separated multi-router race/failover,
 - optional routing lookup counters for live smoke diagnostics, distinguishing delegated provider lookup from light-DHT fallback,
@@ -67,7 +67,7 @@ Early implementation. Current code supports:
 - CIDv0/CIDv1 DAG-PB aliases share block-cache and stream-retention state,
 - CAR import/export for tests, diagnostics, cache warmup, and empty raw-block fixtures,
 - mobile lifecycle hooks for background/foreground, low-memory cache trimming, and network-change provider cache hygiene,
-- an iOS staticlib/XCFramework build skeleton with staged C headers/module map, exported-symbol verification, a simulator Swift gateway smoke, a generated UIKit/WebKit app-rendering smoke in the verifier, and a Swift wrapper for persistent-cache node creation, cache import/export, cache trimming, retrieval/routing counters, a combined diagnostics snapshot, active preload count, routing-mode selection and restart, multi-router configuration, local gateway URL mapping, lifecycle hooks, preload/cancel for `/ipfs`, `/ipns`, `ipfs://`, `ipns://`, and bare-CID inputs, and offline/online gateway start.
+- an iOS staticlib/XCFramework build skeleton with staged C headers/module map, exported-symbol verification, a simulator Swift gateway smoke, a generated UIKit/WebKit app-rendering smoke in the verifier, and a Swift wrapper for persistent-cache node creation, cache import/export, cache trimming, retrieval/routing counters, a combined diagnostics snapshot, active preload count, routing-mode selection and restart including `.offline`, multi-router configuration, local gateway URL mapping, lifecycle hooks, preload/cancel for `/ipfs`, `/ipns`, `ipfs://`, `ipns://`, and bare-CID inputs, and offline/online gateway start.
 
 Still incomplete: resource profiling on device, network path integration in the host app, and hardened DHT-only retrieval for sites whose DHT providers are slow or stale. See [docs/completion-audit.md](docs/completion-audit.md) for the current prompt-to-artifact checklist and [docs/ios-device-verification.md](docs/ios-device-verification.md) for the remaining iPhone/app verification gate.
 

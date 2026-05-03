@@ -88,7 +88,7 @@ Results:
 | iOS-first C ABI | `freedom-ipfs-mobile`, `ffi/include/freedom_ipfs.h`, and lifecycle/cache/gateway/preload APIs exist. | Done |
 | Swift wrapper | `ffi/swift/FreedomIpfsReader.swift` exists with gateway start/stop, stats, cache, lifecycle, preload/cancel, multi-router, and local URL mapping helpers. | Source present; not compiled here |
 | XCFramework build skeleton | `xtask build-xcframework` builds iOS targets and packages headers/module map on macOS. | Skeleton done; not produced on Linux |
-| XCFramework verifier | `xtask verify-xcframework` checks slices, headers, module maps, exported symbols on macOS. | Skeleton done; not run on macOS |
+| XCFramework verifier | `xtask verify-xcframework` checks slices, headers, module maps, exported symbols, and a simulator Swift link smoke on macOS. | Skeleton done; not run on macOS |
 | Simulator smoke link/start | Required by spec. | Missing, needs macOS/Xcode |
 | Real iPhone resource target under 60 MiB RSS beside Bee | Required by spec. | Missing, needs device |
 | Lifecycle hooks | ABI/Swift hooks for background, foreground, low memory, network change; unit tests cover behavior. | Implemented; host-app/device wiring unverified |
@@ -102,7 +102,7 @@ Results:
 ## Remaining Work To Close The Goal
 
 1. Run `make build-xcframework` on macOS with Xcode command line tools and fix any Rust dependency or target-link issues.
-2. Run `make verify-xcframework` on macOS and extend it to compile/link a minimal Swift sample if needed.
+2. Run `make verify-xcframework` on macOS and fix any Swift simulator link issues it reports.
 3. Add or run an iOS simulator smoke that imports an offline CAR fixture, starts the gateway, and renders/fetches through loopback.
 4. Integrate the Swift wrapper into the Freedom iOS app and wire background/foreground, low-memory, and network-path events.
 5. Profile real devices with Bee running beside this node and record RSS, CPU, startup, active retrieval, and idle network behavior.

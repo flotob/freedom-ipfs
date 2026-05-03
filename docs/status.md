@@ -83,7 +83,7 @@ Error: verify-xcframework requires macOS with Xcode command line tools; current 
 
 M0 decisions and fixtures: partially complete. The repo, license, generated unit-test fixtures, deterministic libp2p fixtures, and Kubo-generated UnixFS/HAMT CAR parity smokes exist. A larger checked-in public fixture corpus is still useful.
 
-M1 workspace and mobile skeleton: mostly complete. Workspace, mobile C ABI, Swift wrapper source, gateway start/stop, stats, cache import/export, routing mode selection, multi-router configuration, local gateway URL mapping helpers, lifecycle hooks, preload/cancel with path/URI/bare-CID normalization, and an XCFramework build/verify skeleton exist. The build stages the C header plus module map and verifies exported C symbols on macOS. macOS/Xcode artifact production and simulator link/start remain unverified here.
+M1 workspace and mobile skeleton: mostly complete. Workspace, mobile C ABI, Swift wrapper source, gateway start/stop, stats, cache import/export, routing mode selection, multi-router configuration, local gateway URL mapping helpers, lifecycle hooks, preload/cancel with path/URI/bare-CID normalization, and an XCFramework build/verify skeleton exist. The build stages the C header plus module map; the verifier checks exported C symbols and attempts a simulator Swift link smoke on macOS. macOS/Xcode artifact production and simulator link/start remain unverified here.
 
 M2 CID, block verification, and store: complete for MVP. CID parse/format, verified block insertion, CAR import/export, bounded in-memory hot block cache, SQLite cache, eviction, provider cache, bad-provider cache, clear, and trim are covered by tests.
 
@@ -107,7 +107,7 @@ M11 optional features: not started except CAR export/import support, which was p
 
 ## Known Gaps
 
-- Real iOS XCFramework creation and symbol/link verification require macOS with Xcode; `xtask verify-xcframework` exists but cannot run on this Linux host.
+- Real iOS XCFramework creation and symbol/Swift-link verification require macOS with Xcode; `xtask verify-xcframework` exists but cannot run on this Linux host.
 - Swift wrapper source exists, but `swift` is not installed in this Linux environment, and sample app link/start/stop tests require macOS/Xcode.
 - Real iPhone resource targets are unverified, including the provisional under-60-MiB idle RSS target beside Bee.
 - iOS lifecycle hooks exist at the ABI/Swift level, but actual host-app background/foreground, low-memory, and network-path event wiring is not verified on iOS.

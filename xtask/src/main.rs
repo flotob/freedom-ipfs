@@ -178,6 +178,8 @@ fn verify_xcframework(framework: &Path) -> Result<()> {
         verify_exported_symbols(library)?;
     }
 
+    verify_swift_simulator_link(framework, &libraries)?;
+
     println!("verified {}", framework.display());
     Ok(())
 }
@@ -226,6 +228,94 @@ fn verify_exported_symbols(library: &Path) -> Result<()> {
     Ok(())
 }
 
+fn verify_swift_simulator_link(framework: &Path, libraries: &[PathBuf]) -> Result<()> {
+    let library = libraries
+        .iter()
+        .find(|library| library.to_string_lossy().contains("simulator"))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} is missing a simulator library slice",
+                framework.display()
+            )
+        })?;
+    let slice_dir = library
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", library.display()))?;
+    let headers_dir = slice_dir.join("Headers");
+    if !headers_dir.join("freedom_ipfs.h").exists() {
+        bail!(
+            "{} is missing the simulator slice freedom_ipfs.h header",
+            headers_dir.display()
+        );
+    }
+    if !headers_dir.join("module.modulemap").exists() {
+        bail!(
+            "{} is missing the simulator slice module.modulemap",
+            headers_dir.display()
+        );
+    }
+
+    let sdk_path = command_stdout(
+        Command::new("xcrun").args(["--sdk", "iphonesimulator", "--show-sdk-path"]),
+        "xcrun --sdk iphonesimulator --show-sdk-path",
+    )?;
+    let target = simulator_swift_target()?;
+    let verify_dir = PathBuf::from("target/ios-xcframework/verify");
+    if verify_dir.exists() {
+        fs::remove_dir_all(&verify_dir).context("remove previous Swift verification directory")?;
+    }
+    fs::create_dir_all(&verify_dir).context("create Swift verification directory")?;
+    let smoke = verify_dir.join("FreedomIpfsSmoke.swift");
+    fs::write(
+        &smoke,
+        r#"import Foundation
+import FreedomIpfs
+
+@main
+enum FreedomIpfsSmoke {
+    static func main() throws {
+        _ = FreedomIpfsReader.version
+        let reader = try FreedomIpfsReader()
+        try reader.startGateway()
+        guard reader.gatewayURL != nil else {
+            fatalError("gateway URL missing")
+        }
+        _ = reader.stopGateway()
+    }
+}
+"#,
+    )
+    .context("write Swift verification smoke source")?;
+
+    run(
+        Command::new("xcrun")
+            .args(["--sdk", "iphonesimulator", "swiftc"])
+            .arg("-target")
+            .arg(target)
+            .arg("-sdk")
+            .arg(sdk_path.trim())
+            .arg("-I")
+            .arg(&headers_dir)
+            .arg("-L")
+            .arg(slice_dir)
+            .arg("-l")
+            .arg("freedom_ipfs_mobile")
+            .arg("ffi/swift/FreedomIpfsReader.swift")
+            .arg(&smoke)
+            .arg("-o")
+            .arg(verify_dir.join("FreedomIpfsSmoke")),
+        "swiftc simulator link smoke",
+    )
+}
+
+fn simulator_swift_target() -> Result<&'static str> {
+    match env::consts::ARCH {
+        "aarch64" => Ok("arm64-apple-ios16.0-simulator"),
+        "x86_64" => Ok("x86_64-apple-ios16.0-simulator"),
+        arch => bail!("unsupported macOS host architecture for simulator Swift smoke: {arch}"),
+    }
+}
+
 fn staticlib(target: &str) -> PathBuf {
     Path::new("target")
         .join(target)
@@ -239,4 +329,12 @@ fn run(command: &mut Command, label: &str) -> Result<()> {
         bail!("{label} failed");
     }
     Ok(())
+}
+
+fn command_stdout(command: &mut Command, label: &str) -> Result<String> {
+    let output = command.output().with_context(|| label.to_string())?;
+    if !output.status.success() {
+        bail!("{label} failed");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }

@@ -4,6 +4,8 @@ Last audited: 2026-05-03
 Repository: `github.com/flotob/freedom-ipfs`  
 Spec: `/root/codex/mobile-rust-ipfs-node-spec.md`
 
+Detailed prompt-to-artifact audit: `docs/completion-audit.md`
+
 ## Current State
 
 This is a running Rust IPFS reader, not just a scaffold. It starts a local gateway, resolves externally supplied `/ipfs` and `/ipns` paths, discovers providers through delegated routing with light-DHT fallback, retrieves verified blocks through HTTP providers and Bitswap, reads UnixFS data, and serves browser-facing responses from the local gateway.

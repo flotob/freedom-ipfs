@@ -238,6 +238,10 @@ Failed experiments:
 - One optimistic direct `WANT_BLOCK` attempt for an all-unknown peer set also
   regressed reliability: `ipfs-tech-page-assets` fresh repeat=5 passed 4/5,
   with one root 504 at 30.8s and run totals 14.3-30.8s. Reverted.
+- Reusing the resolved UnixFS file CID for MIME/range/stream reads avoided
+  repeated path walks in a deterministic gateway test, but live `ipfs.tech`
+  evidence was worse: two fresh repeat=3 runs passed 1/3 and 2/3 with root
+  504s, while the pushed `ac77017` code passed 3/3 in the same window. Reverted.
 - Failure-only light-DHT fallback after a stale delegated provider set added
   about 10s to failed roots and did not recover `ipfs.tech` during the test
   window. Reverted.

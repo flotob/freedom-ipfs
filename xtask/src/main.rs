@@ -233,6 +233,9 @@ fn verify_exported_symbols(library: &Path) -> Result<()> {
         "freedom_ipfs_node_restart_gateway_online_with_config_v2",
         "freedom_ipfs_node_enter_background",
         "freedom_ipfs_node_handle_low_memory",
+        "freedom_ipfs_node_retrieval_stats",
+        "freedom_ipfs_node_routing_stats",
+        "freedom_ipfs_node_active_preload_count",
     ] {
         if !stdout.contains(symbol) {
             bail!("{} does not export {symbol}", library.display());
@@ -346,9 +349,16 @@ enum FreedomIpfsSmoke {{
 
         let reader = try FreedomIpfsReader()
         try reader.importCar(Data([{fixture_car}]))
-        try reader.startGateway()
+        try reader.startOnlineGateway(
+            delegatedRouter: "http://127.0.0.1:9/routing/v1",
+            routingMode: .delegated,
+            maxConcurrentRequests: 1
+        )
         guard reader.gatewayURL != nil else {{
             fatalError("gateway URL missing")
+        }}
+        guard reader.activePreloadCount == 0 else {{
+            fatalError("unexpected active preloads before request")
         }}
         guard let url = reader.localGatewayURL(for: "/ipfs/{fixture_cid}") else {{
             fatalError("fixture gateway URL missing")
@@ -359,6 +369,17 @@ enum FreedomIpfsSmoke {{
         }}
         guard data == Data([{fixture_body}]) else {{
             fatalError("fixture body mismatch")
+        }}
+        let retrievalStats = reader.retrievalStats
+        guard retrievalStats.cacheHits > 0,
+              retrievalStats.httpProviderBlocks == 0,
+              retrievalStats.bitswapBlocks == 0 else {{
+            fatalError("unexpected retrieval stats: \(retrievalStats)")
+        }}
+        let routingStats = reader.routingStats
+        guard routingStats.delegatedProviderLookups == 0,
+              routingStats.dhtProviderLookups == 0 else {{
+            fatalError("cached fixture unexpectedly routed: \(routingStats)")
         }}
         _ = reader.stopGateway()
     }}

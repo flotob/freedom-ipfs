@@ -14,6 +14,19 @@ typedef struct FreedomIpfsBuffer {
     uint8_t *data;
     size_t len;
 } FreedomIpfsBuffer;
+typedef struct FreedomIpfsRetrievalStats {
+    uint64_t cache_hits;
+    uint64_t http_provider_blocks;
+    uint64_t bitswap_blocks;
+} FreedomIpfsRetrievalStats;
+typedef struct FreedomIpfsRoutingStats {
+    uint64_t delegated_provider_lookups;
+    uint64_t delegated_provider_results;
+    uint64_t delegated_provider_errors;
+    uint64_t dht_provider_lookups;
+    uint64_t dht_provider_results;
+    uint64_t dht_provider_errors;
+} FreedomIpfsRoutingStats;
 
 #define FREEDOM_IPFS_ROUTING_MODE_AUTO ((uint32_t)0)
 #define FREEDOM_IPFS_ROUTING_MODE_DELEGATED ((uint32_t)1)
@@ -33,6 +46,9 @@ FreedomIpfsBuffer freedom_ipfs_node_export_car(FreedomIpfsNode *ptr);
 void freedom_ipfs_buffer_free(FreedomIpfsBuffer buffer);
 uint64_t freedom_ipfs_node_block_count(FreedomIpfsNode *ptr);
 uint64_t freedom_ipfs_node_total_bytes(FreedomIpfsNode *ptr);
+FreedomIpfsRetrievalStats freedom_ipfs_node_retrieval_stats(FreedomIpfsNode *ptr);
+FreedomIpfsRoutingStats freedom_ipfs_node_routing_stats(FreedomIpfsNode *ptr);
+uint64_t freedom_ipfs_node_active_preload_count(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_clear_cache(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_trim_cache(FreedomIpfsNode *ptr, uint64_t max_bytes);
 bool freedom_ipfs_node_enter_background(FreedomIpfsNode *ptr);

@@ -20,6 +20,21 @@ public struct FreedomIpfsStats: Equatable, Sendable {
     public let totalBytes: UInt64
 }
 
+public struct FreedomIpfsRetrievalCounters: Equatable, Sendable {
+    public let cacheHits: UInt64
+    public let httpProviderBlocks: UInt64
+    public let bitswapBlocks: UInt64
+}
+
+public struct FreedomIpfsRoutingCounters: Equatable, Sendable {
+    public let delegatedProviderLookups: UInt64
+    public let delegatedProviderResults: UInt64
+    public let delegatedProviderErrors: UInt64
+    public let dhtProviderLookups: UInt64
+    public let dhtProviderResults: UInt64
+    public let dhtProviderErrors: UInt64
+}
+
 public final class FreedomIpfsReader {
     private var handle: OpaquePointer?
 
@@ -296,6 +311,51 @@ public final class FreedomIpfsReader {
             blockCount: freedom_ipfs_node_block_count(handle),
             totalBytes: freedom_ipfs_node_total_bytes(handle)
         )
+    }
+
+    public var retrievalStats: FreedomIpfsRetrievalCounters {
+        guard let handle else {
+            return FreedomIpfsRetrievalCounters(
+                cacheHits: 0,
+                httpProviderBlocks: 0,
+                bitswapBlocks: 0
+            )
+        }
+        let stats = freedom_ipfs_node_retrieval_stats(handle)
+        return FreedomIpfsRetrievalCounters(
+            cacheHits: stats.cache_hits,
+            httpProviderBlocks: stats.http_provider_blocks,
+            bitswapBlocks: stats.bitswap_blocks
+        )
+    }
+
+    public var routingStats: FreedomIpfsRoutingCounters {
+        guard let handle else {
+            return FreedomIpfsRoutingCounters(
+                delegatedProviderLookups: 0,
+                delegatedProviderResults: 0,
+                delegatedProviderErrors: 0,
+                dhtProviderLookups: 0,
+                dhtProviderResults: 0,
+                dhtProviderErrors: 0
+            )
+        }
+        let stats = freedom_ipfs_node_routing_stats(handle)
+        return FreedomIpfsRoutingCounters(
+            delegatedProviderLookups: stats.delegated_provider_lookups,
+            delegatedProviderResults: stats.delegated_provider_results,
+            delegatedProviderErrors: stats.delegated_provider_errors,
+            dhtProviderLookups: stats.dht_provider_lookups,
+            dhtProviderResults: stats.dht_provider_results,
+            dhtProviderErrors: stats.dht_provider_errors
+        )
+    }
+
+    public var activePreloadCount: UInt64 {
+        guard let handle else {
+            return 0
+        }
+        return freedom_ipfs_node_active_preload_count(handle)
     }
 
     public func clearCache() -> Bool {

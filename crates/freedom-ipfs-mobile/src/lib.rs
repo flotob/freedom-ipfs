@@ -6,7 +6,7 @@ use freedom_ipfs_namesys::{
 use freedom_ipfs_retrieval::FetchingBlockProvider;
 use freedom_ipfs_routing::{
     AutoRoutingClient, DelegatedRoutingClient, DhtIpnsResolver, LightDhtClient,
-    ProviderRoutingClient, DEFAULT_DELEGATED_ROUTER,
+    ProviderRoutingClient, RoutingStatsHandle, DEFAULT_DELEGATED_ROUTER,
 };
 use freedom_ipfs_store::SqliteBlockStore;
 use std::collections::HashMap;
@@ -41,6 +41,8 @@ pub struct FreedomIpfsNode {
     store: SqliteBlockStore,
     gateway_addr: Mutex<Option<SocketAddr>>,
     gateway_task: Mutex<Option<JoinHandle<()>>>,
+    retrieval_stats_provider: Mutex<Option<FetchingBlockProvider>>,
+    routing_stats: Mutex<Option<RoutingStatsHandle>>,
     lifecycle_state: Mutex<LifecycleState>,
     next_preload_id: AtomicU64,
     preload_tasks: Mutex<HashMap<u64, JoinHandle<()>>>,
@@ -50,6 +52,25 @@ pub struct FreedomIpfsNode {
 pub struct FreedomIpfsBuffer {
     pub data: *mut u8,
     pub len: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FreedomIpfsRetrievalStats {
+    pub cache_hits: u64,
+    pub http_provider_blocks: u64,
+    pub bitswap_blocks: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FreedomIpfsRoutingStats {
+    pub delegated_provider_lookups: u64,
+    pub delegated_provider_results: u64,
+    pub delegated_provider_errors: u64,
+    pub dht_provider_lookups: u64,
+    pub dht_provider_results: u64,
+    pub dht_provider_errors: u64,
 }
 
 #[no_mangle]
@@ -121,6 +142,8 @@ fn node_from_store(store: SqliteBlockStore) -> *mut FreedomIpfsNode {
         store,
         gateway_addr: Mutex::new(None),
         gateway_task: Mutex::new(None),
+        retrieval_stats_provider: Mutex::new(None),
+        routing_stats: Mutex::new(None),
         lifecycle_state: Mutex::new(LifecycleState::Foreground),
         next_preload_id: AtomicU64::new(1),
         preload_tasks: Mutex::new(HashMap::new()),
@@ -236,6 +259,71 @@ pub unsafe extern "C" fn freedom_ipfs_node_total_bytes(ptr: *mut FreedomIpfsNode
 ///
 /// `ptr` must be a valid node pointer.
 #[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_retrieval_stats(
+    ptr: *mut FreedomIpfsNode,
+) -> FreedomIpfsRetrievalStats {
+    if ptr.is_null() {
+        return FreedomIpfsRetrievalStats::default();
+    }
+    let node = &*ptr;
+    let Ok(provider) = node.retrieval_stats_provider.lock() else {
+        return FreedomIpfsRetrievalStats::default();
+    };
+    let Some(provider) = provider.as_ref() else {
+        return FreedomIpfsRetrievalStats::default();
+    };
+    let stats = provider.stats();
+    FreedomIpfsRetrievalStats {
+        cache_hits: stats.cache_hits,
+        http_provider_blocks: stats.http_provider_blocks,
+        bitswap_blocks: stats.bitswap_blocks,
+    }
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_routing_stats(
+    ptr: *mut FreedomIpfsNode,
+) -> FreedomIpfsRoutingStats {
+    if ptr.is_null() {
+        return FreedomIpfsRoutingStats::default();
+    }
+    let node = &*ptr;
+    let Ok(stats) = node.routing_stats.lock() else {
+        return FreedomIpfsRoutingStats::default();
+    };
+    let Some(stats) = stats.as_ref() else {
+        return FreedomIpfsRoutingStats::default();
+    };
+    let stats = stats.snapshot();
+    FreedomIpfsRoutingStats {
+        delegated_provider_lookups: stats.delegated_provider_lookups,
+        delegated_provider_results: stats.delegated_provider_results,
+        delegated_provider_errors: stats.delegated_provider_errors,
+        dht_provider_lookups: stats.dht_provider_lookups,
+        dht_provider_results: stats.dht_provider_results,
+        dht_provider_errors: stats.dht_provider_errors,
+    }
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_active_preload_count(ptr: *mut FreedomIpfsNode) -> u64 {
+    if ptr.is_null() {
+        return 0;
+    }
+    let node = &*ptr;
+    active_preload_count(node) as u64
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer.
+#[no_mangle]
 pub unsafe extern "C" fn freedom_ipfs_node_clear_cache(ptr: *mut FreedomIpfsNode) -> bool {
     if ptr.is_null() {
         return false;
@@ -343,13 +431,21 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway(
         return false;
     }
     let node = &*ptr;
+    if gateway_is_running(node) {
+        return true;
+    }
     let addr = match parse_loopback_gateway_addr(addr) {
         Some(addr) => addr,
         None => return false,
     };
 
     let store = node.store.clone();
-    start_gateway_with_router(node, addr, freedom_ipfs_gateway::router(store))
+    if start_gateway_with_router(node, addr, freedom_ipfs_gateway::router(store)) {
+        clear_online_stats(node);
+        true
+    } else {
+        false
+    }
 }
 
 /// # Safety
@@ -426,7 +522,10 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config_v2(
         return false;
     }
     let node = &*ptr;
-    let Some((addr, router)) = online_gateway_router(
+    if gateway_is_running(node) {
+        return true;
+    }
+    let Some(parts) = online_gateway_router(
         node,
         addr,
         delegated_router,
@@ -438,7 +537,12 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config_v2(
         return false;
     };
 
-    start_gateway_with_router(node, addr, router)
+    if start_gateway_with_router(node, parts.addr, parts.router) {
+        set_online_stats(node, parts.retrieval_provider, parts.routing_stats);
+        true
+    } else {
+        false
+    }
 }
 
 /// # Safety
@@ -467,7 +571,7 @@ pub unsafe extern "C" fn freedom_ipfs_node_restart_gateway_online_with_config_v2
         return false;
     }
     let node = &*ptr;
-    let Some((addr, router)) = online_gateway_router(
+    let Some(parts) = online_gateway_router(
         node,
         addr,
         delegated_router,
@@ -481,7 +585,20 @@ pub unsafe extern "C" fn freedom_ipfs_node_restart_gateway_online_with_config_v2
 
     stop_preloads(node);
     stop_gateway(node);
-    start_gateway_with_router(node, addr, router)
+    if start_gateway_with_router(node, parts.addr, parts.router) {
+        set_online_stats(node, parts.retrieval_provider, parts.routing_stats);
+        true
+    } else {
+        clear_online_stats(node);
+        false
+    }
+}
+
+struct OnlineGatewayParts {
+    addr: SocketAddr,
+    router: axum::Router,
+    retrieval_provider: FetchingBlockProvider,
+    routing_stats: RoutingStatsHandle,
 }
 
 unsafe fn online_gateway_router(
@@ -492,7 +609,7 @@ unsafe fn online_gateway_router(
     max_concurrent_requests: usize,
     dht_query_timeout_secs: u64,
     dht_max_providers: usize,
-) -> Option<(SocketAddr, axum::Router)> {
+) -> Option<OnlineGatewayParts> {
     let addr = parse_loopback_gateway_addr(addr)?;
     let delegated_routers = if delegated_router.is_null() {
         DEFAULT_DELEGATED_ROUTER.to_string()
@@ -510,6 +627,8 @@ unsafe fn online_gateway_router(
         ROUTING_MODE_LIGHT_DHT => ProviderRoutingClient::from(dht.clone()),
         _ => return None,
     };
+    let routing_stats = RoutingStatsHandle::default();
+    let routing = routing.with_stats(routing_stats.clone());
     let provider = FetchingBlockProvider::new(node.store.clone(), routing);
     let gateway_config = if max_concurrent_requests == 0 {
         freedom_ipfs_gateway::GatewayConfig::default()
@@ -524,14 +643,17 @@ unsafe fn online_gateway_router(
             dht,
         ),
     ));
-    Some((
+    let router = freedom_ipfs_gateway::router_with_provider_and_name_resolver_config(
+        Arc::new(provider.clone()),
+        Arc::new(name_resolver),
+        gateway_config,
+    );
+    Some(OnlineGatewayParts {
         addr,
-        freedom_ipfs_gateway::router_with_provider_and_name_resolver_config(
-            Arc::new(provider),
-            Arc::new(name_resolver),
-            gateway_config,
-        ),
-    ))
+        router,
+        retrieval_provider: provider,
+        routing_stats,
+    })
 }
 
 unsafe fn parse_loopback_gateway_addr(addr: *const c_char) -> Option<SocketAddr> {
@@ -618,6 +740,13 @@ fn start_gateway_with_router(
         *gateway_addr = Some(bound);
     }
     true
+}
+
+fn gateway_is_running(node: &FreedomIpfsNode) -> bool {
+    node.gateway_task
+        .lock()
+        .map(|task| task.is_some())
+        .unwrap_or(false)
 }
 
 /// # Safety
@@ -740,6 +869,7 @@ fn stop_gateway(node: &FreedomIpfsNode) {
     if let Ok(mut gateway_addr) = node.gateway_addr.lock() {
         *gateway_addr = None;
     }
+    clear_online_stats(node);
 }
 
 fn stop_preloads(node: &FreedomIpfsNode) {
@@ -753,6 +883,37 @@ fn stop_preloads(node: &FreedomIpfsNode) {
 fn prune_finished_preloads(node: &FreedomIpfsNode) {
     if let Ok(mut tasks) = node.preload_tasks.lock() {
         tasks.retain(|_, task| !task.is_finished());
+    }
+}
+
+fn active_preload_count(node: &FreedomIpfsNode) -> usize {
+    if let Ok(mut tasks) = node.preload_tasks.lock() {
+        tasks.retain(|_, task| !task.is_finished());
+        tasks.len()
+    } else {
+        0
+    }
+}
+
+fn set_online_stats(
+    node: &FreedomIpfsNode,
+    retrieval_provider: FetchingBlockProvider,
+    routing_stats: RoutingStatsHandle,
+) {
+    if let Ok(mut stats_provider) = node.retrieval_stats_provider.lock() {
+        *stats_provider = Some(retrieval_provider);
+    }
+    if let Ok(mut stats) = node.routing_stats.lock() {
+        *stats = Some(routing_stats);
+    }
+}
+
+fn clear_online_stats(node: &FreedomIpfsNode) {
+    if let Ok(mut stats_provider) = node.retrieval_stats_provider.lock() {
+        *stats_provider = None;
+    }
+    if let Ok(mut stats) = node.routing_stats.lock() {
+        *stats = None;
     }
 }
 
@@ -884,6 +1045,59 @@ mod tests {
             assert_gateway_health(node);
 
             assert!(freedom_ipfs_node_stop_gateway(node));
+            freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
+    fn reports_mobile_transport_and_routing_stats() {
+        unsafe {
+            let node = freedom_ipfs_node_new_in_memory();
+            assert!(!node.is_null());
+            assert_eq!(
+                freedom_ipfs_node_retrieval_stats(node),
+                FreedomIpfsRetrievalStats::default()
+            );
+            assert_eq!(
+                freedom_ipfs_node_routing_stats(node),
+                FreedomIpfsRoutingStats::default()
+            );
+            assert_eq!(freedom_ipfs_node_active_preload_count(node), 0);
+
+            let data = b"mobile transport stats";
+            let cid = cid_from_data(CODEC_RAW, data);
+            (*node).store.put_block(&cid, data).unwrap();
+            let addr = CString::new("127.0.0.1:0").unwrap();
+            let router = CString::new("http://127.0.0.1:9/routing/v1").unwrap();
+            assert!(freedom_ipfs_node_start_gateway_online_with_config_v2(
+                node,
+                addr.as_ptr(),
+                router.as_ptr(),
+                ROUTING_MODE_DELEGATED,
+                1,
+                0,
+                0,
+            ));
+
+            assert_gateway_path(node, &format!("/ipfs/{cid}"), data);
+            let retrieval = freedom_ipfs_node_retrieval_stats(node);
+            assert!(retrieval.cache_hits > 0);
+            assert_eq!(retrieval.http_provider_blocks, 0);
+            assert_eq!(retrieval.bitswap_blocks, 0);
+            assert_eq!(
+                freedom_ipfs_node_routing_stats(node),
+                FreedomIpfsRoutingStats::default()
+            );
+
+            assert!(freedom_ipfs_node_stop_gateway(node));
+            assert_eq!(
+                freedom_ipfs_node_retrieval_stats(node),
+                FreedomIpfsRetrievalStats::default()
+            );
+            assert_eq!(
+                freedom_ipfs_node_routing_stats(node),
+                FreedomIpfsRoutingStats::default()
+            );
             freedom_ipfs_node_free(node);
         }
     }
@@ -1192,18 +1406,32 @@ mod tests {
     }
 
     unsafe fn assert_gateway_health(node: *mut FreedomIpfsNode) {
+        let response = gateway_response(node, "/health");
+        assert!(response.contains("200 OK"));
+        assert!(response.ends_with("ok\n"));
+    }
+
+    unsafe fn assert_gateway_path(node: *mut FreedomIpfsNode, path: &str, expected: &[u8]) {
+        let response = gateway_response(node, path);
+        assert!(response.contains("200 OK"), "{response}");
+        assert!(
+            response.as_bytes().ends_with(expected),
+            "response did not end with expected body: {response}"
+        );
+    }
+
+    unsafe fn gateway_response(node: *mut FreedomIpfsNode, path: &str) -> String {
         let url = gateway_url_string(node);
         assert!(url.starts_with("http://127.0.0.1:"));
 
         let addr = url.strip_prefix("http://").unwrap();
         let mut stream = std::net::TcpStream::connect(addr).unwrap();
-        stream
-            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-            .unwrap();
+        let request =
+            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
-        assert!(response.contains("200 OK"));
-        assert!(response.ends_with("ok\n"));
+        response
     }
 
     unsafe fn gateway_url_string(node: *mut FreedomIpfsNode) -> String {

@@ -144,7 +144,7 @@ M11 optional features: not started except CAR export/import support, which was p
 - Real iPhone resource targets are unverified, including the provisional under-60-MiB idle RSS target beside Bee; use `docs/ios-device-verification.md` to collect the missing evidence.
 - iOS lifecycle hooks exist at the ABI/Swift level, but actual host-app background/foreground, low-memory, and network-path event wiring is not verified on iOS.
 - DHT-only retrieval of `daicowtf.eth` is not reliable on the public DHT; current auto mode succeeds because delegated routing returns usable providers.
-- The public Amino DHT smoke has no stable default CID yet; set `FREEDOM_IPFS_LIVE_DHT_CID` to a known-good advertised CID before using it as live evidence.
+- The public Amino DHT smoke has no stable default CID yet; set `FREEDOM_IPFS_LIVE_DHT_CID` to a known-good advertised CID before using it as live evidence. The current `_dnslink.ipfs.tech` root and three common example CIDs returned zero public DHT providers on 2026-05-03; see `tests/fixtures/README.md`.
 - DNSLink still defaults to Cloudflare DoH, with TTL-aware caching. Native/system TXT lookup should be evaluated for artifact size and iOS behavior.
 - The checked-in public corpus is expanded but still not exhaustive; more independent sites/media and documented pass/fail cases would improve confidence.
 - The soak coverage is still host-side only; iOS device memory-growth and network soaks are still missing.

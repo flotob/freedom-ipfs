@@ -38,6 +38,17 @@ Rejected public-corpus candidates:
   resolved but returned `502 Bad Gateway` through the local Rust gateway
   after retries ended with no HTTP-capable providers.
 
+Rejected public-DHT smoke candidates:
+
+- 2026-05-03: `bafybeierpueybjyyjypd5jfmoellbclf3bcgcrj2oaktwya2o5dlilupaq`,
+  the then-current `_dnslink.ipfs.tech` root, returned zero providers through
+  `FREEDOM_IPFS_LIVE_DHT_CID=... cargo test -p freedom-ipfs-routing live_light_dht_finds_public_providers -- --ignored --nocapture`.
+- 2026-05-03: common example CIDs
+  `QmYwAPJzv5CZsnAzt8auV2w6M5n8iUp9HxLy5p3T3gBD6t`,
+  `QmT78zSuBmuS4z925W31o1P8dRQsDuxF6AQDBr2CGy9eCd`, and
+  `QmNnooDu7eVk7rQhmc5nvkZDRJp8M1cR47WX1tUuP6vfdJ` also returned zero
+  public DHT providers through the same smoke.
+
 Retired public-corpus candidates:
 
 - 2026-05-03: `/ipns/ipfs.tech`, `/ipns/dist.ipfs.tech`, and

@@ -49,6 +49,8 @@ try reader.startOnlineGateway(
 
 let localURL = reader.localGatewayURL(for: "/ipfs/bafy...")
 let before = reader.diagnostics
+// Load localURL in the browser, then record the per-navigation delta.
+let delta = reader.diagnostics.delta(since: before)
 ```
 
 ## Device Matrix

@@ -750,6 +750,7 @@ enum FreedomIpfsSmoke {{
         guard let url = reader.localGatewayURL(for: "/ipfs/{fixture_cid}") else {{
             fatalError("fixture gateway URL missing")
         }}
+        let beforeDiagnostics = reader.diagnostics
         let (data, response) = try await URLSession.shared.data(from: url)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {{
             fatalError("fixture request failed")
@@ -779,6 +780,17 @@ enum FreedomIpfsSmoke {{
               diagnostics.isGatewayRunning,
               !diagnostics.isBackgrounded else {{
             fatalError("unexpected diagnostics snapshot: \(diagnostics)")
+        }}
+        let diagnosticsDelta = diagnostics.delta(since: beforeDiagnostics)
+        guard diagnosticsDelta.retrievalStats.cacheHits > 0,
+              diagnosticsDelta.retrievalStats.httpProviderBlocks == 0,
+              diagnosticsDelta.retrievalStats.bitswapBlocks == 0,
+              diagnosticsDelta.routingStats.delegatedProviderLookups == 0,
+              diagnosticsDelta.routingStats.dhtProviderLookups == 0,
+              diagnosticsDelta.activePreloadCount == 0,
+              diagnosticsDelta.isGatewayRunning,
+              !diagnosticsDelta.isBackgrounded else {{
+            fatalError("unexpected diagnostics delta: \(diagnosticsDelta)")
         }}
         guard reader.enterBackground(),
               reader.diagnostics.isBackgrounded else {{

@@ -20,6 +20,7 @@ const IPNS_RECORD_MAX_SIZE: usize = 10 * 1024;
 const LIBP2P_KEY_CODEC: u64 = 0x72;
 const IDENTITY_HASH: u64 = 0x00;
 const DEFAULT_NAME_CACHE_TTL: Duration = Duration::from_secs(60);
+const DEFAULT_NAMESYS_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Error)]
 pub enum NamesysError {
@@ -145,7 +146,7 @@ pub struct CloudflareDohResolver {
 impl Default for CloudflareDohResolver {
     fn default() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: timeout_http_client(DEFAULT_NAMESYS_HTTP_TIMEOUT),
             endpoint: "https://cloudflare-dns.com/dns-query".to_string(),
         }
     }
@@ -199,7 +200,7 @@ impl DelegatedIpnsResolver {
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into().trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
+            client: timeout_http_client(DEFAULT_NAMESYS_HTTP_TIMEOUT),
         }
     }
 }
@@ -551,6 +552,14 @@ fn unquote_txt(input: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn timeout_http_client(timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(timeout)
+        .timeout(timeout)
+        .build()
+        .expect("namesystem HTTP client config is valid")
 }
 
 #[derive(Debug, Deserialize)]

@@ -20,6 +20,7 @@ use url::Url;
 pub const DEFAULT_DELEGATED_ROUTER: &str = "https://delegated-ipfs.dev/routing/v1";
 pub const DEFAULT_DHT_QUERY_TIMEOUT: Duration = Duration::from_secs(25);
 pub const DEFAULT_MAX_DHT_PROVIDERS: usize = 32;
+const DEFAULT_DELEGATED_ROUTING_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_BOOTSTRAP_PEERS: &[&str] = &[
     "/dnsaddr/sg1.bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
     "/dnsaddr/sv15.bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
@@ -116,7 +117,7 @@ impl DelegatedRoutingClient {
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into().trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
+            client: timeout_http_client(DEFAULT_DELEGATED_ROUTING_TIMEOUT),
         }
     }
 
@@ -629,6 +630,14 @@ fn http_url_from_multiaddr(addr: &str) -> Result<Option<Url>> {
     Url::parse(&url)
         .map(Some)
         .map_err(|_| RoutingError::InvalidProviderUrl(addr.to_string()))
+}
+
+fn timeout_http_client(timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(timeout)
+        .timeout(timeout)
+        .build()
+        .expect("delegated routing HTTP client config is valid")
 }
 
 #[cfg(test)]

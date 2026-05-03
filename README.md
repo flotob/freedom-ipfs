@@ -27,6 +27,7 @@ Early implementation. Current code supports:
 - client-mode light DHT provider/IPNS lookup fallback with configurable provider fanout,
 - CLI/mobile knobs for DHT query timeout and provider fanout,
 - short-lived multihash-keyed provider-result cache and bad-provider suppression,
+- explicit HTTP timeouts for delegated routing, DNSLink/IPNS, and provider block requests,
 - verified HTTP raw-block retrieval from HTTP-capable providers,
 - client-only Bitswap retrieval over TCP, WebSocket, and QUIC libp2p streams for Bitswap-only providers,
 - bounded Bitswap peer/address fanout with one provider-refresh retry after stale-provider failures,

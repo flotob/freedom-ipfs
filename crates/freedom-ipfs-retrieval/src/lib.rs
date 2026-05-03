@@ -29,6 +29,7 @@ use url::Url;
 const PROVIDER_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const BAD_HTTP_PROVIDER_TTL: Duration = Duration::from_secs(10 * 60);
 const BAD_BITSWAP_PROVIDER_TTL: Duration = Duration::from_secs(2 * 60);
+const HTTP_PROVIDER_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_BITSWAP_PEERS_PER_BLOCK: usize = 16;
 const MAX_BITSWAP_ADDRS_PER_PEER: usize = 4;
 const CID_VERSION_0: u64 = 0;
@@ -108,7 +109,7 @@ pub struct HttpRetriever {
 impl HttpRetriever {
     pub fn new(routing: impl Into<ProviderRoutingClient>, store: SqliteBlockStore) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: timeout_http_client(HTTP_PROVIDER_TIMEOUT),
             routing: routing.into(),
             store,
         }
@@ -904,6 +905,14 @@ where
 
 fn invalid_data(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+}
+
+fn timeout_http_client(timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(timeout)
+        .timeout(timeout)
+        .build()
+        .expect("HTTP provider client config is valid")
 }
 
 #[derive(Clone, PartialEq, Message)]

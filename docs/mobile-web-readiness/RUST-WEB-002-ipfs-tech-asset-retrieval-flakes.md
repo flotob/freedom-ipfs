@@ -74,19 +74,35 @@ failed asset kinds: script=11, stylesheet=2
 ```
 
 After keeping a shared Bitswap swarm per retriever and aligning the harness
-spawned-gateway request cap with the gateway default of 8:
+defaults to 8 gateway requests and 6 asset fetches:
 
 ```text
 cargo run -p mobile-web-harness -- \
   --case ipfs-tech-page-assets \
   --repeat 5 \
   --fresh-gateway-per-run \
-  --output /tmp/ipfs-tech-cold-after-shared-default8-5.json
+  --asset-concurrency 6 \
+  --output /tmp/ipfs-tech-cold-after-shared-asset6-5.json
 
 passed=5 failed=0 pass_rate=100.0%
-root_ttfb p50=11772ms p90=11912ms p95=11912ms max=11912ms
-asset_ttfb p50=5611ms p90=6161ms p95=11421ms max=11788ms
-measured run totals: 45614ms, 46783ms, 46637ms, 46296ms, 46292ms
+root_ttfb p50=11461ms p90=13639ms p95=13639ms max=13639ms
+asset_ttfb p50=5610ms p90=11383ms p95=11527ms max=14639ms
+measured run totals: 37036ms, 34941ms, 34842ms, 37692ms, 35684ms
+```
+
+An extended 20-run cold check showed the remaining public-network tail:
+
+```text
+cargo run -p mobile-web-harness -- \
+  --case ipfs-tech-page-assets \
+  --repeat 20 \
+  --fresh-gateway-per-run \
+  --asset-concurrency 6 \
+  --output /tmp/ipfs-tech-cold-after-shared-asset6-20.json
+
+passed=19 failed=1 pass_rate=95.0%
+root_ttfb p50=11781ms p90=13656ms p95=13917ms max=45822ms
+asset_ttfb p50=5605ms p90=11245ms p95=11428ms max=40045ms
 ```
 
 Warm-cache behavior against one reused gateway remained fast:
@@ -129,4 +145,6 @@ the Rust node feel "not yet Kubo-like" even when the root HTML request succeeds.
   aggressive for page workloads, because a timeout in one short-lived swarm does
   not prove that provider is bad for all nearby blocks.
 - A later fix should reduce cold full-page time substantially. Reliability is
-  better, but a ~46s cold `ipfs.tech` load is still not a mobile-quality target.
+  better and asset fan-out is much less flaky, but ~35-40s cold `ipfs.tech`
+  loads plus occasional root-provider timeouts are still not a mobile-quality
+  target.

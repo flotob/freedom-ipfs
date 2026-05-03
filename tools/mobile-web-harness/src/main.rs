@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 
 const DEFAULT_CORPUS: &str = "tools/mobile-web-harness/corpus/mobile-web.json";
 const DEFAULT_GATEWAY_MAX_CONCURRENT_REQUESTS: usize = 8;
+const DEFAULT_ASSET_CONCURRENCY: usize = 6;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -63,7 +64,7 @@ struct Args {
     #[arg(long, default_value_t = 4)]
     dht_max_providers: usize,
     /// Concurrent subresource fetches for page crawls.
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = DEFAULT_ASSET_CONCURRENCY)]
     asset_concurrency: usize,
 }
 

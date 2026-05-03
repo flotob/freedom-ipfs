@@ -425,13 +425,26 @@ root_ttfb p50=1746ms p90=1891ms max=1891ms
 bitswap_fetch count=9 total=4507ms p50=167ms p90=1346ms max=1346ms
 ```
 
+Persistent warm-store validation after interleaved dials:
+
+```text
+ipfs-tech-page-assets warmup=1 repeat=3, fresh gateway per run, persistent DB:
+passed=3 failed=0 pass_rate=100.0%
+root_ttfb p50=83ms p90=88ms max=88ms
+asset_ttfb p50=33ms p90=76ms p95=95ms max=145ms
+measured run totals: 338ms, 375ms, 305ms
+measured gateway RSS: 28064 KiB, 28324 KiB, 28700 KiB
+SQLite cache DB: 2.3 MiB
+```
+
 Resource impact:
 The changes keep existing caps: gateway request concurrency remains 8, asset
 concurrency remains harness-side, Bitswap connection limits are unchanged, and
-in-flight block coalescing is capped at 256 CIDs with hedged waiters. The
-fresh-process persistent warm-store `ipfs.tech` run produced a 2.3 MiB SQLite
-cache DB for the warmed page and measured fresh-process RSS of about 28-29 MiB
-after each warm-cache run.
+in-flight block coalescing is capped at 256 CIDs with hedged waiters. Interleaved
+dials do not raise the connection limits or candidate caps. The fresh-process
+persistent warm-store `ipfs.tech` run produced a 2.3 MiB SQLite cache DB for the
+warmed page and measured fresh-process RSS of about 28-29 MiB after each
+warm-cache run.
 
 Failed experiments:
 

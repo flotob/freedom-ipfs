@@ -1,4 +1,4 @@
-use axum::http::header::{CONTENT_RANGE, RANGE};
+use axum::http::header::{CONTENT_RANGE, CONTENT_TYPE, RANGE};
 use axum::http::StatusCode;
 use freedom_ipfs_gateway::router;
 use freedom_ipfs_store::SqliteBlockStore;
@@ -55,6 +55,29 @@ async fn kubo_generated_unixfs_site_matches_local_gateway_bytes() {
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
+
+    let expected_index = kubo_stdout(
+        &kubo,
+        &repo,
+        [
+            OsStr::new("cat"),
+            OsStr::new(&format!("/ipfs/{root}/index.html")),
+        ],
+    );
+    let response = reqwest::get(format!("http://{addr}/ipfs/{root}"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "text/html"
+    );
+    assert_eq!(response.bytes().await.unwrap().as_ref(), expected_index);
 
     for path in ["index.html", "assets/style.css", "assets/blob.bin"] {
         let kubo_path = format!("/ipfs/{root}/{path}");

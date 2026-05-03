@@ -20,7 +20,7 @@ Do not mark the overall implementation goal complete until those Apple-platform 
 
 ## Current Verification Evidence
 
-Fresh checks run at `50d40d1`:
+Fresh checks run on this branch:
 
 ```bash
 cargo fmt --all --check && make verify
@@ -39,7 +39,7 @@ Results:
   - `daicowtf.eth` resolved to `/ipfs/bafybeidznfolm74c5cephzdycedx7hk76iawno45wemcvkflieotzo2lne`, returned `403507` bytes.
   - Retrieval stats: `cache_hits=25 http_provider_blocks=2 bitswap_blocks=3`.
 - Public corpus smoke passed for the checked-in `vitalik-home` and `daicowtf-home` entries with the same byte counts and retrieval stats.
-- Kubo parity passed for generated UnixFS site files/directories, range reads, and HAMT directories.
+- Kubo parity passed for generated UnixFS site files, directory-index fallback, range reads, and HAMT directories.
 - Local cached-gateway soak passed: `500` requests, Linux RSS from `8704` KiB to `13696` KiB.
 - `xtask build-xcframework` and `xtask verify-xcframework` correctly refused to run on Linux with the macOS/Xcode requirement message.
 
@@ -94,7 +94,7 @@ Results:
 | Browser integration helpers | Local gateway URL, `ipfs://`/`ipns://`/gateway-style URL mapping helpers, preload/cancel with path/URI/bare-CID normalization, cache stats/control. | Source present; Swift compile/link unverified |
 | Live ENS-backed smoke | `make live-smoke` resolves `vitalik.eth` and `daicowtf.eth` at runtime and fetches through local gateway. | Done on Linux |
 | Public CID corpus | Small checked-in corpus and opt-in smoke. | Started; should grow |
-| Kubo parity | Deterministic Kubo-generated UnixFS/HAMT/range parity tests. | Started; should grow |
+| Kubo parity | Deterministic Kubo-generated UnixFS/HAMT/range/directory-index parity tests. | Started; should grow |
 | Long-running soak | Local cached-gateway RSS soak exists and passes. | Host-side only; device/network soak missing |
 | Security parser/network limits | Tests cover oversized/malformed routing, traversal, invalid blocks, redirects, IPNS tamper/expiry, recursion, provider fanout. | Good MVP coverage |
 

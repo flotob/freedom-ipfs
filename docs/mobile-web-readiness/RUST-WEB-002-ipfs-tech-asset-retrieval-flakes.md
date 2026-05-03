@@ -281,6 +281,13 @@ passed=3 failed=0
 run totals: 3087ms, 36ms, 32ms
 root_ttfb p50=2ms p90=2449ms max=2449ms
 asset_ttfb p50=3ms p90=103ms max=208ms
+
+additional mobile-web corpus cases repeat=3:
+passed=3 failed=0
+run totals: 6509ms, 11ms, 12ms
+vitalik-root-html-range root_ttfb p50=4ms p90=3781ms max=3781ms
+ipfs-tech-developers-hero-range root_ttfb p50=3ms p90=2369ms max=2369ms
+wikipedia-on-ipfs-root root_ttfb p50=4ms p90=357ms max=357ms
 ```
 
 Conclusion:

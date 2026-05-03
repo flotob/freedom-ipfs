@@ -38,6 +38,19 @@ Rejected public-corpus candidates:
 - 2026-05-03: `/ipns/ipfs.tech/_nuxt/community-hero.Cp0BCcC7.jpg`
   resolved but returned `502 Bad Gateway` through the local Rust gateway
   after retries ended with no HTTP-capable providers.
+- 2026-05-03: `/ipns/docs.ipfs.tech`, `/ipns/specs.ipfs.tech`, and
+  `/ipns/blog.ipfs.tech` all had current DNSLink TXT records, but
+  `docs.ipfs.tech` alternated between a successful `23600` byte response and
+  `502 Bad Gateway` after retries with no HTTP-capable providers, so these
+  mutable site roots were not added to the default corpus.
+- 2026-05-03: `/ipns/libp2p.io` returned a DNSLink CNAME-only response to
+  `_dnslink.libp2p-io.on.fleek.co`, but that target did not return a final
+  TXT record through Cloudflare DoH, so the name was not usable as a DNSLink
+  corpus target.
+- 2026-05-03: `/ipns/en.wikipedia-on-ipfs.org` resolved and fetched a
+  `169` byte root page, but `/ipns/en.wikipedia-on-ipfs.org/wiki/Main_Page`
+  returned `502 Bad Gateway` after retries with no HTTP-capable providers.
+  Keep the root out of the default corpus unless a larger stable path is found.
 
 Rejected public-DHT smoke candidates:
 
@@ -57,6 +70,13 @@ Retired public-corpus candidates:
   with repeated `502 Bad Gateway` responses from unavailable public providers.
   Keep the larger `ipfs.tech` media paths in the default corpus for DNSLink and
   range coverage, and re-add site roots only after they are stable again.
+- 2026-05-03: `/ipns/dnslink.dev`,
+  `/ipns/dnslink.dev/assets/style.b1c0d942.css`,
+  `/ipns/dnslink.dev/assets/app.f1c68689.js`, and
+  `/ipns/dnslink.dev/assets/dns-query.a0134a75.png` previously passed, but
+  later live-corpus reruns returned `502 Bad Gateway` for the root and static
+  assets after retries with no HTTP-capable providers. Re-add only if provider
+  availability stabilizes again.
 
 Previously rejected public-corpus candidates now accepted:
 
@@ -75,5 +95,10 @@ Previously rejected public-corpus candidates now accepted:
   `/ipns/dnslink.dev/assets/style.b1c0d942.css`,
   `/ipns/dnslink.dev/assets/app.f1c68689.js`, and
   `/ipns/dnslink.dev/assets/dns-query.a0134a75.png` passed with
-  `bytes=0-127` range checks and are now included in `public_corpus.txt` as
-  an additional DNSLink site outside `ipfs.tech`.
+  `bytes=0-127` range checks and were temporarily included in
+  `public_corpus.txt` as an additional DNSLink site outside `ipfs.tech` before
+  later provider flakiness moved them to the retired list above.
+- 2026-05-03: `/ipns/en.wikipedia-on-ipfs.org` passed as a small independent
+  DNSLink root with a `bytes=0-63` range check and is now included in
+  `public_corpus.txt`. Larger content paths under the same name are still
+  excluded until stable providers are found.

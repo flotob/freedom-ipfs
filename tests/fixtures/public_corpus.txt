@@ -15,9 +15,7 @@ ipfs-tech-ribbon-home-1 /ipns/ipfs.tech/_nuxt/ribbon-home-1.Db3iUyss.jpg 10000 1
 ipfs-tech-ribbon-home-2 /ipns/ipfs.tech/_nuxt/ribbon-home-2.xhPE7YJm.jpg 10000 128
 ipfs-tech-ribbon-home-3 /ipns/ipfs.tech/_nuxt/ribbon-home-3.CsPAOEU8.jpg 10000 128
 
-# Additional DNSLink site outside ipfs.tech. This covers a mutable site root
-# plus static CSS/JS/image assets through the same local gateway path.
-dnslink-dev-home /ipns/dnslink.dev 1024 128
-dnslink-dev-style /ipns/dnslink.dev/assets/style.b1c0d942.css 1024 128
-dnslink-dev-app-js /ipns/dnslink.dev/assets/app.f1c68689.js 1024 128
-dnslink-dev-doh-png /ipns/dnslink.dev/assets/dns-query.a0134a75.png 1024 128
+# Additional DNSLink site outside ipfs.tech. The root is intentionally small
+# but currently stable and exercises DNSLink TXT resolution through the local
+# gateway without relying on public HTTP gateways.
+wikipedia-on-ipfs-en-root /ipns/en.wikipedia-on-ipfs.org 128 64

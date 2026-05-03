@@ -26,6 +26,7 @@ Early implementation. Current code supports:
 - deterministic in-process light-DHT IPNS record lookup test coverage,
 - explicit offline routing mode and offline gateway constructors keep name resolution cache-only/no-network by default,
 - short-lived in-memory DNSLink/IPNS name-resolution cache,
+- DNSLink CNAME delegation following in the Cloudflare DoH resolver,
 - delegated routing provider lookup, including optional comma-separated multi-router race/failover,
 - optional routing lookup counters for live smoke diagnostics, distinguishing delegated provider lookup from light-DHT fallback,
 - bounded delegated-routing response size and provider fanout,

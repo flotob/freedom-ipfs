@@ -82,8 +82,8 @@ Record device model, iOS version, app commit, Freedom IPFS commit, Bee commit, X
 
 4. DNSLink/IPNS content:
    - Load checked-in DNSLink-backed paths from `tests/fixtures/public_corpus.txt`.
-   - At minimum, cover `/ipns/dnslink.dev`, `/ipns/dnslink.dev/assets/style.b1c0d942.css`, and one larger `/ipns/ipfs.tech/_nuxt/...jpg` asset such as `/ipns/ipfs.tech/_nuxt/developers-hero.BRuJDQyf.jpg`.
-   - Do not use mutable `/ipns/ipfs.tech`, `/ipns/dist.ipfs.tech`, or `/ipns/cid.ipfs.tech` roots as acceptance targets unless they are revalidated; they were retired from the default corpus after public-provider flakiness.
+   - At minimum, cover the checked-in DNSLink-backed paths from `tests/fixtures/public_corpus.txt`, including `/ipns/en.wikipedia-on-ipfs.org` and one larger `/ipns/ipfs.tech/_nuxt/...jpg` asset such as `/ipns/ipfs.tech/_nuxt/developers-hero.BRuJDQyf.jpg`.
+   - Do not use mutable `/ipns/ipfs.tech`, `/ipns/dist.ipfs.tech`, `/ipns/cid.ipfs.tech`, or `/ipns/dnslink.dev` paths as acceptance targets unless they are revalidated; they were retired from the default corpus after public-provider flakiness.
    - Record successful render, first byte, complete load time, and whether fallback routing was needed from `diagnostics.routingStats`.
 
 5. Byte-range behavior:

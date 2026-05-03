@@ -22,6 +22,9 @@ const LIBP2P_KEY_CODEC: u64 = 0x72;
 const IDENTITY_HASH: u64 = 0x00;
 const DEFAULT_NAME_CACHE_TTL: Duration = Duration::from_secs(60);
 const DEFAULT_NAMESYS_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+const DNS_TYPE_CNAME: u16 = 5;
+const DNS_TYPE_TXT: u16 = 16;
+const MAX_DOH_CNAME_DEPTH: usize = 8;
 
 #[derive(Debug, Error)]
 pub enum NamesysError {
@@ -225,6 +228,19 @@ impl CloudflareDohResolver {
             ..Self::default()
         }
     }
+
+    async fn txt_lookup_response(&self, name: &str) -> Result<DohResponse> {
+        self.client
+            .get(&self.endpoint)
+            .query(&[("name", name), ("type", "TXT")])
+            .header("accept", "application/dns-json")
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<DohResponse>()
+            .await
+            .map_err(NamesysError::from)
+    }
 }
 
 #[async_trait]
@@ -239,26 +255,32 @@ impl DnsTxtResolver for CloudflareDohResolver {
     }
 
     async fn txt_lookup_with_ttl(&self, name: &str) -> Result<Vec<DnsTxtRecord>> {
-        let response = self
-            .client
-            .get(&self.endpoint)
-            .query(&[("name", name), ("type", "TXT")])
-            .header("accept", "application/dns-json")
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<DohResponse>()
-            .await?;
+        let mut current = name.trim_end_matches('.').to_string();
+        let mut cname_ttl = None;
 
-        Ok(response
-            .answer
-            .unwrap_or_default()
-            .into_iter()
-            .map(|answer| DnsTxtRecord {
-                value: unquote_txt(&answer.data),
-                ttl: answer.ttl.map(Duration::from_secs),
-            })
-            .collect())
+        for _ in 0..=MAX_DOH_CNAME_DEPTH {
+            let response = self.txt_lookup_response(&current).await?;
+            let answers = response.answer.unwrap_or_default();
+            let txt_records = answers
+                .iter()
+                .filter(|answer| answer.is_txt())
+                .map(|answer| DnsTxtRecord {
+                    value: unquote_txt(&answer.data),
+                    ttl: min_ttl(cname_ttl, answer.ttl.map(Duration::from_secs)),
+                })
+                .collect::<Vec<_>>();
+            if !txt_records.is_empty() {
+                return Ok(txt_records);
+            }
+
+            let Some(cname) = answers.iter().find(|answer| answer.is_cname()) else {
+                return Ok(Vec::new());
+            };
+            cname_ttl = min_ttl(cname_ttl, cname.ttl.map(Duration::from_secs));
+            current = cname.data.trim_end_matches('.').to_string();
+        }
+
+        Err(NamesysError::NotFound(name.to_string()))
     }
 }
 
@@ -767,6 +789,27 @@ struct DohAnswer {
     data: String,
     #[serde(rename = "TTL")]
     ttl: Option<u64>,
+    #[serde(rename = "type")]
+    record_type: Option<u16>,
+}
+
+impl DohAnswer {
+    fn is_txt(&self) -> bool {
+        self.record_type
+            .is_none_or(|record_type| record_type == DNS_TYPE_TXT)
+    }
+
+    fn is_cname(&self) -> bool {
+        self.record_type == Some(DNS_TYPE_CNAME)
+    }
+}
+
+fn min_ttl(left: Option<Duration>, right: Option<Duration>) -> Option<Duration> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(ttl), None) | (None, Some(ttl)) => Some(ttl),
+        (None, None) => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -932,6 +975,51 @@ mod tests {
             vec![DnsTxtRecord::with_ttl(
                 "dnslink=/ipfs/bafkqaddwgevxmmraojswg33smq",
                 Duration::from_secs(120)
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn cloudflare_doh_resolver_follows_cname_to_txt_answer() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 2048];
+                let len = tokio::io::AsyncReadExt::read(&mut stream, &mut request)
+                    .await
+                    .unwrap();
+                let request = String::from_utf8_lossy(&request[..len]);
+                let body = if request.contains("name=_dnslink.example.test") {
+                    r#"{"Answer":[{"data":"_dnslink.target.test.","TTL":60,"type":5}]}"#
+                } else if request.contains("name=_dnslink.target.test") {
+                    r#"{"Answer":[{"data":"\"dnslink=/ipfs/bafkqaddwgevxmmraojswg33smq\"","TTL":300,"type":16}]}"#
+                } else {
+                    r#"{"Answer":[]}"#
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/dns-json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let resolver = CloudflareDohResolver::new(format!("http://{addr}/dns-query"));
+        let records = resolver
+            .txt_lookup_with_ttl("_dnslink.example.test")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            records,
+            vec![DnsTxtRecord::with_ttl(
+                "dnslink=/ipfs/bafkqaddwgevxmmraojswg33smq",
+                Duration::from_secs(60)
             )]
         );
     }

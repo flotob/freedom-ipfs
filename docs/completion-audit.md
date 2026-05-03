@@ -30,6 +30,7 @@ cargo test -p freedom-ipfs-gateway --bin freedom-ipfs-gateway --test cli -- --no
 cargo run -p freedom-ipfs-gateway -- --help
 cargo run -p xtask -- validate-ios-device-evidence
 make verify
+make live-corpus
 ```
 
 Previously recorded checks for unchanged live/parity areas:
@@ -37,7 +38,6 @@ Previously recorded checks for unchanged live/parity areas:
 ```bash
 KUBO_BIN=$PWD/target/tools/kubo/kubo/ipfs make kubo-parity
 make live-smoke
-make live-corpus
 ```
 
 Apple-platform CI evidence:
@@ -65,7 +65,7 @@ Results:
     - Per-target diagnostics: `retrieval_delta=cache_hits=20,http_provider_blocks=0,bitswap_blocks=3`; `routing_delta=delegated_lookups=3,delegated_results=5,delegated_errors=0,dht_lookups=0,dht_results=0,dht_errors=0`.
   - Retrieval stats: `cache_hits=25 http_provider_blocks=2 bitswap_blocks=3`.
   - Routing provider stats: `delegated_lookups=5 delegated_results=47 delegated_errors=0 dht_lookups=0 dht_results=0 dht_errors=0`.
-- Public corpus smoke passed for the checked-in `vitalik-home`, `daicowtf-home`, `ipfs-tech-developers-hero`, `ipfs-tech-ribbon-community-7`, `ipfs-tech-ribbon-community-8`, `ipfs-tech-ribbon-home-1`, `ipfs-tech-ribbon-home-2`, `ipfs-tech-ribbon-home-3`, `dnslink-dev-home`, `dnslink-dev-style`, `dnslink-dev-app-js`, and `dnslink-dev-doh-png` entries, including a `bytes=0-127` range request for each entry:
+- Public corpus smoke passed for the checked-in `vitalik-home`, `daicowtf-home`, `ipfs-tech-developers-hero`, `ipfs-tech-ribbon-community-7`, `ipfs-tech-ribbon-community-8`, `ipfs-tech-ribbon-home-1`, `ipfs-tech-ribbon-home-2`, `ipfs-tech-ribbon-home-3`, and `wikipedia-on-ipfs-en-root` entries, including byte-range requests for each entry:
   - `vitalik-home` returned `38394` bytes.
   - `daicowtf-home` returned `403507` bytes.
   - `ipfs-tech-developers-hero` returned `184141` bytes from `/ipns/ipfs.tech/_nuxt/developers-hero.BRuJDQyf.jpg`.
@@ -74,12 +74,9 @@ Results:
   - `ipfs-tech-ribbon-home-1` returned `62518` bytes from `/ipns/ipfs.tech/_nuxt/ribbon-home-1.Db3iUyss.jpg`.
   - `ipfs-tech-ribbon-home-2` returned `120227` bytes from `/ipns/ipfs.tech/_nuxt/ribbon-home-2.xhPE7YJm.jpg`.
   - `ipfs-tech-ribbon-home-3` returned `75458` bytes from `/ipns/ipfs.tech/_nuxt/ribbon-home-3.CsPAOEU8.jpg`.
-  - `dnslink-dev-home` returned `90974` bytes from `/ipns/dnslink.dev`.
-  - `dnslink-dev-style` returned `40017` bytes from `/ipns/dnslink.dev/assets/style.b1c0d942.css`.
-  - `dnslink-dev-app-js` returned `120496` bytes from `/ipns/dnslink.dev/assets/app.f1c68689.js`.
-  - `dnslink-dev-doh-png` returned `50788` bytes from `/ipns/dnslink.dev/assets/dns-query.a0134a75.png`.
-  - Each range response returned `128` bytes, matched the full response prefix, and included a valid `Content-Range` header.
-  - Retrieval stats: `cache_hits=208 http_provider_blocks=10 bitswap_blocks=9`.
+  - `wikipedia-on-ipfs-en-root` returned `169` bytes from `/ipns/en.wikipedia-on-ipfs.org`.
+  - The first eight range responses returned `128` bytes; the Wikipedia-on-IPFS range response returned `64` bytes. Every range response matched the full response prefix and included a valid `Content-Range` header.
+  - Retrieval stats: `cache_hits=157 http_provider_blocks=8 bitswap_blocks=7`.
 - The opt-in live harnesses retry transient local-gateway `408`, `502`, `503`, and `504` responses up to five times with backoff so temporary public-network provider timeouts do not fail the first attempt when later attempts succeed.
 - Kubo parity passed for generated CIDv1/raw-leaf UnixFS site files, CIDv0/DAG-PB UnixFS site files, empty files, percent-encoded browser paths, directory-index fallback, no-index directory listings including HAMT listings, fixed/open-ended/suffix range reads, full/ranged `HEAD` requests, and HAMT directories.
 - Local cached-gateway soak passed: `500` requests, Linux RSS from `8960` KiB to `13312` KiB.
@@ -117,7 +114,7 @@ Results:
 | Useful gateway status codes and browser error pages | Tests cover invalid path/range, not found/name not found, timeout, busy, traversal cases, `text/html` browser-facing error pages, and escaped error details. | Done |
 | Bounded gateway concurrency | Gateway semaphore and concurrency-limit test. | Done |
 | IPNS support in first product-usable release | Delegated IPNS across all configured delegated routers, bounded delegated IPNS response bodies before verification, light-DHT IPNS fallback, v2 verification, expiry, tamper, recursion-limit tests. | Done |
-| DNSLink support | DNSLink parser, pluggable TXT resolver trait, generic default resolver wrapper, Cloudflare DoH backend, split quoted TXT character-string concatenation, TTL-aware records, tests. | Done |
+| DNSLink support | DNSLink parser, pluggable TXT resolver trait, generic default resolver wrapper, Cloudflare DoH backend, split quoted TXT character-string concatenation, TTL-aware records, bounded CNAME delegation following, tests. | Done |
 | DNSLink cache TTL | DNSLink resolution preserves DNS TXT TTLs where the resolver supplies them; `CachedNameResolver` caps dynamic TTLs with a conservative max. | Done |
 | Native/system TXT resolver | Explicit follow-up in spec/status. | Not required for MVP; open |
 | ENS excluded from node | Live smoke resolves ENS/contenthash outside the node, then feeds `/ipfs` paths to the local gateway. | Done |
@@ -144,7 +141,7 @@ Results:
 | Device/app verification runbook | `docs/ios-device-verification.md` defines app wiring, real-device matrix, Bee co-residency runs, live content cases, range checks, lifecycle checks, acceptance targets, and points to `docs/ios-device-evidence-template.csv` for structured measurement capture. `xtask validate-ios-device-evidence` validates the template and enforces stricter schema/resource-threshold checks for filled evidence with `--filled`. | Done; evidence still missing |
 | Browser integration helpers | Local gateway URL, `ipfs://`/`ipns://`/gateway-style URL mapping helpers, preload/cancel with path/URI/bare-CID normalization, cache stats/control, retrieval/routing counters, combined diagnostics snapshot, routing restart including `.offline`, and active preload count. | Swift compile/link, lifecycle/control calls, routing restart/offline, and generated `WKWebView` app smoke verified in simulator; Freedom app integration unverified |
 | Live ENS-backed smoke | `make live-smoke` resolves `vitalik.eth` and `daicowtf.eth` at runtime, mounts the online IPNS/DNSLink resolver, fetches through the local gateway, and prints per-target retrieval/routing deltas that distinguish cache, HTTP-provider blocks, Bitswap blocks, delegated provider lookups, and light-DHT fallback. | Done on Linux |
-| Public IPFS/IPNS corpus | Checked-in opt-in corpus covers the ENS-derived immutable `/ipfs` paths plus DNSLink-backed `/ipns` paths for `ipfs.tech` and `dnslink.dev` assets; `make live-corpus` passed with full-response and `bytes=0-127` range checks. Mutable `/ipns/ipfs.tech`, `/ipns/dist.ipfs.tech`, and `/ipns/cid.ipfs.tech` roots were retired from the default corpus after repeated public-provider `502` failures. | Expanded; should still diversify further |
+| Public IPFS/IPNS corpus | Checked-in opt-in corpus covers the ENS-derived immutable `/ipfs` paths plus DNSLink-backed `/ipns` paths for `ipfs.tech` assets and the Wikipedia-on-IPFS root; `make live-corpus` passed with full-response and byte-range checks. Mutable `/ipns/ipfs.tech`, `/ipns/dist.ipfs.tech`, `/ipns/cid.ipfs.tech`, and `/ipns/dnslink.dev` paths were retired from the default corpus after repeated public-provider `502` failures. | Expanded; should still diversify further |
 | Kubo parity | Deterministic Kubo-generated CIDv1/raw-leaf UnixFS, CIDv0/DAG-PB UnixFS, empty-file, encoded-path, HAMT, no-index directory listing, fixed/open-ended/suffix range, full/ranged `HEAD`, and directory-index parity tests. | Expanded |
 | Long-running soak | Local cached-gateway RSS soak and host live-retrieval RSS soak exist and pass. | Host-side coverage improved; device soak missing |
 | Security parser/network limits | Tests cover oversized/malformed routing, traversal, invalid blocks, redirects, IPNS tamper/expiry, recursion, provider fanout. | Good MVP coverage |
@@ -153,7 +150,7 @@ Results:
 
 1. Integrate the Swift wrapper into the Freedom iOS app and wire background/foreground, low-memory, and network-path events using `docs/ios-device-verification.md`.
 2. Profile real devices with Bee running beside this node and record RSS, CPU, startup, active retrieval, and idle network behavior in the runbook evidence table.
-3. Keep diversifying the public corpus beyond the ENS-derived paths, `ipfs.tech`, and `dnslink.dev`.
+3. Keep diversifying the public corpus beyond the ENS-derived paths, `ipfs.tech`, and Wikipedia-on-IPFS.
 4. Find or control a stable public-DHT provider target for `FREEDOM_IPFS_LIVE_DHT_CID`.
 5. Add device soaks for live retrieval, background/foreground, and memory growth.
 

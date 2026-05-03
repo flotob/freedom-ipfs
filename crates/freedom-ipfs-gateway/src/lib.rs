@@ -247,9 +247,7 @@ async fn serve_ipfs_path_with_listing_path(
     let (cid, unixfs_path) = split_ipfs_path(path)?;
     let response = match served_resource(provider.as_ref(), &cid, unixfs_path)? {
         ServedResource::File { path, len } => {
-            let mime = mime_guess::from_path(&path)
-                .first_or_octet_stream()
-                .to_string();
+            let mime = mime_for_served_file(provider.as_ref(), &cid, &path, len)?;
             if let Some(range) = range {
                 ranged_response(provider, cid, path, len, range, &mime)?
             } else {
@@ -273,6 +271,37 @@ async fn serve_ipfs_path_with_listing_path(
         }
     };
     Ok(response)
+}
+
+fn mime_for_served_file(
+    provider: &dyn BlockProvider,
+    cid: &Cid,
+    path: &str,
+    len: u64,
+) -> Result<String, GatewayError> {
+    if let Some(mime) = mime_guess::from_path(path).first() {
+        return Ok(mime.to_string());
+    }
+    if len > 0 {
+        let end = (len - 1).min(512);
+        let prefix = read_file_range(provider, cid, path, 0, end).map_err(GatewayError::Unixfs)?;
+        if looks_like_html(&prefix) {
+            return Ok("text/html".to_string());
+        }
+    }
+    Ok("application/octet-stream".to_string())
+}
+
+fn looks_like_html(bytes: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(bytes);
+    let trimmed = text
+        .trim_start_matches('\u{feff}')
+        .trim_start_matches(|ch: char| ch.is_ascii_whitespace());
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("<!doctype html")
+        || lower.starts_with("<html")
+        || lower.starts_with("<head")
+        || lower.starts_with("<body")
 }
 
 enum ServedResource {
@@ -895,6 +924,52 @@ mod tests {
             HeaderValue::from_static("text/html")
         );
         assert_eq!(response.bytes().await.unwrap(), Bytes::from_static(index));
+    }
+
+    #[tokio::test]
+    async fn serves_root_html_file_with_sniffed_mime_type() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let html = b"<!DOCTYPE html><html><head><title>DAICO</title></head><body>ok</body></html>";
+        let file_block = test_pb_file(html);
+        let file_cid = cid_from_data(CODEC_DAG_PB, &file_block);
+        store.put_block(&file_cid, &file_block).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router(store);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{addr}/ipfs/{file_cid}");
+        let client = reqwest::Client::new();
+        let response = client.get(&url).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            HeaderValue::from_static("text/html")
+        );
+        assert_eq!(response.bytes().await.unwrap(), Bytes::from_static(html));
+
+        let response = client
+            .get(&url)
+            .header(RANGE, "bytes=0-14")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            HeaderValue::from_static("text/html")
+        );
+        assert_eq!(
+            response.headers().get(CONTENT_RANGE).unwrap(),
+            HeaderValue::from_str(&format!("bytes 0-14/{}", html.len())).unwrap()
+        );
+        assert_eq!(
+            response.bytes().await.unwrap(),
+            Bytes::from_static(b"<!DOCTYPE html>")
+        );
     }
 
     #[tokio::test]

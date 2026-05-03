@@ -10,8 +10,9 @@ use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use futures::stream::{select_all, FuturesUnordered};
 use futures::StreamExt;
 use libp2p::multiaddr::Protocol;
+use libp2p::swarm::NetworkBehaviour;
 use libp2p::StreamProtocol;
-use libp2p::{noise, tcp, tls, yamux, Multiaddr, PeerId, SwarmBuilder};
+use libp2p::{connection_limits, noise, tcp, tls, yamux, Multiaddr, PeerId, SwarmBuilder};
 use libp2p_stream::{Control as StreamControl, IncomingStreams};
 use multihash::Multihash;
 use multihash_codetable::{Code, MultihashDigest};
@@ -30,6 +31,10 @@ const PROVIDER_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const BAD_HTTP_PROVIDER_TTL: Duration = Duration::from_secs(10 * 60);
 const BAD_BITSWAP_PROVIDER_TTL: Duration = Duration::from_secs(2 * 60);
 const HTTP_PROVIDER_TIMEOUT: Duration = Duration::from_secs(20);
+const BITSWAP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+const BITSWAP_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
+const BITSWAP_MAX_PENDING_OUTGOING_CONNECTIONS: u32 = 16;
+const BITSWAP_MAX_ESTABLISHED_CONNECTIONS: u32 = 16;
 const MAX_BITSWAP_PEERS_PER_BLOCK: usize = 16;
 const MAX_BITSWAP_ADDRS_PER_PEER: usize = 4;
 const CID_VERSION_0: u64 = 0;
@@ -288,12 +293,18 @@ impl HttpRetriever {
             )
             .await
             .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
-            .with_behaviour(|_| libp2p_stream::Behaviour::new())
+            .with_behaviour(|_| BitswapBehaviour {
+                stream: libp2p_stream::Behaviour::new(),
+                limits: connection_limits::Behaviour::new(bitswap_connection_limits()),
+            })
             .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
-            .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(20)))
+            .with_swarm_config(|cfg| {
+                cfg.with_idle_connection_timeout(BITSWAP_IDLE_CONNECTION_TIMEOUT)
+            })
+            .with_connection_timeout(BITSWAP_CONNECTION_TIMEOUT)
             .build();
 
-        let mut control = swarm.behaviour().new_control();
+        let mut control = swarm.behaviour().stream.new_control();
         let incoming = accept_bitswap_streams(&mut control)?;
         let mut peer_ids = Vec::new();
         for peer in peers {
@@ -420,6 +431,21 @@ struct BitswapFetchResult {
 struct ReceivedBitswapBlock {
     cid: Option<Cid>,
     data: Vec<u8>,
+}
+
+#[derive(NetworkBehaviour)]
+#[behaviour(prelude = "libp2p::swarm::derive_prelude")]
+struct BitswapBehaviour {
+    stream: libp2p_stream::Behaviour,
+    limits: connection_limits::Behaviour,
+}
+
+fn bitswap_connection_limits() -> connection_limits::ConnectionLimits {
+    connection_limits::ConnectionLimits::default()
+        .with_max_pending_outgoing(Some(BITSWAP_MAX_PENDING_OUTGOING_CONNECTIONS))
+        .with_max_established_outgoing(Some(BITSWAP_MAX_ESTABLISHED_CONNECTIONS))
+        .with_max_established(Some(BITSWAP_MAX_ESTABLISHED_CONNECTIONS))
+        .with_max_established_per_peer(Some(1))
 }
 
 async fn bitswap_peers(providers: &[Provider]) -> Vec<BitswapPeer> {

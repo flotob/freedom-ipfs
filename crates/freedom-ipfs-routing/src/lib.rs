@@ -8,8 +8,8 @@ use libp2p::kad::{
     QueryResult,
 };
 use libp2p::multiaddr::Protocol;
-use libp2p::swarm::SwarmEvent;
-use libp2p::{noise, tcp, tls, yamux, Multiaddr, PeerId, SwarmBuilder};
+use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
+use libp2p::{connection_limits, noise, tcp, tls, yamux, Multiaddr, PeerId, SwarmBuilder};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -21,6 +21,10 @@ pub const DEFAULT_DELEGATED_ROUTER: &str = "https://delegated-ipfs.dev/routing/v
 pub const DEFAULT_DHT_QUERY_TIMEOUT: Duration = Duration::from_secs(25);
 pub const DEFAULT_MAX_DHT_PROVIDERS: usize = 32;
 const DEFAULT_DELEGATED_ROUTING_TIMEOUT: Duration = Duration::from_secs(10);
+const DHT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+const DHT_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
+const DHT_MAX_PENDING_OUTGOING_CONNECTIONS: u32 = 8;
+const DHT_MAX_ESTABLISHED_CONNECTIONS: u32 = 16;
 const DEFAULT_BOOTSTRAP_PEERS: &[&str] = &[
     "/dnsaddr/sg1.bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
     "/dnsaddr/sv15.bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
@@ -213,7 +217,7 @@ impl LightDhtClient {
         let mut swarm = self.bootstrapped_swarm().await?;
 
         let key = kad::RecordKey::new(&cid.hash().to_bytes());
-        let query_id = swarm.behaviour_mut().get_providers(key.clone());
+        let query_id = swarm.behaviour_mut().kad.get_providers(key.clone());
         let mut provider_ids = HashSet::new();
         let deadline = tokio::time::sleep(self.query_timeout);
         tokio::pin!(deadline);
@@ -224,7 +228,7 @@ impl LightDhtClient {
                     break;
                 }
                 event = swarm.select_next_some() => {
-                    let SwarmEvent::Behaviour(kad::Event::OutboundQueryProgressed { id, result, .. }) = event else {
+                    let Some(kad::Event::OutboundQueryProgressed { id, result, .. }) = dht_event(event) else {
                         continue;
                     };
                     if id != query_id {
@@ -259,7 +263,7 @@ impl LightDhtClient {
     pub async fn records(&self, key: &[u8]) -> Result<Vec<Vec<u8>>> {
         let mut swarm = self.bootstrapped_swarm().await?;
         let key = kad::RecordKey::new(&key.to_vec());
-        let query_id = swarm.behaviour_mut().get_record(key);
+        let query_id = swarm.behaviour_mut().kad.get_record(key);
         let deadline = tokio::time::sleep(self.query_timeout);
         tokio::pin!(deadline);
         let mut records = Vec::new();
@@ -273,7 +277,7 @@ impl LightDhtClient {
                     break;
                 }
                 event = swarm.select_next_some() => {
-                    let SwarmEvent::Behaviour(kad::Event::OutboundQueryProgressed { id, result, .. }) = event else {
+                    let Some(kad::Event::OutboundQueryProgressed { id, result, .. }) = dht_event(event) else {
                         continue;
                     };
                     if id != query_id {
@@ -308,7 +312,7 @@ impl LightDhtClient {
         Ok(records)
     }
 
-    async fn bootstrapped_swarm(&self) -> Result<libp2p::Swarm<kad::Behaviour<MemoryStore>>> {
+    async fn bootstrapped_swarm(&self) -> Result<libp2p::Swarm<DhtBehaviour>> {
         let mut swarm = build_dht_swarm(self.query_timeout).await?;
         let mut bootstrap_count = 0usize;
         for addr in &self.bootstrap_peers {
@@ -316,7 +320,7 @@ impl LightDhtClient {
                 tracing::debug!(addr, "ignoring invalid DHT bootstrap peer");
                 continue;
             };
-            swarm.behaviour_mut().add_address(&peer, addr.clone());
+            swarm.behaviour_mut().kad.add_address(&peer, addr.clone());
             swarm.add_peer_address(peer, addr.clone());
             if let Ok(dial_addr) = addr.with_p2p(peer) {
                 if let Err(err) = swarm.dial(dial_addr) {
@@ -436,9 +440,14 @@ impl ProviderRecord {
     }
 }
 
-async fn build_dht_swarm(
-    query_timeout: Duration,
-) -> Result<libp2p::Swarm<kad::Behaviour<MemoryStore>>> {
+#[derive(NetworkBehaviour)]
+#[behaviour(prelude = "libp2p::swarm::derive_prelude")]
+struct DhtBehaviour {
+    kad: kad::Behaviour<MemoryStore>,
+    limits: connection_limits::Behaviour,
+}
+
+async fn build_dht_swarm(query_timeout: Duration) -> Result<libp2p::Swarm<DhtBehaviour>> {
     SwarmBuilder::with_new_identity()
         .with_tokio()
         .with_tcp(
@@ -464,23 +473,29 @@ async fn build_dht_swarm(
             config.set_periodic_bootstrap_interval(None);
             let mut behaviour = kad::Behaviour::with_config(peer_id, store, config);
             behaviour.set_mode(Some(kad::Mode::Client));
-            behaviour
+            DhtBehaviour {
+                kad: behaviour,
+                limits: connection_limits::Behaviour::new(dht_connection_limits()),
+            }
         })
         .map_err(|err| RoutingError::Dht(err.to_string()))
         .map(|builder| {
             builder
-                .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(20)))
+                .with_swarm_config(|cfg| {
+                    cfg.with_idle_connection_timeout(DHT_IDLE_CONNECTION_TIMEOUT)
+                })
+                .with_connection_timeout(DHT_CONNECTION_TIMEOUT)
                 .build()
         })
 }
 
 fn providers_from_dht(
-    swarm: &mut libp2p::Swarm<kad::Behaviour<MemoryStore>>,
+    swarm: &mut libp2p::Swarm<DhtBehaviour>,
     key: &kad::RecordKey,
     provider_ids: HashSet<PeerId>,
     max_providers: usize,
 ) -> Result<Vec<Provider>> {
-    let records = swarm.behaviour_mut().store_mut().providers(key);
+    let records = swarm.behaviour_mut().kad.store_mut().providers(key);
     let mut providers = Vec::new();
     for peer_id in provider_ids.into_iter().take(max_providers) {
         let mut addrs = records
@@ -489,7 +504,7 @@ fn providers_from_dht(
             .flat_map(|record| record.addresses.iter().cloned())
             .collect::<Vec<_>>();
         if addrs.is_empty() {
-            addrs = peer_addresses_from_kbuckets(swarm.behaviour_mut(), &peer_id);
+            addrs = peer_addresses_from_kbuckets(&mut swarm.behaviour_mut().kad, &peer_id);
         }
         providers.push(Provider::from_parts(
             Some(peer_id.to_string()),
@@ -499,8 +514,23 @@ fn providers_from_dht(
     Ok(providers)
 }
 
+fn dht_connection_limits() -> connection_limits::ConnectionLimits {
+    connection_limits::ConnectionLimits::default()
+        .with_max_pending_outgoing(Some(DHT_MAX_PENDING_OUTGOING_CONNECTIONS))
+        .with_max_established_outgoing(Some(DHT_MAX_ESTABLISHED_CONNECTIONS))
+        .with_max_established(Some(DHT_MAX_ESTABLISHED_CONNECTIONS))
+        .with_max_established_per_peer(Some(1))
+}
+
+fn dht_event(event: SwarmEvent<DhtBehaviourEvent>) -> Option<kad::Event> {
+    match event {
+        SwarmEvent::Behaviour(DhtBehaviourEvent::Kad(event)) => Some(event),
+        _ => None,
+    }
+}
+
 async fn resolve_missing_provider_addresses(
-    swarm: &mut libp2p::Swarm<kad::Behaviour<MemoryStore>>,
+    swarm: &mut libp2p::Swarm<DhtBehaviour>,
     mut providers: Vec<Provider>,
     query_timeout: Duration,
 ) -> Result<Vec<Provider>> {
@@ -512,7 +542,7 @@ async fn resolve_missing_provider_addresses(
         let Some(peer) = provider.id.as_deref().and_then(parse_peer_id) else {
             continue;
         };
-        let query_id = swarm.behaviour_mut().get_closest_peers(peer.to_bytes());
+        let query_id = swarm.behaviour_mut().kad.get_closest_peers(peer.to_bytes());
         pending.push((query_id, peer, index));
     }
 
@@ -527,7 +557,7 @@ async fn resolve_missing_provider_addresses(
         tokio::select! {
             _ = &mut deadline => break,
             event = swarm.select_next_some() => {
-                let SwarmEvent::Behaviour(kad::Event::OutboundQueryProgressed { id, result, .. }) = event else {
+                let Some(kad::Event::OutboundQueryProgressed { id, result, .. }) = dht_event(event) else {
                     continue;
                 };
                 let Some(pos) = pending.iter().position(|(query_id, _, _)| *query_id == id) else {

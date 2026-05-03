@@ -60,11 +60,11 @@ M4 IPNS and DNSLink: implemented. DNSLink uses Cloudflare DoH through a pluggabl
 
 M5 delegated routing and verified HTTP retrieval: implemented. Delegated Routing V1 parsing, provider caching, HTTP raw block retrieval, CID verification, bad-provider suppression, and HTTP timeouts are implemented.
 
-M6 minimal Bitswap client: implemented for read-only retrieval. It dials bounded provider candidates, supports TCP/WebSocket/QUIC transports, verifies returned blocks, caches extra payload blocks, and sends cancels. It does not serve blocks. The retrieval crate includes a deterministic in-process libp2p Bitswap peer test that validates stream negotiation, block response handling, cache insertion, and cancel emission.
+M6 minimal Bitswap client: implemented for read-only retrieval. It dials bounded provider candidates, supports TCP/WebSocket/QUIC transports, applies libp2p connection timeout/connection-limit guards, verifies returned blocks, caches extra payload blocks, and sends cancels. It does not serve blocks. The retrieval crate includes a deterministic in-process libp2p Bitswap peer test that validates stream negotiation, block response handling, cache insertion, and cancel emission.
 
-M7 light DHT fallback: implemented for provider lookup and IPNS record lookup. It uses Kademlia client mode, lazy per-lookup swarms, query timeout, and provider fanout limits. The routing crate includes deterministic local server-mode Kademlia peer tests for provider lookup and verified IPNS record lookup through the light-DHT client.
+M7 light DHT fallback: implemented for provider lookup and IPNS record lookup. It uses Kademlia client mode, lazy per-lookup swarms, query timeout, provider fanout limits, and libp2p connection timeout/connection-limit guards. The routing crate includes deterministic local server-mode Kademlia peer tests for provider lookup and verified IPNS record lookup through the light-DHT client.
 
-M8 mobile resource hardening: partially complete. Cache trim, concurrency limit, DHT timeout/fanout knobs, provider/badness caches, and network timeouts exist. Real idle RSS, CPU, network, startup, Bee concurrency, background/foreground, and low-memory behavior are not measured yet.
+M8 mobile resource hardening: partially complete. Cache trim, gateway concurrency limit, DHT timeout/fanout knobs, provider/badness caches, HTTP timeouts, libp2p connection timeouts, and libp2p connection-limit guards exist. Real idle RSS, CPU, network, startup, Bee concurrency, background/foreground, and low-memory behavior are not measured yet.
 
 M9 browser integration: partially complete. The local gateway path, mobile ABI, and Swift wrapper source exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. Swift wrapper compilation/linking and app integration are not verified in this Linux environment.
 

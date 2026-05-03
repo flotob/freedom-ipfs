@@ -16,6 +16,7 @@ freedom-ipfs-namesys.workspace = true
 freedom-ipfs-retrieval.workspace = true
 freedom-ipfs-routing.workspace = true
 freedom-ipfs-store.workspace = true
+reqwest.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

@@ -50,7 +50,7 @@ Error: build-xcframework requires macOS with Xcode command line tools; current h
 
 M0 decisions and fixtures: partially complete. The repo, license, and tests exist. Fixture coverage is embedded in unit tests, but a fuller reproducible Kubo fixture corpus is still useful.
 
-M1 workspace and mobile skeleton: mostly complete. Workspace, mobile C ABI, Swift wrapper source, gateway start/stop, stats, cache import/export, routing mode selection, and XCFramework build skeleton exist. macOS/Xcode artifact production and simulator link/start remain unverified here.
+M1 workspace and mobile skeleton: mostly complete. Workspace, mobile C ABI, Swift wrapper source, gateway start/stop, stats, cache import/export, routing mode selection, preload/cancel, and XCFramework build skeleton exist. macOS/Xcode artifact production and simulator link/start remain unverified here.
 
 M2 CID, block verification, and store: complete for MVP. CID parse/format, verified block insertion, CAR import/export, SQLite cache, eviction, provider cache, bad-provider cache, clear, and trim are covered by tests.
 
@@ -66,7 +66,7 @@ M7 light DHT fallback: implemented for provider lookup and IPNS record lookup. I
 
 M8 mobile resource hardening: partially complete. Cache trim, gateway concurrency limit, DHT timeout/fanout knobs, provider/badness caches, HTTP timeouts, libp2p connection timeouts, and libp2p connection-limit guards exist. Real idle RSS, CPU, network, startup, Bee concurrency, background/foreground, and low-memory behavior are not measured yet.
 
-M9 browser integration: partially complete. The local gateway path, mobile ABI, and Swift wrapper source exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. Swift wrapper compilation/linking and app integration are not verified in this Linux environment.
+M9 browser integration: partially complete. The local gateway path, mobile ABI, Swift wrapper source, and preload/cancel controls exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. Swift wrapper compilation/linking and app integration are not verified in this Linux environment.
 
 M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, and live smoke exist, but public CID corpus tests, Kubo parity matrix, and long soak tests remain follow-up work.
 

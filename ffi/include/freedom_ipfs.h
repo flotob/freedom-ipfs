@@ -55,6 +55,8 @@ bool freedom_ipfs_node_start_gateway_online_with_config_v2(
     uint64_t dht_query_timeout_secs,
     size_t dht_max_providers);
 char *freedom_ipfs_node_gateway_url(FreedomIpfsNode *ptr);
+uint64_t freedom_ipfs_node_preload_path(FreedomIpfsNode *ptr, const char *path);
+bool freedom_ipfs_node_cancel_preload(FreedomIpfsNode *ptr, uint64_t task_id);
 bool freedom_ipfs_node_stop_gateway(FreedomIpfsNode *ptr);
 
 #ifdef __cplusplus

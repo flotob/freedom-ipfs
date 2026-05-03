@@ -114,6 +114,22 @@ public final class FreedomIpfsReader {
         return URL(string: String(cString: ptr))
     }
 
+    public func preload(path: String) -> UInt64 {
+        guard let handle else {
+            return 0
+        }
+        return path.withCString { pathPtr in
+            freedom_ipfs_node_preload_path(handle, pathPtr)
+        }
+    }
+
+    public func cancelPreload(taskID: UInt64) -> Bool {
+        guard let handle else {
+            return false
+        }
+        return freedom_ipfs_node_cancel_preload(handle, taskID)
+    }
+
     @discardableResult
     public func stopGateway() -> Bool {
         guard let handle else {

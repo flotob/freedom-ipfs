@@ -8,11 +8,13 @@ use freedom_ipfs_routing::{
     ProviderRoutingClient, DEFAULT_DELEGATED_ROUTER,
 };
 use freedom_ipfs_store::SqliteBlockStore;
+use std::collections::HashMap;
 use std::ffi::{c_char, CStr, CString};
 use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -24,12 +26,15 @@ const CACHE_DB_FILE: &str = "freedom-ipfs.sqlite3";
 const ROUTING_MODE_AUTO: u32 = 0;
 const ROUTING_MODE_DELEGATED: u32 = 1;
 const ROUTING_MODE_LIGHT_DHT: u32 = 2;
+const PRELOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct FreedomIpfsNode {
     runtime: Runtime,
     store: SqliteBlockStore,
     gateway_addr: Mutex<Option<SocketAddr>>,
     gateway_task: Mutex<Option<JoinHandle<()>>>,
+    next_preload_id: AtomicU64,
+    preload_tasks: Mutex<HashMap<u64, JoinHandle<()>>>,
 }
 
 #[repr(C)]
@@ -107,6 +112,8 @@ fn node_from_store(store: SqliteBlockStore) -> *mut FreedomIpfsNode {
         store,
         gateway_addr: Mutex::new(None),
         gateway_task: Mutex::new(None),
+        next_preload_id: AtomicU64::new(1),
+        preload_tasks: Mutex::new(HashMap::new()),
     }))
 }
 
@@ -119,6 +126,7 @@ pub unsafe extern "C" fn freedom_ipfs_node_free(ptr: *mut FreedomIpfsNode) {
     if !ptr.is_null() {
         let node = &*ptr;
         stop_gateway(node);
+        stop_preloads(node);
         let _ = Box::from_raw(ptr);
     }
 }
@@ -465,6 +473,79 @@ pub unsafe extern "C" fn freedom_ipfs_node_gateway_url(ptr: *mut FreedomIpfsNode
 
 /// # Safety
 ///
+/// `ptr` must be a valid node pointer. `path` must point to a NUL-terminated
+/// UTF-8 `/ipfs/...` or `/ipns/...` gateway path for the duration of this call.
+/// Returns 0 when the gateway is not running or the path is invalid.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_preload_path(
+    ptr: *mut FreedomIpfsNode,
+    path: *const c_char,
+) -> u64 {
+    if ptr.is_null() || path.is_null() {
+        return 0;
+    }
+    let node = &*ptr;
+    let path = match CStr::from_ptr(path).to_str() {
+        Ok(path) if is_preload_path(path) => path.to_string(),
+        _ => return 0,
+    };
+    let Ok(gateway_addr) = node.gateway_addr.lock() else {
+        return 0;
+    };
+    let Some(addr) = *gateway_addr else {
+        return 0;
+    };
+    drop(gateway_addr);
+
+    let id = node.next_preload_id.fetch_add(1, Ordering::Relaxed);
+    let url = format!("http://{addr}{path}");
+    let task = node.runtime.spawn(async move {
+        let Ok(client) = reqwest::Client::builder().timeout(PRELOAD_TIMEOUT).build() else {
+            return;
+        };
+        let Ok(response) = client.get(url).send().await else {
+            return;
+        };
+        let Ok(mut response) = response.error_for_status() else {
+            return;
+        };
+        while matches!(response.chunk().await, Ok(Some(_))) {}
+    });
+
+    let Ok(mut tasks) = node.preload_tasks.lock() else {
+        task.abort();
+        return 0;
+    };
+    tasks.retain(|_, task| !task.is_finished());
+    tasks.insert(id, task);
+    id
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer. `task_id` must be an id returned by
+/// `freedom_ipfs_node_preload_path`.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_cancel_preload(
+    ptr: *mut FreedomIpfsNode,
+    task_id: u64,
+) -> bool {
+    if ptr.is_null() || task_id == 0 {
+        return false;
+    }
+    let node = &*ptr;
+    let Ok(mut tasks) = node.preload_tasks.lock() else {
+        return false;
+    };
+    let Some(task) = tasks.remove(&task_id) else {
+        return false;
+    };
+    task.abort();
+    true
+}
+
+/// # Safety
+///
 /// `ptr` must be a valid node pointer.
 #[no_mangle]
 pub unsafe extern "C" fn freedom_ipfs_node_stop_gateway(ptr: *mut FreedomIpfsNode) -> bool {
@@ -485,6 +566,18 @@ fn stop_gateway(node: &FreedomIpfsNode) {
     if let Ok(mut gateway_addr) = node.gateway_addr.lock() {
         *gateway_addr = None;
     }
+}
+
+fn stop_preloads(node: &FreedomIpfsNode) {
+    if let Ok(mut tasks) = node.preload_tasks.lock() {
+        for (_, task) in tasks.drain() {
+            task.abort();
+        }
+    }
+}
+
+fn is_preload_path(path: &str) -> bool {
+    path.starts_with("/ipfs/") || path.starts_with("/ipns/")
 }
 
 #[cfg(test)]
@@ -594,6 +687,31 @@ mod tests {
                 0,
             ));
             assert!(freedom_ipfs_node_gateway_url(node).is_null());
+            freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
+    fn preloads_gateway_path_and_allows_cancel() {
+        unsafe {
+            let node = freedom_ipfs_node_new_in_memory();
+            assert!(!node.is_null());
+
+            let data = b"preload me";
+            let cid = cid_from_data(CODEC_RAW, data);
+            (*node).store.put_block(&cid, data).unwrap();
+            let addr = CString::new("127.0.0.1:0").unwrap();
+            assert!(freedom_ipfs_node_start_gateway(node, addr.as_ptr()));
+
+            let bad_path = CString::new("https://example.com/ipfs/not-local").unwrap();
+            assert_eq!(freedom_ipfs_node_preload_path(node, bad_path.as_ptr()), 0);
+
+            let path = CString::new(format!("/ipfs/{cid}")).unwrap();
+            let task_id = freedom_ipfs_node_preload_path(node, path.as_ptr());
+            assert!(task_id > 0);
+            assert!(freedom_ipfs_node_cancel_preload(node, task_id));
+            assert!(!freedom_ipfs_node_cancel_preload(node, task_id));
+
             freedom_ipfs_node_free(node);
         }
     }

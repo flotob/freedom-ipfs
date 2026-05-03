@@ -11,6 +11,7 @@ use libp2p::StreamProtocol;
 use libp2p::{noise, tcp, tls, yamux, Multiaddr, PeerId, SwarmBuilder};
 use libp2p_stream::{Control as StreamControl, IncomingStreams};
 use prost::Message;
+use std::collections::BTreeSet;
 use std::io;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,6 +24,8 @@ use url::Url;
 const PROVIDER_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const BAD_HTTP_PROVIDER_TTL: Duration = Duration::from_secs(10 * 60);
 const BAD_BITSWAP_PROVIDER_TTL: Duration = Duration::from_secs(2 * 60);
+const MAX_BITSWAP_PEERS_PER_BLOCK: usize = 16;
+const MAX_BITSWAP_ADDRS_PER_PEER: usize = 4;
 
 #[derive(Debug, Error)]
 pub enum RetrievalError {
@@ -123,7 +126,33 @@ impl HttpRetriever {
                 providers
             }
         };
-        self.fetch_from_providers_with_source(cid, &providers).await
+        match self.fetch_from_providers_with_source(cid, &providers).await {
+            Ok(block) => Ok(block),
+            Err(err) if should_refresh_providers_after_failure(&err) => {
+                let refreshed = match self.routing.providers(cid).await {
+                    Ok(providers) => providers,
+                    Err(refresh_err) => {
+                        tracing::debug!(
+                            cid = %cid,
+                            error = %refresh_err,
+                            "provider refresh after retrieval failure failed"
+                        );
+                        return Err(err);
+                    }
+                };
+                if same_provider_set(&providers, &refreshed) {
+                    return Err(err);
+                }
+                self.cache_providers(cid, &refreshed)?;
+                match self.fetch_from_providers_with_source(cid, &refreshed).await {
+                    Ok(block) => Ok(block),
+                    Err(refresh_err) => Err(RetrievalError::Bitswap(format!(
+                        "initial provider retrieval failed ({err}); refreshed provider retrieval failed ({refresh_err})"
+                    ))),
+                }
+            }
+            Err(err) => Err(err),
+        }
     }
 
     pub async fn fetch_from_providers(&self, cid: &Cid, providers: &[Provider]) -> Result<Block> {
@@ -300,16 +329,7 @@ impl HttpRetriever {
         swarm_task.abort();
         let data = match result {
             Ok(data) => data,
-            Err(err) => {
-                for peer_id in &peer_ids {
-                    let _ = self.store.mark_bad_provider(
-                        &peer_id.to_string(),
-                        &err.to_string(),
-                        BAD_BITSWAP_PROVIDER_TTL,
-                    );
-                }
-                return Err(err);
-            }
+            Err(err) => return Err(err),
         };
         self.store.put_block(cid, &data)?;
         Ok(Block::unchecked(*cid, data))
@@ -367,7 +387,6 @@ impl BlockProvider for FetchingBlockProvider {
                 self.stats.record(source);
                 Ok(Some(block))
             }
-            Err(RetrievalError::NoHttpProviders | RetrievalError::NoBitswapProviders) => Ok(None),
             Err(err) => Err(CoreError::Storage(err.to_string())),
         }
     }
@@ -397,12 +416,27 @@ async fn bitswap_peers(providers: &[Provider]) -> Vec<BitswapPeer> {
 
         if let Some(id) = peer_id {
             if !addrs.is_empty() {
-                peers.push(BitswapPeer { id, addrs });
+                addrs.sort_by_key(bitswap_addr_score);
+                addrs.dedup();
+                addrs.truncate(MAX_BITSWAP_ADDRS_PER_PEER);
+                merge_bitswap_peer(&mut peers, id, addrs);
             }
         }
     }
 
+    peers.truncate(MAX_BITSWAP_PEERS_PER_BLOCK);
     peers
+}
+
+fn merge_bitswap_peer(peers: &mut Vec<BitswapPeer>, id: PeerId, addrs: Vec<Multiaddr>) {
+    if let Some(peer) = peers.iter_mut().find(|peer| peer.id == id) {
+        peer.addrs.extend(addrs);
+        peer.addrs.sort_by_key(bitswap_addr_score);
+        peer.addrs.dedup();
+        peer.addrs.truncate(MAX_BITSWAP_ADDRS_PER_PEER);
+    } else {
+        peers.push(BitswapPeer { id, addrs });
+    }
 }
 
 async fn expand_dnsaddr_records(addrs: &[String]) -> Vec<String> {
@@ -475,11 +509,69 @@ fn is_supported_bitswap_addr(addr: &Multiaddr) -> bool {
             | Protocol::WebRTC
             | Protocol::WebRTCDirect
             | Protocol::P2pWebRtcDirect
+            | Protocol::P2pCircuit
             | Protocol::Certhash(_) => return false,
             _ => {}
         }
     }
     has_tcp || (has_udp && has_quic)
+}
+
+fn bitswap_addr_score(addr: &Multiaddr) -> u8 {
+    let mut has_ip = false;
+    let mut has_dns = false;
+    let mut has_tcp = false;
+    let mut has_quic = false;
+    let mut has_ws = false;
+
+    for protocol in addr.iter() {
+        match protocol {
+            Protocol::Ip4(_) | Protocol::Ip6(_) => has_ip = true,
+            Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_) => {
+                has_dns = true
+            }
+            Protocol::Tcp(_) => has_tcp = true,
+            Protocol::Quic | Protocol::QuicV1 => has_quic = true,
+            Protocol::Ws(_) | Protocol::Wss(_) => has_ws = true,
+            _ => {}
+        }
+    }
+
+    match (has_ip, has_dns, has_tcp, has_quic, has_ws) {
+        (true, _, true, _, false) => 0,
+        (true, _, _, true, false) => 1,
+        (_, true, true, _, false) => 2,
+        (_, true, _, true, false) => 3,
+        (true, _, true, _, true) => 4,
+        (_, true, true, _, true) => 5,
+        _ => 9,
+    }
+}
+
+fn should_refresh_providers_after_failure(err: &RetrievalError) -> bool {
+    matches!(
+        err,
+        RetrievalError::Bitswap(_)
+            | RetrievalError::BitswapTimeout
+            | RetrievalError::NoHttpProviders
+            | RetrievalError::NoBitswapProviders
+    )
+}
+
+fn same_provider_set(left: &[Provider], right: &[Provider]) -> bool {
+    normalized_provider_set(left) == normalized_provider_set(right)
+}
+
+fn normalized_provider_set(providers: &[Provider]) -> BTreeSet<(Option<String>, Vec<String>)> {
+    providers
+        .iter()
+        .map(|provider| {
+            let mut addrs = provider.addrs.clone();
+            addrs.sort();
+            addrs.dedup();
+            (provider.id.clone(), addrs)
+        })
+        .collect()
 }
 
 fn accept_bitswap_streams(control: &mut StreamControl) -> Result<Vec<IncomingStreams>> {
@@ -787,6 +879,45 @@ mod bitswap_tests {
             parse_bitswap_multiaddr("/ip4/164.92.225.198/udp/4001/quic-v1", provider).unwrap();
         assert_eq!(Some(peer), provider);
         assert_eq!(addr.to_string(), "/ip4/164.92.225.198/udp/4001/quic-v1");
+    }
+
+    #[test]
+    fn rejects_relay_only_bitswap_multiaddr() {
+        let provider = parse_peer_id("12D3KooWNDpFqyse9kR7aZwgEzh4U1mL6Zz6jEuRNFXJxL5D2KPP");
+        assert!(
+            parse_bitswap_multiaddr("/ip4/164.92.225.198/tcp/4001/p2p-circuit", provider,)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn deduplicates_and_caps_bitswap_peer_addresses() {
+        let peer = "12D3KooWNDpFqyse9kR7aZwgEzh4U1mL6Zz6jEuRNFXJxL5D2KPP";
+        let providers = vec![Provider::from_parts(
+            Some(peer.to_string()),
+            vec![
+                "/dns4/example.com/tcp/4001".to_string(),
+                "/ip4/164.92.225.198/udp/4001/quic-v1".to_string(),
+                "/ip4/164.92.225.198/tcp/4001".to_string(),
+                "/ip4/164.92.225.198/tcp/4001".to_string(),
+                "/dns4/example.com/tcp/4002/ws".to_string(),
+                "/ip4/164.92.225.199/tcp/4001".to_string(),
+            ],
+        )
+        .unwrap()];
+
+        let peers = bitswap_peers(&providers).await;
+
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].addrs.len(), MAX_BITSWAP_ADDRS_PER_PEER);
+        assert_eq!(
+            peers[0].addrs[0].to_string(),
+            "/ip4/164.92.225.198/tcp/4001"
+        );
+        assert_eq!(
+            peers[0].addrs[1].to_string(),
+            "/ip4/164.92.225.199/tcp/4001"
+        );
     }
 
     #[test]

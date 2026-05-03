@@ -117,6 +117,110 @@ async fn kubo_generated_unixfs_site_matches_local_gateway_bytes() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires KUBO_BIN=/path/to/ipfs; generates a local Kubo CIDv0 CAR fixture"]
+async fn kubo_generated_cidv0_dagpb_site_matches_local_gateway_bytes() {
+    let kubo = env::var("KUBO_BIN").expect("set KUBO_BIN=/path/to/ipfs");
+    let tempdir = tempfile::tempdir().unwrap();
+    let repo = tempdir.path().join("kubo-repo");
+    let site = tempdir.path().join("cidv0-site");
+    fs::create_dir_all(site.join("docs")).unwrap();
+    fs::write(site.join("index.html"), b"<html><body>cidv0</body></html>").unwrap();
+    fs::write(site.join("docs/readme.txt"), b"cidv0 dag-pb fixture\n").unwrap();
+    let large = (0..700_000)
+        .map(|index| (255 - (index % 251)) as u8)
+        .collect::<Vec<_>>();
+    fs::write(site.join("docs/blob.bin"), &large).unwrap();
+
+    kubo_ok(&kubo, &repo, ["init", "--empty-repo"]);
+    let root = kubo_stdout(
+        &kubo,
+        &repo,
+        [
+            OsStr::new("add"),
+            OsStr::new("-Qr"),
+            OsStr::new("--cid-version=0"),
+            OsStr::new("--raw-leaves=false"),
+            site.as_os_str(),
+        ],
+    );
+    let root = String::from_utf8(root).unwrap().trim().to_string();
+    assert!(root.starts_with("Qm"), "expected CIDv0 root, got {root}");
+    let car = kubo_stdout(
+        &kubo,
+        &repo,
+        [OsStr::new("dag"), OsStr::new("export"), OsStr::new(&root)],
+    );
+
+    let store = SqliteBlockStore::in_memory(16 * 1024 * 1024).unwrap();
+    store.import_car(&car).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = router(store);
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let expected_index = kubo_stdout(
+        &kubo,
+        &repo,
+        [
+            OsStr::new("cat"),
+            OsStr::new(&format!("/ipfs/{root}/index.html")),
+        ],
+    );
+    let response = reqwest::get(format!("http://{addr}/ipfs/{root}"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "text/html"
+    );
+    assert_eq!(response.bytes().await.unwrap().as_ref(), expected_index);
+
+    for path in ["index.html", "docs/readme.txt", "docs/blob.bin"] {
+        let kubo_path = format!("/ipfs/{root}/{path}");
+        let expected = kubo_stdout(&kubo, &repo, [OsStr::new("cat"), OsStr::new(&kubo_path)]);
+        let url = format!("http://{addr}/ipfs/{root}/{path}");
+        let response = reqwest::get(url).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.bytes().await.unwrap().as_ref(),
+            expected.as_slice()
+        );
+    }
+
+    let range_start = 321_000usize;
+    let range_end = 322_222usize;
+    let url = format!("http://{addr}/ipfs/{root}/docs/blob.bin");
+    let response = reqwest::Client::new()
+        .get(url)
+        .header(RANGE, format!("bytes={range_start}-{range_end}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_RANGE)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        format!("bytes {range_start}-{range_end}/{}", large.len())
+    );
+    assert_eq!(
+        response.bytes().await.unwrap().as_ref(),
+        &large[range_start..=range_end]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires KUBO_BIN=/path/to/ipfs; generates a local Kubo HAMT fixture"]
 async fn kubo_generated_hamt_directory_matches_local_gateway_bytes() {
     let kubo = env::var("KUBO_BIN").expect("set KUBO_BIN=/path/to/ipfs");

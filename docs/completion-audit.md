@@ -65,7 +65,7 @@ Results:
   - Each range response returned `128` bytes, matched the full response prefix, and included a valid `Content-Range` header.
   - Retrieval stats: `cache_hits=132 http_provider_blocks=3 bitswap_blocks=10`.
 - The opt-in live harnesses retry transient local-gateway `408`, `502`, `503`, and `504` responses so temporary public-network provider timeouts do not fail the first attempt when later attempts succeed.
-- Kubo parity passed for generated UnixFS site files, directory-index fallback, range reads, and HAMT directories.
+- Kubo parity passed for generated CIDv1/raw-leaf UnixFS site files, CIDv0/DAG-PB UnixFS site files, directory-index fallback, range reads, and HAMT directories.
 - Local cached-gateway soak passed: `500` requests, Linux RSS from `8960` KiB to `13312` KiB.
 - Host live-retrieval soak passed: `2` cold gateway rounds against `vitalik-home` and `daicowtf-home`, `883802` total bytes, retrieval stats `cache_hits=50 http_provider_blocks=4 bitswap_blocks=6`, Linux RSS from `11264` KiB to `42240` KiB.
 - GitHub Actions `iOS XCFramework` passed on `macos-15` with Xcode 16.4 using `actions/checkout@v6` and `actions/upload-artifact@v7`, both Node 24-backed releases. It built the real `FreedomIpfs.xcframework`, verified headers/module maps/exported C symbols, including the routing restart export, booted an iOS simulator, compiled and linked the Swift wrapper smoke, asserted that Swift gateway start rejects a non-loopback bind address, started the local gateway in the simulator via `simctl spawn booted`, fetched the CAR fixture through loopback, stopped the gateway, built and installed a generated UIKit/WebKit simulator app, imported the same CAR fixture, started the gateway from app process, fetched `/ipfs/{cid}` through loopback with `URLSession`, rendered the HTML in `WKWebView`, verified the DOM marker with JavaScript, and uploaded `FreedomIpfs.xcframework` as artifact ID `6769325626` (`60044532` bytes).
@@ -87,7 +87,8 @@ Results:
 | CAR import/export for fixtures/cache warmup | Core CAR parse/encode and store import/export tests; CLI/mobile import/export APIs. | Done |
 | Max block guard | Core verifies blocks with a max block size path. | Done for MVP |
 | UnixFS raw/dag-pb files | `freedom-ipfs-unixfs` tests cover raw and dag-pb files. | Done |
-| Multi-block UnixFS raw leaves | Range-across-inline-and-linked-block tests plus Kubo parity. | Done |
+| Multi-block UnixFS raw leaves | Range-across-inline-and-linked-block tests plus Kubo CIDv1/raw-leaf parity. | Done |
+| CIDv0 DAG-PB UnixFS compatibility | Kubo-generated CIDv0 DAG-PB parity test covers directory index fallback, nested paths, multi-block files, and byte ranges through the local gateway. | Done |
 | Directories and path resolution | UnixFS directory tests and gateway directory index test. | Done |
 | HAMT directories | UnixFS HAMT tests and Kubo-generated HAMT parity. | Done for basic real-world compatibility |
 | Local HTTP gateway data plane | Gateway crate and binary serve `/health`, `/ipfs`, `/ipns`; live smoke uses the local gateway; mobile FFI start/restart rejects non-loopback bind addresses. | Done |
@@ -126,7 +127,7 @@ Results:
 | Browser integration helpers | Local gateway URL, `ipfs://`/`ipns://`/gateway-style URL mapping helpers, preload/cancel with path/URI/bare-CID normalization, cache stats/control. | Swift compile/link and generated `WKWebView` app smoke verified in simulator; Freedom app integration unverified |
 | Live ENS-backed smoke | `make live-smoke` resolves `vitalik.eth` and `daicowtf.eth` at runtime, mounts the online IPNS/DNSLink resolver, fetches through the local gateway, and prints per-target retrieval/routing deltas that distinguish cache, HTTP-provider blocks, Bitswap blocks, delegated provider lookups, and light-DHT fallback. | Done on Linux |
 | Public IPFS/IPNS corpus | Checked-in opt-in corpus covers the ENS-derived immutable `/ipfs` paths plus DNSLink-backed `/ipns` paths for `ipfs.tech`, one larger `ipfs.tech` media asset, `dist.ipfs.tech`, and `cid.ipfs.tech`; `make live-corpus` passed with full-response and `bytes=0-127` range checks. | Expanded; should still grow with more media cases |
-| Kubo parity | Deterministic Kubo-generated UnixFS/HAMT/range/directory-index parity tests. | Started; should grow |
+| Kubo parity | Deterministic Kubo-generated CIDv1/raw-leaf UnixFS, CIDv0/DAG-PB UnixFS, HAMT, range, and directory-index parity tests. | Expanded |
 | Long-running soak | Local cached-gateway RSS soak and host live-retrieval RSS soak exist and pass. | Host-side coverage improved; device soak missing |
 | Security parser/network limits | Tests cover oversized/malformed routing, traversal, invalid blocks, redirects, IPNS tamper/expiry, recursion, provider fanout. | Good MVP coverage |
 

@@ -13,6 +13,8 @@ use libp2p_stream::{Control as StreamControl, IncomingStreams};
 use prost::Message;
 use std::io;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::time::timeout;
@@ -46,6 +48,46 @@ pub enum RetrievalError {
 
 pub type Result<T> = std::result::Result<T, RetrievalError>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetrievalSource {
+    Cache,
+    HttpProvider,
+    Bitswap,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RetrievalStats {
+    pub cache_hits: u64,
+    pub http_provider_blocks: u64,
+    pub bitswap_blocks: u64,
+}
+
+#[derive(Default)]
+struct RetrievalStatsInner {
+    cache_hits: AtomicU64,
+    http_provider_blocks: AtomicU64,
+    bitswap_blocks: AtomicU64,
+}
+
+impl RetrievalStatsInner {
+    fn record(&self, source: RetrievalSource) {
+        match source {
+            RetrievalSource::Cache => &self.cache_hits,
+            RetrievalSource::HttpProvider => &self.http_provider_blocks,
+            RetrievalSource::Bitswap => &self.bitswap_blocks,
+        }
+        .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> RetrievalStats {
+        RetrievalStats {
+            cache_hits: self.cache_hits.load(Ordering::Relaxed),
+            http_provider_blocks: self.http_provider_blocks.load(Ordering::Relaxed),
+            bitswap_blocks: self.bitswap_blocks.load(Ordering::Relaxed),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct HttpRetriever {
     client: reqwest::Client,
@@ -63,8 +105,14 @@ impl HttpRetriever {
     }
 
     pub async fn fetch_block(&self, cid: &Cid) -> Result<Block> {
+        self.fetch_block_with_source(cid)
+            .await
+            .map(|(block, _source)| block)
+    }
+
+    pub async fn fetch_block_with_source(&self, cid: &Cid) -> Result<(Block, RetrievalSource)> {
         if let Some(block) = self.store.get(cid)? {
-            return Ok(block);
+            return Ok((block, RetrievalSource::Cache));
         }
 
         let providers = match self.cached_providers(cid)? {
@@ -75,10 +123,20 @@ impl HttpRetriever {
                 providers
             }
         };
-        self.fetch_from_providers(cid, &providers).await
+        self.fetch_from_providers_with_source(cid, &providers).await
     }
 
     pub async fn fetch_from_providers(&self, cid: &Cid, providers: &[Provider]) -> Result<Block> {
+        self.fetch_from_providers_with_source(cid, providers)
+            .await
+            .map(|(block, _source)| block)
+    }
+
+    pub async fn fetch_from_providers_with_source(
+        &self,
+        cid: &Cid,
+        providers: &[Provider],
+    ) -> Result<(Block, RetrievalSource)> {
         for provider in providers {
             for base in &provider.http_urls {
                 if self.store.is_bad_provider(base.as_str())? {
@@ -86,7 +144,7 @@ impl HttpRetriever {
                     continue;
                 }
                 match self.fetch_from_http_provider(cid, base).await {
-                    Ok(block) => return Ok(block),
+                    Ok(block) => return Ok((block, RetrievalSource::HttpProvider)),
                     Err(err) => {
                         let _ = self.store.mark_bad_provider(
                             base.as_str(),
@@ -99,7 +157,7 @@ impl HttpRetriever {
             }
         }
         match self.fetch_from_bitswap_providers(cid, providers).await {
-            Ok(block) => Ok(block),
+            Ok(block) => Ok((block, RetrievalSource::Bitswap)),
             Err(RetrievalError::NoBitswapProviders) => Err(RetrievalError::NoHttpProviders),
             Err(err) => Err(err),
         }
@@ -262,12 +320,21 @@ impl HttpRetriever {
 pub struct FetchingBlockProvider {
     store: SqliteBlockStore,
     retriever: HttpRetriever,
+    stats: Arc<RetrievalStatsInner>,
 }
 
 impl FetchingBlockProvider {
     pub fn new(store: SqliteBlockStore, routing: impl Into<ProviderRoutingClient>) -> Self {
         let retriever = HttpRetriever::new(routing, store.clone());
-        Self { store, retriever }
+        Self {
+            store,
+            retriever,
+            stats: Arc::new(RetrievalStatsInner::default()),
+        }
+    }
+
+    pub fn stats(&self) -> RetrievalStats {
+        self.stats.snapshot()
     }
 }
 
@@ -278,24 +345,28 @@ impl BlockProvider for FetchingBlockProvider {
             .get(cid)
             .map_err(|err| CoreError::Storage(err.to_string()))?
         {
+            self.stats.record(RetrievalSource::Cache);
             return Ok(Some(block));
         }
 
         let fetched = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                tokio::task::block_in_place(|| handle.block_on(self.retriever.fetch_block(cid)))
-            }
+            Ok(handle) => tokio::task::block_in_place(|| {
+                handle.block_on(self.retriever.fetch_block_with_source(cid))
+            }),
             Err(_) => {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .map_err(|err| CoreError::Storage(err.to_string()))?;
-                runtime.block_on(self.retriever.fetch_block(cid))
+                runtime.block_on(self.retriever.fetch_block_with_source(cid))
             }
         };
 
         match fetched {
-            Ok(block) => Ok(Some(block)),
+            Ok((block, source)) => {
+                self.stats.record(source);
+                Ok(Some(block))
+            }
             Err(RetrievalError::NoHttpProviders | RetrievalError::NoBitswapProviders) => Ok(None),
             Err(err) => Err(CoreError::Storage(err.to_string())),
         }
@@ -716,5 +787,29 @@ mod bitswap_tests {
             parse_bitswap_multiaddr("/ip4/164.92.225.198/udp/4001/quic-v1", provider).unwrap();
         assert_eq!(Some(peer), provider);
         assert_eq!(addr.to_string(), "/ip4/164.92.225.198/udp/4001/quic-v1");
+    }
+
+    #[test]
+    fn fetching_provider_records_cache_hits() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let data = b"cached retrieval";
+        let cid = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, data);
+        store.put_block(&cid, data).unwrap();
+
+        let provider = FetchingBlockProvider::new(
+            store,
+            freedom_ipfs_routing::DelegatedRoutingClient::new("http://127.0.0.1:9/routing/v1"),
+        );
+
+        let block = provider.get_block(&cid).unwrap().unwrap();
+        assert_eq!(block.data(), data);
+        assert_eq!(
+            provider.stats(),
+            RetrievalStats {
+                cache_hits: 1,
+                http_provider_blocks: 0,
+                bitswap_blocks: 0,
+            }
+        );
     }
 }

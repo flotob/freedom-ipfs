@@ -48,12 +48,13 @@ async fn live_gateway_fetches_real_paths_without_public_gateway_fallback() {
         DelegatedRoutingClient::new(router),
         LightDhtClient::default(),
     );
-    let provider = FetchingBlockProvider::new(store, routing);
+    let provider = Arc::new(FetchingBlockProvider::new(store, routing));
+    let stats_provider = provider.clone();
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, router_with_provider(Arc::new(provider)))
+        axum::serve(listener, router_with_provider(provider))
             .await
             .unwrap();
     });
@@ -81,6 +82,16 @@ async fn live_gateway_fetches_real_paths_without_public_gateway_fallback() {
         );
         eprintln!("fetched {path} through local gateway: {} bytes", body.len());
     }
+
+    let stats = stats_provider.stats();
+    eprintln!(
+        "retrieval transport counts: cache_hits={} http_provider_blocks={} bitswap_blocks={}",
+        stats.cache_hits, stats.http_provider_blocks, stats.bitswap_blocks
+    );
+    assert!(
+        stats.cache_hits + stats.http_provider_blocks + stats.bitswap_blocks > 0,
+        "live smoke did not record any retrieval transport"
+    );
 }
 
 async fn resolve_ens_contenthash(name: &str) -> String {

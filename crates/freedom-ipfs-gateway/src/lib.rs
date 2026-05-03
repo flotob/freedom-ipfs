@@ -398,15 +398,19 @@ fn streaming_response(
     mime: &str,
 ) -> Result<Response, GatewayError> {
     let provider = Arc::new(ScopedBlockProvider::new(provider));
-    let stream = stream::unfold(0u64, move |offset| {
+    let stream = stream::unfold(Some(0u64), move |offset| {
         let provider = provider.clone();
         let path = path.clone();
         async move {
+            let offset = offset?;
             if offset >= len {
                 return None;
             }
-            let end = (offset + GATEWAY_STREAM_CHUNK_SIZE - 1).min(len - 1);
-            let next = end + 1;
+            let last = len - 1;
+            let end = offset
+                .saturating_add(GATEWAY_STREAM_CHUNK_SIZE - 1)
+                .min(last);
+            let next = if end == last { None } else { Some(end + 1) };
             let chunk = read_file_range(
                 provider.as_ref() as &dyn BlockProvider,
                 &cid,
@@ -970,16 +974,20 @@ mod tests {
 
     #[tokio::test]
     async fn streams_full_response_across_chunks() {
-        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
         let data = (0..(GATEWAY_STREAM_CHUNK_SIZE as usize + 17))
             .map(|index| (index % 251) as u8)
             .collect::<Vec<_>>();
         let cid = cid_from_data(CODEC_RAW, &data);
-        store.put_block(&cid, &data).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(CountingProvider {
+            cid,
+            data: data.clone(),
+            calls: calls.clone(),
+        });
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let app = router(store);
+        let app = router_with_provider(provider);
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -997,6 +1005,10 @@ mod tests {
             data.len().to_string()
         );
         assert_eq!(response.bytes().await.unwrap(), Bytes::from(data));
+        assert!(
+            calls.load(Ordering::SeqCst) > 2,
+            "large response should be read in multiple chunks"
+        );
     }
 
     #[tokio::test]

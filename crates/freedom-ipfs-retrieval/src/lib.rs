@@ -35,8 +35,11 @@ const PROVIDER_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const BAD_HTTP_PROVIDER_TTL: Duration = Duration::from_secs(10 * 60);
 const HTTP_PROVIDER_TIMEOUT: Duration = Duration::from_secs(20);
 const BITSWAP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
-const BITSWAP_CONNECTION_READY_TIMEOUT: Duration = Duration::from_secs(10);
-const BITSWAP_WANT_HAVE_TIMEOUT: Duration = Duration::from_secs(5);
+// Start provider retry before a full dial timeout can dominate gateway TTFB.
+const BITSWAP_CONNECTION_READY_TIMEOUT: Duration = Duration::from_secs(5);
+// Keep WANT_HAVE as a short peer-selection probe; slow probes otherwise sit
+// directly on the gateway TTFB path before we request the block.
+const BITSWAP_WANT_HAVE_TIMEOUT: Duration = Duration::from_millis(750);
 const BITSWAP_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
 const BITSWAP_SUCCESSFUL_PEER_TTL: Duration = Duration::from_secs(10 * 60);
 const BITSWAP_SESSION_SHORTCUT_GRACE: Duration = Duration::from_millis(150);
@@ -931,11 +934,12 @@ async fn run_shared_bitswap_swarm(
     let mut pending_counts = HashMap::<Cid, usize>::new();
     let mut connected_peers = HashMap::<PeerId, usize>::new();
     let mut connection_waiters = HashMap::<PeerId, Vec<oneshot::Sender<()>>>::new();
+    let mut connection_wait_started = HashMap::<PeerId, Instant>::new();
 
     loop {
         tokio::select! {
             Some(command) = commands.recv() => {
-                prune_connection_waiters(&mut connection_waiters);
+                prune_connection_waiters(&mut connection_waiters, &mut connection_wait_started);
                 let (incoming_result, incoming_results) = mpsc::unbounded_channel();
                 pending_incoming.entry(command.cid).or_default().push(incoming_result);
                 *pending_counts.entry(command.cid).or_default() += 1;
@@ -947,6 +951,9 @@ async fn run_shared_bitswap_swarm(
                         None
                     } else {
                         let (ready, wait) = oneshot::channel();
+                        connection_wait_started
+                            .entry(peer.id)
+                            .or_insert_with(Instant::now);
                         connection_waiters.entry(peer.id).or_default().push(ready);
                         Some(wait)
                     };
@@ -1013,21 +1020,63 @@ async fn run_shared_bitswap_swarm(
             }
             event = swarm.select_next_some() => {
                 match event {
-                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                    SwarmEvent::ConnectionEstablished {
+                        peer_id,
+                        endpoint,
+                        num_established,
+                        concurrent_dial_errors,
+                        established_in,
+                        ..
+                    } => {
                         *connected_peers.entry(peer_id).or_default() += 1;
+                        let wait_elapsed_ms = connection_wait_started
+                            .remove(&peer_id)
+                            .map(|started| started.elapsed().as_millis())
+                            .unwrap_or_default();
+                        let failed_dial_count =
+                            concurrent_dial_errors.as_ref().map_or(0, Vec::len);
+                        tracing::debug!(
+                            phase = "bitswap_connection_established",
+                            peer = %peer_id,
+                            endpoint = ?endpoint,
+                            num_established = num_established.get(),
+                            established_ms = established_in.as_millis(),
+                            wait_elapsed_ms,
+                            failed_dial_count
+                        );
                         if let Some(waiters) = connection_waiters.remove(&peer_id) {
                             for waiter in waiters {
                                 let _ = waiter.send(());
                             }
                         }
                     }
-                    SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                    SwarmEvent::ConnectionClosed {
+                        peer_id,
+                        endpoint,
+                        num_established,
+                        cause,
+                        ..
+                    } => {
+                        tracing::debug!(
+                            phase = "bitswap_connection_closed",
+                            peer = %peer_id,
+                            endpoint = ?endpoint,
+                            num_established,
+                            cause = cause.as_ref().map(ToString::to_string).unwrap_or_default()
+                        );
                         if let Some(count) = connected_peers.get_mut(&peer_id) {
                             *count = count.saturating_sub(1);
                             if *count == 0 {
                                 connected_peers.remove(&peer_id);
                             }
                         }
+                    }
+                    SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                        tracing::debug!(
+                            phase = "bitswap_connection_error",
+                            peer = peer_id.map(|peer| peer.to_string()).unwrap_or_default(),
+                            error = %error
+                        );
                     }
                     _ => {}
                 }
@@ -1037,11 +1086,15 @@ async fn run_shared_bitswap_swarm(
     }
 }
 
-fn prune_connection_waiters(waiters: &mut HashMap<PeerId, Vec<oneshot::Sender<()>>>) {
+fn prune_connection_waiters(
+    waiters: &mut HashMap<PeerId, Vec<oneshot::Sender<()>>>,
+    started: &mut HashMap<PeerId, Instant>,
+) {
     waiters.retain(|_, peer_waiters| {
         peer_waiters.retain(|waiter| !waiter.is_closed());
         !peer_waiters.is_empty()
     });
+    started.retain(|peer, _| waiters.contains_key(peer));
 }
 
 #[derive(Clone)]
@@ -2239,6 +2292,57 @@ mod bitswap_tests {
         present_swarm.abort();
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn want_have_probe_falls_back_to_want_block_quickly() {
+        let data = b"want-have timeout fallback block";
+        let cid = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, data);
+        let (missing_peer_id, missing_addr, missing_swarm, missing_stream) =
+            spawn_want_have_bitswap_peer(cid, data.to_vec(), false).await;
+        let (present_peer_id, present_addr, present_swarm, present_stream) =
+            spawn_silent_want_have_bitswap_peer(cid, data.to_vec()).await;
+
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let retriever = HttpRetriever::new(
+            freedom_ipfs_routing::DelegatedRoutingClient::new("http://127.0.0.1:9/routing/v1"),
+            store.clone(),
+        );
+        let providers = vec![
+            Provider::from_parts(
+                Some(missing_peer_id.to_string()),
+                vec![missing_addr.to_string()],
+            )
+            .unwrap(),
+            Provider::from_parts(
+                Some(present_peer_id.to_string()),
+                vec![present_addr.to_string()],
+            )
+            .unwrap(),
+        ];
+
+        let started = Instant::now();
+        let (block, source) = retriever
+            .fetch_from_providers_with_source(&cid, &providers)
+            .await
+            .unwrap();
+
+        assert_eq!(source, RetrievalSource::Bitswap);
+        assert_eq!(block.data(), data);
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "WANT_HAVE fallback should not add seconds to TTFB"
+        );
+        tokio::time::timeout(Duration::from_secs(5), missing_stream)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), present_stream)
+            .await
+            .unwrap()
+            .unwrap();
+        missing_swarm.abort();
+        present_swarm.abort();
+    }
+
     #[tokio::test]
     async fn rejects_redirected_http_provider_blocks() {
         let data = b"redirect target block";
@@ -2409,10 +2513,10 @@ mod bitswap_tests {
 
     #[test]
     fn detects_bitswap_connection_ready_failures() {
-        let err = RetrievalError::Bitswap(
-            "all bitswap stream requests failed: peer: bitswap connection was not established within 10000ms"
-                .to_string(),
-        );
+        let err = RetrievalError::Bitswap(format!(
+            "all bitswap stream requests failed: peer: bitswap connection was not established within {}ms",
+            BITSWAP_CONNECTION_READY_TIMEOUT.as_millis()
+        ));
         assert!(is_bitswap_connection_ready_failure(&err));
 
         let err = RetrievalError::Bitswap("all bitswap stream requests failed".to_string());
@@ -2937,6 +3041,33 @@ mod bitswap_tests {
         tokio::task::JoinHandle<()>,
         tokio::task::JoinHandle<()>,
     ) {
+        spawn_want_have_bitswap_peer_with_presence_delay(cid, data, has_block, Some(Duration::ZERO))
+            .await
+    }
+
+    async fn spawn_silent_want_have_bitswap_peer(
+        cid: Cid,
+        data: Vec<u8>,
+    ) -> (
+        PeerId,
+        Multiaddr,
+        tokio::task::JoinHandle<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        spawn_want_have_bitswap_peer_with_presence_delay(cid, data, true, None).await
+    }
+
+    async fn spawn_want_have_bitswap_peer_with_presence_delay(
+        cid: Cid,
+        data: Vec<u8>,
+        has_block: bool,
+        presence_delay: Option<Duration>,
+    ) -> (
+        PeerId,
+        Multiaddr,
+        tokio::task::JoinHandle<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
         let mut swarm = SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_tcp(
@@ -2982,28 +3113,41 @@ mod bitswap_tests {
             assert_eq!(entry.want_type, WantType::Have as i32);
             assert!(!entry.cancel);
 
-            let presence = BitswapMessage {
-                block_presences: vec![BlockPresence {
-                    cid: cid.to_bytes(),
-                    type_pb: if has_block {
-                        BLOCK_PRESENCE_HAVE
-                    } else {
-                        BLOCK_PRESENCE_DONT_HAVE
-                    },
-                    tokens: Vec::new(),
-                }],
-                ..BitswapMessage::default()
-            };
-            write_length_prefixed(&mut stream, &presence.encode_to_vec())
-                .await
-                .unwrap();
-            stream.flush().await.unwrap();
+            if let Some(delay) = presence_delay {
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                let presence = BitswapMessage {
+                    block_presences: vec![BlockPresence {
+                        cid: cid.to_bytes(),
+                        type_pb: if has_block {
+                            BLOCK_PRESENCE_HAVE
+                        } else {
+                            BLOCK_PRESENCE_DONT_HAVE
+                        },
+                        tokens: Vec::new(),
+                    }],
+                    ..BitswapMessage::default()
+                };
+                write_length_prefixed(&mut stream, &presence.encode_to_vec())
+                    .await
+                    .unwrap();
+                stream.flush().await.unwrap();
 
-            if !has_block {
-                return;
+                if !has_block {
+                    return;
+                }
+            } else {
+                assert!(has_block);
             }
 
-            let want_block_bytes = read_length_prefixed(&mut stream, 1024).await.unwrap();
+            let want_block_bytes = tokio::time::timeout(
+                BITSWAP_WANT_HAVE_TIMEOUT + Duration::from_secs(2),
+                read_length_prefixed(&mut stream, 1024),
+            )
+            .await
+            .unwrap()
+            .unwrap();
             let want_block = BitswapMessage::decode(want_block_bytes.as_slice()).unwrap();
             let entry = want_block.wantlist.unwrap().entries.remove(0);
             assert_eq!(entry.block, cid.to_bytes());

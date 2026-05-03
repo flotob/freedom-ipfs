@@ -332,6 +332,53 @@ the gateway from returning a fast root `502`, but it can add another connection
 window to a cold root request. The paired `daicowtf-page-assets` repeat=3 check
 still passed 3/3 with root TTFB p50=5842ms and max=6071ms.
 
+Short WANT_HAVE and connection-ready budgets:
+
+Follow-up tracing showed that the useful `ipfs.tech` Bitswap peers usually
+established libp2p connections in 80-300ms, while the old 5s `WANT_HAVE` probe
+often expired before the node sent `WANT_BLOCK`. That injected about 5s per cold
+root/index block even when a provider could serve the block immediately after a
+direct request. The current code keeps `WANT_HAVE` as a conservative multi-peer
+filter, but lowers the probe budget to 750ms. It also starts the existing
+same-provider retry after a 5s connection-ready miss instead of waiting the full
+10s ready window before refreshing providers.
+
+Focused root-only validation:
+
+```text
+ipfs-tech-root-html-range repeat=3, fresh gateway:
+passed=3 failed=0 pass_rate=100.0%
+root_ttfb p50=2611ms p90=3645ms max=3645ms
+bitswap_fetch count=6 total=6579ms p50=967ms p90=2503ms max=2503ms
+```
+
+The same root-only trace before shortening `WANT_HAVE` had root TTFB p50=9866ms
+and max=10952ms, with Bitswap fetch p50=5100ms.
+
+Fresh full-page validation:
+
+```text
+ipfs-tech-page-assets repeat=3, fresh gateway, asset_concurrency=6:
+passed=3 failed=0 pass_rate=100.0%
+root_ttfb p50=1856ms p90=8473ms max=8473ms
+asset_ttfb p50=147ms p90=478ms p95=668ms max=10114ms
+measured run totals: 12922ms, 2626ms, 9727ms
+bitswap_fetch count=64 total=27456ms p50=96ms p90=804ms p95=1287ms max=10086ms
+```
+
+The 8.5s root tail was a same-provider retry after all initial connection-ready
+waits hit the new 5s window. The 10.1s asset tail was a successful Bitswap block
+response from a slow peer, not a gateway failure.
+
+Secondary page validation:
+
+```text
+daicowtf-page-assets repeat=3, fresh gateway, asset_concurrency=6:
+passed=3 failed=0 pass_rate=100.0%
+root_ttfb p50=1591ms p90=1714ms max=1714ms
+bitswap_fetch count=9 total=4097ms p50=158ms p90=1165ms max=1165ms
+```
+
 Resource impact:
 The changes keep existing caps: gateway request concurrency remains 8, asset
 concurrency remains harness-side, Bitswap connection limits are unchanged, and
@@ -342,8 +389,12 @@ after each warm-cache run.
 
 Failed experiments:
 
-- Global `WANT_HAVE` timeout reductions to 750ms and 2s made asset samples fast
-  but caused repeated root failures when delegated providers were stale. Reverted.
+- Earlier standalone `WANT_HAVE` timeout reductions to 750ms and 2s made asset
+  samples fast but caused repeated root failures when delegated providers were
+  stale. That version predated the connection-ready stream fix and
+  same-provider retry. The current implementation reintroduced a 750ms
+  `WANT_HAVE` probe with those safeguards and kept the fresh validation above at
+  3/3 pass rate.
 - One optimistic direct `WANT_BLOCK` attempt for an all-unknown peer set also
   regressed reliability: `ipfs-tech-page-assets` fresh repeat=5 passed 4/5,
   with one root 504 at 30.8s and run totals 14.3-30.8s. Reverted.

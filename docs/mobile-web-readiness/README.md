@@ -94,7 +94,10 @@ status, MIME type, byte count, and timing.
   retries an identical provider set once when every Bitswap connection wait
   times out; in one fresh `ipfs.tech` repeat=3 sample this converted two root
   connection-timeout failures into slow successes, yielding 3/3 pass rate with a
-  16.9s root max.
+  16.9s root max. The current follow-up keeps `WANT_HAVE` as a 750ms probe and
+  starts same-provider retry after a 5s connection-ready miss; fresh
+  `ipfs.tech` root-only repeat=3 passed with a 3.6s root max, while
+  `ipfs.tech-page-assets` repeat=3 passed with root p50 1.9s and max 8.5s.
 
 ## Next Scenario Targets
 

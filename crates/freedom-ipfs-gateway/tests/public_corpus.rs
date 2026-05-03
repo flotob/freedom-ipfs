@@ -19,7 +19,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 
 const DEFAULT_CORPUS: &str = include_str!("../../../tests/fixtures/public_corpus.txt");
-const REQUEST_ATTEMPTS: usize = 3;
+const REQUEST_ATTEMPTS: usize = 5;
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "network corpus smoke test against documented public /ipfs and /ipns paths"]
@@ -204,7 +204,7 @@ async fn fetch_gateway_body_with_retries(
             Err(err) => last_error = Some(format!("request error: {err}")),
         }
         if attempt < attempts {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_secs(attempt as u64)).await;
         }
     }
     Err(last_error.unwrap_or_else(|| "request was not attempted".to_string()))

@@ -57,7 +57,7 @@ Early implementation. Current code supports:
   and `/webui` are not exposed,
 - Kubo-generated CAR parity smoke for UnixFS files/directories, empty files, percent-encoded browser paths, byte ranges, and HAMT directories when `KUBO_BIN` is available,
 - opt-in public corpus smoke that fetches documented `/ipfs` and DNSLink-backed `/ipns` paths and byte ranges through the local gateway,
-- opt-in live harness retries for transient local-gateway `408`/`502`/`503`/`504` responses caused by public-network provider timeouts,
+- five-attempt opt-in live harness retries with backoff for transient local-gateway `408`/`502`/`503`/`504` responses caused by public-network provider timeouts,
 - opt-in local gateway soak that repeats cached reads and checks bounded RSS growth on Linux,
 - opt-in live retrieval soak that repeats cold public-network gateway rounds and checks bounded RSS growth on Linux,
 - configurable local-gateway request concurrency limiting,

@@ -38,8 +38,19 @@ Rejected public-corpus candidates:
   resolved but returned `502 Bad Gateway` through the local Rust gateway
   after retries ended with no HTTP-capable providers.
 
+Retired public-corpus candidates:
+
+- 2026-05-03: `/ipns/ipfs.tech`, `/ipns/dist.ipfs.tech`, and
+  `/ipns/cid.ipfs.tech` previously passed, but mutable site roots became flaky
+  with repeated `502 Bad Gateway` responses from unavailable public providers.
+  Keep the larger `ipfs.tech` media paths in the default corpus for DNSLink and
+  range coverage, and re-add site roots only after they are stable again.
+
 Previously rejected public-corpus candidates now accepted:
 
 - 2026-05-03: `/ipns/ipfs.tech/_nuxt/developers-hero.BRuJDQyf.jpg`
   passed after transient-status retry hardening and is now included in
+  `public_corpus.txt`.
+- 2026-05-03: `/ipns/ipfs.tech/_nuxt/ribbon-community-7.BM6mrSZz.jpg`
+  passed as an additional larger media/range case and is now included in
   `public_corpus.txt`.

@@ -21,7 +21,7 @@ daicowtf-home /ipfs/bafybeidznfolm74c5cephzdycedx7hk76iawno45wemcvkflieotzo2lne 
 "#;
 const DEFAULT_ROUNDS: usize = 2;
 const DEFAULT_MAX_RSS_GROWTH_KIB: u64 = 128 * 1024;
-const REQUEST_ATTEMPTS: usize = 3;
+const REQUEST_ATTEMPTS: usize = 5;
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "live retrieval soak test against public IPFS; opt in with make live-soak"]
@@ -180,7 +180,7 @@ async fn fetch_gateway_body_with_retries(
             Err(err) => last_error = Some(format!("request error: {err}")),
         }
         if attempt < attempts {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_secs(attempt as u64)).await;
         }
     }
     Err(last_error.unwrap_or_else(|| "request was not attempted".to_string()))

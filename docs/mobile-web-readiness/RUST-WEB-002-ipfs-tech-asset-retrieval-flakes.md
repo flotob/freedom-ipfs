@@ -171,6 +171,11 @@ used the trace to make two retrieval changes:
   direct recent-peer `WANT_BLOCK` shortcut after a 150ms grace period. This keeps
   fast delegated lookups on the normal path while allowing known-good page
   session peers to win when provider lookup is slow or errors.
+- Outgoing Bitswap requests now wait for a real libp2p connection-established
+  event before opening a stream. This avoids the previous 500ms sleep where the
+  stream behavior could issue a peer-ID dial without the explicit provider
+  addresses and fail with `Dial error: no addresses for peer` while address dials
+  were still in progress.
 
 The harness also gained `--gateway-db` so fresh gateway processes can be
 measured against the same persistent SQLite cache.
@@ -283,6 +288,23 @@ about 30.5s in provider-derived Bitswap, then refreshed to effectively the same
 provider set and returned 504 before any asset crawl. The raced shortcut did not
 participate in that root failure; it only won two slow asset block misses in the
 successful runs.
+
+Connection-ready Bitswap stream check:
+
+```text
+connection-ready repeat=3:
+passed=3 failed=0 pass_rate=100.0%
+root_ttfb p50=6972ms p90=10869ms max=10869ms
+asset_ttfb p50=207ms p90=5274ms p95=5481ms max=6148ms
+measured run totals: 21099ms, 14315ms, 12281ms
+bitswap_fetch count=61 total=120425ms p50=431ms p95=5454ms max=5853ms
+provider_lookup count=101 total=6192ms p50=17ms p95=417ms max=1122ms
+bitswap_session_shortcut count=4 total=1217ms p50=213ms max=661ms
+```
+
+The trace for this run had no `no addresses for peer` Bitswap errors and no
+failed `bitswap_fetch` events. This directly addresses the failure signature seen
+in the same-window baseline/race runs above.
 
 Resource impact:
 The changes keep existing caps: gateway request concurrency remains 8, asset

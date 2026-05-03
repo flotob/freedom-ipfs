@@ -62,6 +62,14 @@ Rejected public-DHT smoke candidates:
   `QmT78zSuBmuS4z925W31o1P8dRQsDuxF6AQDBr2CGy9eCd`, and
   `QmNnooDu7eVk7rQhmc5nvkZDRJp8M1cR47WX1tUuP6vfdJ` also returned zero
   public DHT providers through the same smoke.
+- 2026-05-03: the current live corpus roots for `vitalik-home`
+  (`bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u`),
+  `daicowtf-home`
+  (`bafybeidznfolm74c5cephzdycedx7hk76iawno45wemcvkflieotzo2lne`), and
+  `wikipedia-on-ipfs-en-root`
+  (`bafybeiaysi4s6lnjev27ln5icwm6tueaw2vdykrtjkwiphwekaywqhcjze`) also
+  returned zero public DHT providers through the same smoke, despite passing
+  through delegated routing in the live corpus.
 
 Retired public-corpus candidates:
 

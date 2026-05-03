@@ -7,16 +7,14 @@ Spec: `/root/codex/mobile-rust-ipfs-node-spec.md`
 
 ## Verdict
 
-The Linux-verifiable MVP implementation is substantially present and running, but the full thread goal is not complete yet.
+The Linux-verifiable MVP implementation is substantially present and running, and the iOS XCFramework/simulator smoke gates now pass in GitHub Actions. The full thread goal is not complete yet because real-device integration and resource validation remain.
 
-The remaining required evidence depends on macOS/Xcode and real iPhone validation:
+The remaining required evidence depends on the Freedom iOS app and target iPhones:
 
-- Produce and verify the real iOS `FreedomIpfs.xcframework`.
-- Compile/link the Swift wrapper or a sample app against the XCFramework.
-- Start/stop the library on an iOS simulator.
 - Measure startup, idle RSS, CPU, network idleness, active retrieval, background/foreground, low-memory, network-change, and Bee co-residency behavior on target iPhones.
+- Integrate the Swift wrapper into the browser app and wire app lifecycle/network-path events.
 
-Do not mark the overall implementation goal complete until those Apple-platform gates pass.
+Do not mark the overall implementation goal complete until the device/app gates pass.
 
 ## Current Verification Evidence
 
@@ -27,13 +25,19 @@ cargo fmt --all --check && make verify
 make live-smoke && make live-corpus
 ```
 
+Apple-platform CI evidence:
+
+```text
+GitHub Actions iOS XCFramework run 25269150599 passed on 2026-05-03
+Head SHA: 9b56d9a0ea89827d72202e7024b643624ae1ba91
+Job URL: https://github.com/flotob/freedom-ipfs/actions/runs/25269150599/job/74088582571
+```
+
 Earlier checks for unchanged areas:
 
 ```bash
 KUBO_BIN=$PWD/target/tools/kubo/kubo/ipfs make kubo-parity
 make local-soak
-cargo run -p xtask -- build-xcframework
-cargo run -p xtask -- verify-xcframework
 ```
 
 Results:
@@ -46,7 +50,8 @@ Results:
 - Public corpus smoke passed for the checked-in `vitalik-home` and `daicowtf-home` entries with the same byte counts and retrieval stats.
 - Kubo parity passed for generated UnixFS site files, directory-index fallback, range reads, and HAMT directories.
 - Local cached-gateway soak passed: `500` requests, Linux RSS from `8960` KiB to `13312` KiB.
-- `xtask build-xcframework` and `xtask verify-xcframework` correctly refused to run on Linux with the macOS/Xcode requirement message.
+- GitHub Actions `iOS XCFramework` passed on `macos-15` with Xcode 16.4. It built the real `FreedomIpfs.xcframework`, verified headers/module maps/exported C symbols, booted an iOS simulator, compiled and linked the Swift wrapper smoke, started the local gateway in the simulator via `simctl spawn booted`, fetched the CAR fixture through loopback, stopped the gateway, and uploaded `FreedomIpfs.xcframework` as artifact ID `6767876928` (`59993959` bytes).
+- `xtask build-xcframework` and `xtask verify-xcframework` still correctly refuse to run on Linux with the macOS/Xcode requirement message.
 
 ## Prompt-To-Artifact Checklist
 
@@ -92,13 +97,13 @@ Results:
 | Lazy/idle network behavior | DHT swarms are per lookup; Bitswap sessions are bounded; no background maintenance loops are apparent. | Partially verified; device/network inspection still needed |
 | Routing modes | `auto`, `delegated`, `light_dht`, `offline` paths exist across CLI/mobile/gateway constructors. | Done |
 | iOS-first C ABI | `freedom-ipfs-mobile`, `ffi/include/freedom_ipfs.h`, and lifecycle/cache/gateway/preload APIs exist. | Done |
-| Swift wrapper | `ffi/swift/FreedomIpfsReader.swift` exists with gateway start/stop, stats, cache, lifecycle, preload/cancel, multi-router, and local URL mapping helpers. | Source present; not compiled here |
-| XCFramework build skeleton | `xtask build-xcframework` builds iOS targets, packages headers/module map, and checks artifact structure/exported symbols on macOS. | Skeleton done; not produced on Linux |
-| XCFramework verifier | `xtask verify-xcframework` checks slices, headers, module maps, exported symbols, and a simulator Swift smoke on macOS. | Skeleton done; not run on macOS |
-| Simulator smoke link/start | `xtask verify-xcframework` builds a Swift simulator executable that imports a generated CAR fixture, starts the local gateway, fetches the fixture through loopback, and stops the gateway using `simctl spawn booted`. | Staged; needs macOS/Xcode with a booted simulator |
+| Swift wrapper | `ffi/swift/FreedomIpfsReader.swift` exists with gateway start/stop, stats, cache, lifecycle, preload/cancel, multi-router, and local URL mapping helpers; GitHub Actions Swift simulator smoke compiled and linked it against the XCFramework. | Done for simulator smoke; app integration unverified |
+| XCFramework build skeleton | `xtask build-xcframework` builds iOS targets, packages headers/module map, checks artifact structure/exported symbols using Rust `llvm-nm`, and produced `FreedomIpfs.xcframework` in GitHub Actions. | Done in macOS CI |
+| XCFramework verifier | `xtask verify-xcframework` checks slices, headers, module maps, exported symbols, and a simulator Swift smoke on macOS; GitHub Actions run `25269150599` passed. | Done in macOS CI |
+| Simulator smoke link/start | `xtask verify-xcframework` builds a Swift simulator executable that imports a generated CAR fixture, starts the local gateway, fetches the fixture through loopback, and stops the gateway using `simctl spawn booted`; GitHub Actions run `25269150599` passed. | Done in macOS CI |
 | Real iPhone resource target under 60 MiB RSS beside Bee | Required by spec. | Missing, needs device |
 | Lifecycle hooks | ABI/Swift hooks for background, foreground, low memory, network change; unit tests cover behavior. | Implemented; host-app/device wiring unverified |
-| Browser integration helpers | Local gateway URL, `ipfs://`/`ipns://`/gateway-style URL mapping helpers, preload/cancel with path/URI/bare-CID normalization, cache stats/control. | Source present; Swift compile/link unverified |
+| Browser integration helpers | Local gateway URL, `ipfs://`/`ipns://`/gateway-style URL mapping helpers, preload/cancel with path/URI/bare-CID normalization, cache stats/control. | Swift compile/link verified in simulator smoke; app integration unverified |
 | Live ENS-backed smoke | `make live-smoke` resolves `vitalik.eth` and `daicowtf.eth` at runtime, mounts the online IPNS/DNSLink resolver, and fetches through the local gateway. | Done on Linux |
 | Public CID corpus | Small checked-in corpus and opt-in smoke. | Started; should grow |
 | Kubo parity | Deterministic Kubo-generated UnixFS/HAMT/range/directory-index parity tests. | Started; should grow |
@@ -107,14 +112,12 @@ Results:
 
 ## Remaining Work To Close The Goal
 
-1. Run `make build-xcframework` on macOS with Xcode command line tools and fix any Rust dependency or target-link issues.
-2. Run `make verify-xcframework` on macOS with a booted iOS simulator and fix any Swift simulator smoke issues it reports.
-3. Expand the simulator smoke into an app-rendering check if needed by the Freedom browser integration.
-4. Integrate the Swift wrapper into the Freedom iOS app and wire background/foreground, low-memory, and network-path events.
-5. Profile real devices with Bee running beside this node and record RSS, CPU, startup, active retrieval, and idle network behavior.
-6. Expand the public corpus with more stable IPFS/IPNS/DNSLink paths and larger/range-media cases.
-7. Add longer host and device soaks for live retrieval, not just cached local reads.
+1. Expand the simulator smoke into an app-rendering check if needed by the Freedom browser integration.
+2. Integrate the Swift wrapper into the Freedom iOS app and wire background/foreground, low-memory, and network-path events.
+3. Profile real devices with Bee running beside this node and record RSS, CPU, startup, active retrieval, and idle network behavior.
+4. Expand the public corpus with more stable IPFS/IPNS/DNSLink paths and larger/range-media cases.
+5. Add longer host and device soaks for live retrieval, not just cached local reads.
 
 ## Completion Rule
 
-The goal can be marked complete only after the Apple-platform gates pass and the device resource profile shows the node is usable beside Bee, or the spec is explicitly revised to remove those requirements.
+The goal can be marked complete only after the device/app integration gates pass and the resource profile shows the node is usable beside Bee, or the spec is explicitly revised to remove those requirements.

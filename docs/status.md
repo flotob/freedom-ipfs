@@ -10,7 +10,7 @@ Detailed prompt-to-artifact audit: `docs/completion-audit.md`
 
 This is a running Rust IPFS reader, not just a scaffold. It starts a local gateway, resolves externally supplied `/ipfs` and `/ipns` paths, discovers providers through delegated routing with light-DHT fallback, retrieves verified blocks through HTTP providers and Bitswap, reads UnixFS data, and serves browser-facing responses from the local gateway.
 
-The implementation remains iOS-first but has only been built and tested on Linux in this environment. Production iOS validation, simulator linking, and real-device resource profiling still require macOS/Xcode and target iPhones.
+The implementation remains iOS-first. Linux verification, live public-network retrieval, and macOS/Xcode XCFramework plus simulator-smoke verification have passed. Production browser-app integration and real-device resource profiling still require target iPhones.
 
 ## Verification
 
@@ -45,6 +45,15 @@ Local cached-gateway soak passed:
 ```bash
 make local-soak
 ```
+
+iOS XCFramework CI passed:
+
+```text
+GitHub Actions run: https://github.com/flotob/freedom-ipfs/actions/runs/25269150599
+Head SHA: 9b56d9a0ea89827d72202e7024b643624ae1ba91
+```
+
+The macOS job ran on `macos-15` with Xcode 16.4. It built `FreedomIpfs.xcframework`, verified headers/module maps/exported C symbols, booted an iOS simulator, compiled and linked the Swift wrapper smoke, ran the gateway smoke through `simctl spawn booted`, and uploaded the XCFramework artifact.
 
 Observed live-smoke result:
 
@@ -83,7 +92,7 @@ Error: verify-xcframework requires macOS with Xcode command line tools; current 
 
 M0 decisions and fixtures: partially complete. The repo, license, generated unit-test fixtures, deterministic libp2p fixtures, and Kubo-generated UnixFS/HAMT CAR parity smokes exist. A larger checked-in public fixture corpus is still useful.
 
-M1 workspace and mobile skeleton: mostly complete. Workspace, mobile C ABI, Swift wrapper source, gateway start/stop, stats, cache import/export, routing mode selection, multi-router configuration, local gateway URL mapping helpers, lifecycle hooks, preload/cancel with path/URI/bare-CID normalization, and an XCFramework build/verify skeleton exist. The build stages the C header plus module map and checks artifact structure/exported C symbols; the verifier additionally stages a simulator Swift smoke that imports a generated CAR fixture, starts the gateway, fetches through loopback, and stops on macOS. macOS/Xcode artifact production and simulator execution remain unverified here.
+M1 workspace and mobile skeleton: mostly complete. Workspace, mobile C ABI, Swift wrapper source, gateway start/stop, stats, cache import/export, routing mode selection, multi-router configuration, local gateway URL mapping helpers, lifecycle hooks, preload/cancel with path/URI/bare-CID normalization, and an XCFramework build/verify skeleton exist. The build stages the C header plus module map and checks artifact structure/exported C symbols; the verifier additionally stages a simulator Swift smoke that imports a generated CAR fixture, starts the gateway, fetches through loopback, and stops on macOS. GitHub Actions macOS run `25269150599` verified artifact production and simulator execution.
 
 M2 CID, block verification, and store: complete for MVP. CID parse/format, verified block insertion, CAR import/export, bounded in-memory hot block cache, SQLite cache, eviction, active block retention, provider cache, bad-provider cache, clear, and trim are covered by tests.
 
@@ -99,7 +108,7 @@ M7 light DHT fallback: implemented for provider lookup and IPNS record lookup. I
 
 M8 mobile resource hardening: partially complete. Bounded in-memory hot block cache, cache trim, gateway concurrency limit, mobile background/foreground hooks, low-memory trim hook, network-change provider-cache hygiene, DHT timeout/fanout knobs, provider/badness caches, bounded HTTP provider response bodies, HTTP timeouts, libp2p identify/ping behaviours, libp2p connection timeouts, and libp2p connection-limit guards exist. Real idle RSS, CPU, network, startup, Bee concurrency, and host-app lifecycle behavior are not measured yet.
 
-M9 browser integration: partially complete. The local gateway path, mobile ABI, Swift wrapper source, gateway URL mapping helpers for `ipfs://`, `ipns://`, `/ipfs`, and `/ipns` addresses, preload normalization for path/URI/bare-CID inputs, lifecycle hooks, and preload/cancel controls exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. The live smoke and corpus harnesses now mount the online IPNS/DNSLink resolver for `/ipns` paths. Swift wrapper compilation/linking and app integration are not verified in this Linux environment.
+M9 browser integration: partially complete. The local gateway path, mobile ABI, Swift wrapper source, gateway URL mapping helpers for `ipfs://`, `ipns://`, `/ipfs`, and `/ipns` addresses, preload normalization for path/URI/bare-CID inputs, lifecycle hooks, and preload/cancel controls exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. The live smoke and corpus harnesses now mount the online IPNS/DNSLink resolver for `/ipns` paths. Swift wrapper compilation/linking is verified by the GitHub Actions simulator smoke; integration into the Freedom browser app is not verified yet.
 
 M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, Kubo-generated UnixFS/HAMT/range parity smoke, live ENS smoke, a small checked-in public CID corpus smoke, and a local cached-gateway RSS soak exist, but a larger public CID corpus, broader Kubo parity matrix, and longer network/device soak tests remain follow-up work.
 
@@ -107,8 +116,6 @@ M11 optional features: not started except CAR export/import support, which was p
 
 ## Known Gaps
 
-- Real iOS XCFramework creation and symbol/Swift simulator-smoke verification require macOS with Xcode; `xtask verify-xcframework` exists but cannot run on this Linux host.
-- Swift wrapper source exists, but `swift` is not installed in this Linux environment, and sample app link/start/stop tests require macOS/Xcode.
 - Real iPhone resource targets are unverified, including the provisional under-60-MiB idle RSS target beside Bee.
 - iOS lifecycle hooks exist at the ABI/Swift level, but actual host-app background/foreground, low-memory, and network-path event wiring is not verified on iOS.
 - DHT-only retrieval of `daicowtf.eth` is not reliable on the public DHT; current auto mode succeeds because delegated routing returns usable providers.

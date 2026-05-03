@@ -56,7 +56,7 @@ Early implementation. Current code supports:
 - mobile lifecycle hooks for background/foreground, low-memory cache trimming, and network-change provider cache hygiene,
 - an iOS staticlib/XCFramework build skeleton with staged C headers/module map, exported-symbol verification, a simulator Swift gateway smoke in the verifier, and a Swift wrapper for persistent-cache node creation, cache import/export, cache trimming, routing-mode selection, multi-router configuration, local gateway URL mapping, lifecycle hooks, preload/cancel for `/ipfs`, `/ipns`, `ipfs://`, `ipns://`, and bare-CID inputs, and offline/online gateway start.
 
-Still incomplete: production iOS packaging validation, resource profiling on device, network path integration in the host app, and hardened DHT-only retrieval for sites whose DHT providers are slow or stale. See [docs/completion-audit.md](docs/completion-audit.md) for the current prompt-to-artifact checklist.
+Still incomplete: resource profiling on device, network path integration in the host app, and hardened DHT-only retrieval for sites whose DHT providers are slow or stale. See [docs/completion-audit.md](docs/completion-audit.md) for the current prompt-to-artifact checklist.
 
 ## Development
 
@@ -102,6 +102,8 @@ cargo run -p xtask -- verify-xcframework
 ```
 
 The generated XCFramework is a static library package. iOS apps linking it must also link `SystemConfiguration.framework`.
+
+The `.github/workflows/ios-xcframework.yml` workflow runs the macOS build and simulator smoke in CI and uploads the generated XCFramework artifact.
 
 Live smoke test, intentionally ignored by default because it uses the public IPFS network:
 

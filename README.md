@@ -33,6 +33,7 @@ Early implementation. Current code supports:
 - bounded Bitswap peer/address fanout with one provider-refresh retry after stale-provider failures,
 - Bitswap cancel messages after successful block receipt,
 - verified caching of extra CIDv0/CIDv1 blocks returned in Bitswap payload responses,
+- deterministic in-process libp2p Bitswap retrieval test coverage,
 - basic HAMT-sharded UnixFS directory traversal,
 - UnixFS range reads that avoid assembling entire multi-block files for byte-range responses,
 - full local-gateway responses streamed in bounded UnixFS chunks instead of one full-file buffer,

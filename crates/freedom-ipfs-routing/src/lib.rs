@@ -710,6 +710,30 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn light_dht_finds_provider_from_local_server_peer() {
+        let cid = "bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u"
+            .parse::<Cid>()
+            .unwrap();
+        let (peer_id, addr, swarm_task) = spawn_local_dht_provider(cid).await;
+        let bootstrap = format!("{addr}/p2p/{peer_id}");
+
+        let providers = LightDhtClient::new(vec![bootstrap])
+            .with_query_timeout(Duration::from_secs(5))
+            .with_max_providers(1)
+            .providers(&cid)
+            .await
+            .unwrap();
+
+        let expected_peer_id = peer_id.to_string();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id.as_deref(), Some(expected_peer_id.as_str()));
+        assert!(providers[0].addrs.iter().any(|provider_addr| {
+            provider_addr == &addr.to_string() || provider_addr.starts_with("/ip4/127.0.0.1/tcp/")
+        }));
+        swarm_task.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     #[ignore = "network smoke test against the public Amino DHT"]
     async fn live_light_dht_finds_public_providers() {
         let cid = std::env::var("FREEDOM_IPFS_LIVE_DHT_CID")
@@ -732,5 +756,57 @@ mod tests {
             );
         }
         assert!(!providers.is_empty());
+    }
+
+    async fn spawn_local_dht_provider(
+        cid: Cid,
+    ) -> (PeerId, Multiaddr, tokio::task::JoinHandle<()>) {
+        let mut swarm = build_local_dht_server().await;
+        let peer_id = *swarm.local_peer_id();
+        swarm
+            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .unwrap();
+        let addr = loop {
+            if let SwarmEvent::NewListenAddr { address, .. } = swarm.select_next_some().await {
+                break address;
+            }
+        };
+        let key = kad::RecordKey::new(&cid.hash().to_bytes());
+        let provider = kad::ProviderRecord::new(key, peer_id, vec![addr.clone()]);
+        swarm
+            .behaviour_mut()
+            .store_mut()
+            .add_provider(provider)
+            .unwrap();
+
+        let task = tokio::spawn(async move {
+            loop {
+                let _ = swarm.select_next_some().await;
+            }
+        });
+        (peer_id, addr, task)
+    }
+
+    async fn build_local_dht_server() -> libp2p::Swarm<kad::Behaviour<MemoryStore>> {
+        SwarmBuilder::with_new_identity()
+            .with_tokio()
+            .with_tcp(
+                tcp::Config::default(),
+                (tls::Config::new, noise::Config::new),
+                yamux::Config::default,
+            )
+            .unwrap()
+            .with_behaviour(|key| {
+                let peer_id = key.public().to_peer_id();
+                let store = MemoryStore::new(peer_id);
+                let mut config = kad::Config::new(kad::PROTOCOL_NAME);
+                config.set_query_timeout(Duration::from_secs(5));
+                config.set_periodic_bootstrap_interval(None);
+                let mut behaviour = kad::Behaviour::with_config(peer_id, store, config);
+                behaviour.set_mode(Some(kad::Mode::Server));
+                behaviour
+            })
+            .unwrap()
+            .build()
     }
 }

@@ -25,6 +25,7 @@ Early implementation. Current code supports:
 - short-lived in-memory DNSLink/IPNS name-resolution cache,
 - delegated routing provider lookup,
 - client-mode light DHT provider/IPNS lookup fallback with configurable provider fanout,
+- deterministic in-process light-DHT provider lookup test coverage,
 - CLI/mobile knobs for DHT query timeout and provider fanout,
 - short-lived multihash-keyed provider-result cache and bad-provider suppression,
 - explicit HTTP timeouts for delegated routing, DNSLink/IPNS, and provider block requests,

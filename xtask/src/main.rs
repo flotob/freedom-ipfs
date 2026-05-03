@@ -5,6 +5,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -386,6 +388,254 @@ enum FreedomIpfsSmoke {{
             .args(["simctl", "spawn", "booted"])
             .arg(&executable),
         "simctl simulator gateway smoke",
+    )?;
+
+    verify_swift_simulator_app_smoke(
+        &verify_dir,
+        &headers_dir,
+        slice_dir,
+        sdk_path.trim(),
+        target,
+    )
+}
+
+fn verify_swift_simulator_app_smoke(
+    verify_dir: &Path,
+    headers_dir: &Path,
+    slice_dir: &Path,
+    sdk_path: &str,
+    target: &str,
+) -> Result<()> {
+    let bundle_id = "xyz.floto.freedom-ipfs.AppSmoke";
+    let app_dir = verify_dir.join("FreedomIpfsAppSmoke.app");
+    if app_dir.exists() {
+        fs::remove_dir_all(&app_dir).context("remove previous simulator app smoke bundle")?;
+    }
+    fs::create_dir_all(&app_dir).context("create simulator app smoke bundle")?;
+
+    let html = br#"<!doctype html><html><head><meta charset="utf-8"><title>Freedom IPFS Smoke</title></head><body><main id="freedom-ipfs-smoke">Freedom IPFS App Smoke</main></body></html>"#;
+    let cid = cid_from_data(CODEC_RAW, html);
+    let car = encode_car_v1(&[CarBlock {
+        cid,
+        data: html.to_vec(),
+    }]);
+    let marker_name = "freedom-ipfs-app-smoke.ok";
+    let app_source = format!(
+        r#"import Darwin
+import Foundation
+import UIKit
+import WebKit
+import FreedomIpfs
+
+@main
+final class AppDelegate: UIResponder, UIApplicationDelegate {{
+    var window: UIWindow?
+
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+    ) -> Bool {{
+        let window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = SmokeViewController()
+        window.makeKeyAndVisible()
+        self.window = window
+        return true
+    }}
+}}
+
+final class SmokeViewController: UIViewController, WKNavigationDelegate {{
+    private let webView = WKWebView(frame: .zero)
+    private var reader: FreedomIpfsReader?
+
+    override func viewDidLoad() {{
+        super.viewDidLoad()
+        webView.navigationDelegate = self
+        webView.frame = view.bounds
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(webView)
+
+        Task {{
+            do {{
+                let reader = try FreedomIpfsReader()
+                self.reader = reader
+                try reader.importCar(Data([{car}]))
+                try reader.startGateway()
+                guard let url = reader.localGatewayURL(for: "/ipfs/{cid}") else {{
+                    throw SmokeError("fixture gateway URL missing")
+                }}
+                let (data, response) = try await URLSession.shared.data(from: url)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else {{
+                    throw SmokeError("fixture request failed")
+                }}
+                guard let html = String(data: data, encoding: .utf8),
+                      html.contains("Freedom IPFS App Smoke") else {{
+                    throw SmokeError("fixture body mismatch")
+                }}
+                webView.loadHTMLString(html, baseURL: reader.gatewayURL)
+            }} catch {{
+                finish("failed: \(error)")
+            }}
+        }}
+    }}
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {{
+        webView.evaluateJavaScript("document.getElementById('freedom-ipfs-smoke')?.textContent") {{ result, error in
+            if let error {{
+                self.finish("failed: \(error)")
+                return
+            }}
+            guard (result as? String) == "Freedom IPFS App Smoke" else {{
+                self.finish("failed: rendered marker missing")
+                return
+            }}
+            self.finish("ok")
+        }}
+    }}
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {{
+        finish("failed: \(error)")
+    }}
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {{
+        finish("failed: \(error)")
+    }}
+
+    private func finish(_ message: String) {{
+        if let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {{
+            let marker = documents.appendingPathComponent("{marker_name}")
+            try? Data(message.utf8).write(to: marker)
+        }}
+        _ = reader?.stopGateway()
+        exit(message == "ok" ? 0 : 1)
+    }}
+}}
+
+struct SmokeError: Error, CustomStringConvertible {{
+    let description: String
+
+    init(_ description: String) {{
+        self.description = description
+    }}
+}}
+"#,
+        car = format_swift_byte_array(&car),
+        cid = cid,
+        marker_name = marker_name
+    );
+    let app_source_path = verify_dir.join("FreedomIpfsAppSmoke.swift");
+    fs::write(&app_source_path, app_source).context("write Swift simulator app smoke source")?;
+
+    let info_plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>FreedomIpfsAppSmoke</string>
+    <key>CFBundleIdentifier</key>
+    <string>{bundle_id}</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>FreedomIpfsAppSmoke</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
+    <key>UIDeviceFamily</key>
+    <array>
+        <integer>1</integer>
+    </array>
+</dict>
+</plist>
+"#
+    );
+    fs::write(app_dir.join("Info.plist"), info_plist).context("write app smoke Info.plist")?;
+
+    run(
+        Command::new("xcrun")
+            .args(["--sdk", "iphonesimulator", "swiftc"])
+            .arg("-target")
+            .arg(target)
+            .arg("-sdk")
+            .arg(sdk_path)
+            .arg("-I")
+            .arg(headers_dir)
+            .arg("-L")
+            .arg(slice_dir)
+            .arg("-l")
+            .arg("freedom_ipfs_mobile")
+            .arg("-framework")
+            .arg("SystemConfiguration")
+            .arg("-framework")
+            .arg("UIKit")
+            .arg("-framework")
+            .arg("WebKit")
+            .arg("ffi/swift/FreedomIpfsReader.swift")
+            .arg(&app_source_path)
+            .arg("-o")
+            .arg(app_dir.join("FreedomIpfsAppSmoke")),
+        "swiftc simulator app smoke",
+    )?;
+    run(
+        Command::new("codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&app_dir),
+        "codesign simulator app smoke",
+    )?;
+    let _ = Command::new("xcrun")
+        .args(["simctl", "uninstall", "booted", bundle_id])
+        .status();
+    run(
+        Command::new("xcrun")
+            .args(["simctl", "install", "booted"])
+            .arg(&app_dir),
+        "install simulator app smoke",
+    )?;
+    let app_container = command_stdout(
+        Command::new("xcrun").args(["simctl", "get_app_container", "booted", bundle_id, "data"]),
+        "get simulator app smoke container",
+    )?;
+    let marker = Path::new(app_container.trim())
+        .join("Documents")
+        .join(marker_name);
+    if marker.exists() {
+        fs::remove_file(&marker).with_context(|| format!("remove {}", marker.display()))?;
+    }
+    run(
+        Command::new("xcrun").args(["simctl", "launch", "--console", "booted", bundle_id]),
+        "launch simulator app smoke",
+    )?;
+    wait_for_app_smoke_marker(&marker)
+}
+
+fn wait_for_app_smoke_marker(marker: &Path) -> Result<()> {
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(60) {
+        if marker.exists() {
+            let contents =
+                fs::read_to_string(marker).with_context(|| format!("read {}", marker.display()))?;
+            if contents.trim() == "ok" {
+                return Ok(());
+            }
+            bail!("simulator app smoke failed: {}", contents.trim());
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    bail!(
+        "simulator app smoke did not write {} within 60 seconds",
+        marker.display()
     )
 }
 

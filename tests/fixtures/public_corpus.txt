@@ -10,3 +10,7 @@ daicowtf-home /ipfs/bafybeidznfolm74c5cephzdycedx7hk76iawno45wemcvkflieotzo2lne 
 # site roots if they become flaky because public providers disappear.
 ipfs-tech-developers-hero /ipns/ipfs.tech/_nuxt/developers-hero.BRuJDQyf.jpg 10000 128
 ipfs-tech-ribbon-community-7 /ipns/ipfs.tech/_nuxt/ribbon-community-7.BM6mrSZz.jpg 10000 128
+ipfs-tech-ribbon-community-8 /ipns/ipfs.tech/_nuxt/ribbon-community-8.kKCRQ1KB.jpg 10000 128
+ipfs-tech-ribbon-home-1 /ipns/ipfs.tech/_nuxt/ribbon-home-1.Db3iUyss.jpg 10000 128
+ipfs-tech-ribbon-home-2 /ipns/ipfs.tech/_nuxt/ribbon-home-2.xhPE7YJm.jpg 10000 128
+ipfs-tech-ribbon-home-3 /ipns/ipfs.tech/_nuxt/ribbon-home-3.CsPAOEU8.jpg 10000 128

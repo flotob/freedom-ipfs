@@ -56,13 +56,17 @@ Results:
     - Per-target diagnostics: `retrieval_delta=cache_hits=20,http_provider_blocks=0,bitswap_blocks=3`; `routing_delta=delegated_lookups=3,delegated_results=5,delegated_errors=0,dht_lookups=0,dht_results=0,dht_errors=0`.
   - Retrieval stats: `cache_hits=25 http_provider_blocks=2 bitswap_blocks=3`.
   - Routing provider stats: `delegated_lookups=5 delegated_results=47 delegated_errors=0 dht_lookups=0 dht_results=0 dht_errors=0`.
-- Public corpus smoke passed for the checked-in `vitalik-home`, `daicowtf-home`, `ipfs-tech-developers-hero`, and `ipfs-tech-ribbon-community-7` entries, including a `bytes=0-127` range request for each entry:
+- Public corpus smoke passed for the checked-in `vitalik-home`, `daicowtf-home`, `ipfs-tech-developers-hero`, `ipfs-tech-ribbon-community-7`, `ipfs-tech-ribbon-community-8`, `ipfs-tech-ribbon-home-1`, `ipfs-tech-ribbon-home-2`, and `ipfs-tech-ribbon-home-3` entries, including a `bytes=0-127` range request for each entry:
   - `vitalik-home` returned `38394` bytes.
   - `daicowtf-home` returned `403507` bytes.
   - `ipfs-tech-developers-hero` returned `184141` bytes from `/ipns/ipfs.tech/_nuxt/developers-hero.BRuJDQyf.jpg`.
   - `ipfs-tech-ribbon-community-7` returned `100287` bytes from `/ipns/ipfs.tech/_nuxt/ribbon-community-7.BM6mrSZz.jpg`.
+  - `ipfs-tech-ribbon-community-8` returned `58701` bytes from `/ipns/ipfs.tech/_nuxt/ribbon-community-8.kKCRQ1KB.jpg`.
+  - `ipfs-tech-ribbon-home-1` returned `62518` bytes from `/ipns/ipfs.tech/_nuxt/ribbon-home-1.Db3iUyss.jpg`.
+  - `ipfs-tech-ribbon-home-2` returned `120227` bytes from `/ipns/ipfs.tech/_nuxt/ribbon-home-2.xhPE7YJm.jpg`.
+  - `ipfs-tech-ribbon-home-3` returned `75458` bytes from `/ipns/ipfs.tech/_nuxt/ribbon-home-3.CsPAOEU8.jpg`.
   - Each range response returned `128` bytes, matched the full response prefix, and included a valid `Content-Range` header.
-  - Retrieval stats: `cache_hits=77 http_provider_blocks=4 bitswap_blocks=5`.
+  - Retrieval stats: `cache_hits=145 http_provider_blocks=8 bitswap_blocks=5`.
 - The opt-in live harnesses retry transient local-gateway `408`, `502`, `503`, and `504` responses up to five times with backoff so temporary public-network provider timeouts do not fail the first attempt when later attempts succeed.
 - Kubo parity passed for generated CIDv1/raw-leaf UnixFS site files, CIDv0/DAG-PB UnixFS site files, empty files, percent-encoded browser paths, directory-index fallback, fixed/open-ended/suffix range reads, full/ranged `HEAD` requests, and HAMT directories.
 - Local cached-gateway soak passed: `500` requests, Linux RSS from `8960` KiB to `13312` KiB.
@@ -127,7 +131,7 @@ Results:
 | Device/app verification runbook | `docs/ios-device-verification.md` defines app wiring, real-device matrix, Bee co-residency runs, live content cases, range checks, lifecycle checks, and acceptance targets. | Done; evidence still missing |
 | Browser integration helpers | Local gateway URL, `ipfs://`/`ipns://`/gateway-style URL mapping helpers, preload/cancel with path/URI/bare-CID normalization, cache stats/control, retrieval/routing counters, combined diagnostics snapshot, and active preload count. | Swift compile/link and generated `WKWebView` app smoke verified in simulator; Freedom app integration unverified |
 | Live ENS-backed smoke | `make live-smoke` resolves `vitalik.eth` and `daicowtf.eth` at runtime, mounts the online IPNS/DNSLink resolver, fetches through the local gateway, and prints per-target retrieval/routing deltas that distinguish cache, HTTP-provider blocks, Bitswap blocks, delegated provider lookups, and light-DHT fallback. | Done on Linux |
-| Public IPFS/IPNS corpus | Checked-in opt-in corpus covers the ENS-derived immutable `/ipfs` paths plus DNSLink-backed `/ipns` media paths for multiple larger `ipfs.tech` assets; `make live-corpus` passed with full-response and `bytes=0-127` range checks. Mutable `/ipns/ipfs.tech`, `/ipns/dist.ipfs.tech`, and `/ipns/cid.ipfs.tech` roots were retired from the default corpus after repeated public-provider `502` failures. | Expanded; should still grow with more media cases |
+| Public IPFS/IPNS corpus | Checked-in opt-in corpus covers the ENS-derived immutable `/ipfs` paths plus DNSLink-backed `/ipns` media paths for six larger `ipfs.tech` assets; `make live-corpus` passed with full-response and `bytes=0-127` range checks. Mutable `/ipns/ipfs.tech`, `/ipns/dist.ipfs.tech`, and `/ipns/cid.ipfs.tech` roots were retired from the default corpus after repeated public-provider `502` failures. | Expanded; should still diversify beyond one DNSLink site |
 | Kubo parity | Deterministic Kubo-generated CIDv1/raw-leaf UnixFS, CIDv0/DAG-PB UnixFS, empty-file, encoded-path, HAMT, fixed/open-ended/suffix range, full/ranged `HEAD`, and directory-index parity tests. | Expanded |
 | Long-running soak | Local cached-gateway RSS soak and host live-retrieval RSS soak exist and pass. | Host-side coverage improved; device soak missing |
 | Security parser/network limits | Tests cover oversized/malformed routing, traversal, invalid blocks, redirects, IPNS tamper/expiry, recursion, provider fanout. | Good MVP coverage |
@@ -136,7 +140,7 @@ Results:
 
 1. Integrate the Swift wrapper into the Freedom iOS app and wire background/foreground, low-memory, and network-path events using `docs/ios-device-verification.md`.
 2. Profile real devices with Bee running beside this node and record RSS, CPU, startup, active retrieval, and idle network behavior in the runbook evidence table.
-3. Expand the public corpus with more larger media cases and documented pass/fail notes.
+3. Diversify the public corpus beyond the ENS-derived paths and `ipfs.tech` DNSLink media cases.
 4. Find or control a stable public-DHT provider target for `FREEDOM_IPFS_LIVE_DHT_CID`.
 5. Add device soaks for live retrieval, background/foreground, and memory growth.
 

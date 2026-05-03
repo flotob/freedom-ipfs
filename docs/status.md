@@ -78,9 +78,13 @@ Observed live-corpus result:
 - `daicowtf-home` fetched `/ipfs/bafybeidznfolm74c5cephzdycedx7hk76iawno45wemcvkflieotzo2lne`
 - `ipfs-tech-developers-hero` fetched `/ipns/ipfs.tech/_nuxt/developers-hero.BRuJDQyf.jpg`
 - `ipfs-tech-ribbon-community-7` fetched `/ipns/ipfs.tech/_nuxt/ribbon-community-7.BM6mrSZz.jpg`
-- byte counts were `38394`, `403507`, `184141`, and `100287`
+- `ipfs-tech-ribbon-community-8` fetched `/ipns/ipfs.tech/_nuxt/ribbon-community-8.kKCRQ1KB.jpg`
+- `ipfs-tech-ribbon-home-1` fetched `/ipns/ipfs.tech/_nuxt/ribbon-home-1.Db3iUyss.jpg`
+- `ipfs-tech-ribbon-home-2` fetched `/ipns/ipfs.tech/_nuxt/ribbon-home-2.xhPE7YJm.jpg`
+- `ipfs-tech-ribbon-home-3` fetched `/ipns/ipfs.tech/_nuxt/ribbon-home-3.CsPAOEU8.jpg`
+- byte counts were `38394`, `403507`, `184141`, `100287`, `58701`, `62518`, `120227`, and `75458`
 - each entry also passed a `bytes=0-127` request through the local gateway; each returned `128` bytes, matched the full response prefix, and included a valid `Content-Range` header
-- retrieval stats were `cache_hits=77 http_provider_blocks=4 bitswap_blocks=5`
+- retrieval stats were `cache_hits=145 http_provider_blocks=8 bitswap_blocks=5`
 - transient local-gateway `408`, `502`, `503`, and `504` responses are retried up to five times with backoff in opt-in live harnesses before failing a corpus, smoke, or soak run.
 
 Observed local-soak result:
@@ -131,7 +135,7 @@ M8 mobile resource hardening: partially complete. Bounded in-memory hot block ca
 
 M9 browser integration: partially complete. The local gateway path, mobile ABI, Swift wrapper source, loopback bind enforcement for mobile gateway start/restart, gateway URL mapping helpers for `ipfs://`, `ipns://`, `/ipfs`, and `/ipns` addresses, browser-facing HTML error pages, preload normalization for path/URI/bare-CID inputs, Swift-visible retrieval/routing counters, combined diagnostics snapshot, active preload count, routing-mode restart helpers, lifecycle hooks, and preload/cancel controls exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. The live smoke now prints per-target retrieval and routing deltas that distinguish cache hits, HTTP-provider blocks, Bitswap blocks, delegated provider lookup, and light-DHT fallback. The live smoke and corpus harnesses mount the online IPNS/DNSLink resolver for `/ipns` paths and retry transient local-gateway timeout/service-unavailable statuses. Swift wrapper compilation/linking and generated `WKWebView` app rendering are verified by the GitHub Actions simulator smoke; integration into the Freedom browser app is not verified yet.
 
-M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, no-listener libp2p client swarm tests, Kubo RPC/WebUI route absence tests, Kubo-generated CIDv1/raw-leaf UnixFS, CIDv0/DAG-PB UnixFS, empty-file, encoded-path, HAMT, fixed/open-ended/suffix range, full/ranged `HEAD`, and directory-index parity smokes, live ENS smoke with per-target transport/routing diagnostics, a checked-in public corpus covering immutable `/ipfs` and DNSLink-backed `/ipns` media paths with live byte-range checks, multiple larger media assets, and transient-status retries, a local cached-gateway RSS soak, and a host live-retrieval RSS soak exist, but more media public corpus cases, broader Kubo parity matrix, and device network soaks remain follow-up work.
+M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, no-listener libp2p client swarm tests, Kubo RPC/WebUI route absence tests, Kubo-generated CIDv1/raw-leaf UnixFS, CIDv0/DAG-PB UnixFS, empty-file, encoded-path, HAMT, fixed/open-ended/suffix range, full/ranged `HEAD`, and directory-index parity smokes, live ENS smoke with per-target transport/routing diagnostics, a checked-in public corpus covering immutable `/ipfs` and six DNSLink-backed `/ipns` media paths with live byte-range checks, multiple larger media assets, and transient-status retries, a local cached-gateway RSS soak, and a host live-retrieval RSS soak exist, but broader Kubo parity matrix and device network soaks remain follow-up work.
 
 M11 optional features: not started except CAR export/import support, which was promoted into the MVP diagnostics/cache path.
 
@@ -142,6 +146,6 @@ M11 optional features: not started except CAR export/import support, which was p
 - DHT-only retrieval of `daicowtf.eth` is not reliable on the public DHT; current auto mode succeeds because delegated routing returns usable providers.
 - The public Amino DHT smoke has no stable default CID yet; set `FREEDOM_IPFS_LIVE_DHT_CID` to a known-good advertised CID before using it as live evidence.
 - DNSLink still defaults to Cloudflare DoH, with TTL-aware caching. Native/system TXT lookup should be evaluated for artifact size and iOS behavior.
-- The checked-in public corpus is still intentionally small; it needs more larger media and documented pass/fail cases.
+- The checked-in public corpus is expanded but still not exhaustive; more independent sites/media and documented pass/fail cases would improve confidence.
 - The soak coverage is still host-side only; iOS device memory-growth and network soaks are still missing.
 - Kubo parity now covers CIDv1/raw-leaf UnixFS, CIDv0/DAG-PB UnixFS, empty files, percent-encoded browser paths, HAMT, fixed/open-ended/suffix range, full/ranged `HEAD`, and directory-index behavior, but still not a broad matrix for every supported gateway edge case.

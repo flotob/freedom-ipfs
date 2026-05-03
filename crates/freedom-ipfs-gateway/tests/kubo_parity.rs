@@ -116,6 +116,41 @@ async fn kubo_generated_unixfs_site_matches_local_gateway_bytes() {
         b"encoded path fixture\n"
     );
 
+    let listing_url = format!("http://{addr}/ipfs/{root}/assets");
+    let response = reqwest::get(&listing_url).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(CONTENT_TYPE).unwrap(),
+        HeaderValue::from_static("text/html; charset=utf-8")
+    );
+    let body = response.text().await.unwrap();
+    assert!(body.contains(&format!("Index of /ipfs/{root}/assets")));
+    assert!(body.contains(&format!(r#"href="/ipfs/{root}/assets/blob.bin""#)));
+    assert!(body.contains(&format!(r#"href="/ipfs/{root}/assets/empty.txt""#)));
+    assert!(body.contains(&format!(
+        r#"href="/ipfs/{root}/assets/space%20name%20%231.txt""#
+    )));
+
+    let response = reqwest::Client::new()
+        .head(&listing_url)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(CONTENT_TYPE).unwrap(),
+        HeaderValue::from_static("text/html; charset=utf-8")
+    );
+    assert!(response.bytes().await.unwrap().is_empty());
+
+    let response = reqwest::Client::new()
+        .get(&listing_url)
+        .header(RANGE, "bytes=0-127")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
     let range_start = 123_456usize;
     let range_end = 124_567usize;
     let range_len = range_end - range_start + 1;
@@ -310,6 +345,27 @@ async fn kubo_generated_cidv0_dagpb_site_matches_local_gateway_bytes() {
         );
     }
 
+    let listing_url = format!("http://{addr}/ipfs/{root}/docs");
+    let response = reqwest::get(&listing_url).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(CONTENT_TYPE).unwrap(),
+        HeaderValue::from_static("text/html; charset=utf-8")
+    );
+    let body = response.text().await.unwrap();
+    assert!(body.contains(&format!("Index of /ipfs/{root}/docs")));
+    assert!(body.contains(&format!(r#"href="/ipfs/{root}/docs/blob.bin""#)));
+    assert!(body.contains(&format!(r#"href="/ipfs/{root}/docs/empty.txt""#)));
+    assert!(body.contains(&format!(r#"href="/ipfs/{root}/docs/readme.txt""#)));
+
+    let response = reqwest::Client::new()
+        .get(&listing_url)
+        .header(RANGE, "bytes=0-127")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
     let range_start = 321_000usize;
     let range_end = 322_222usize;
     let url = format!("http://{addr}/ipfs/{root}/docs/blob.bin");
@@ -391,6 +447,39 @@ async fn kubo_generated_hamt_directory_matches_local_gateway_bytes() {
             expected.as_slice()
         );
     }
+
+    let listing_url = format!("http://{addr}/ipfs/{root}");
+    let response = reqwest::get(&listing_url).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(CONTENT_TYPE).unwrap(),
+        HeaderValue::from_static("text/html; charset=utf-8")
+    );
+    let body = response.text().await.unwrap();
+    assert!(body.contains(&format!("Index of /ipfs/{root}")));
+    for path in ["file-00.txt", "file-17.txt", "file-63.txt"] {
+        assert!(body.contains(&format!(r#"href="/ipfs/{root}/{path}""#)));
+    }
+
+    let response = reqwest::Client::new()
+        .head(&listing_url)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(CONTENT_TYPE).unwrap(),
+        HeaderValue::from_static("text/html; charset=utf-8")
+    );
+    assert!(response.bytes().await.unwrap().is_empty());
+
+    let response = reqwest::Client::new()
+        .get(&listing_url)
+        .header(RANGE, "bytes=0-127")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 fn kubo_ok<I, S>(kubo: &str, repo: &Path, args: I)

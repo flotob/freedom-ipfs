@@ -57,7 +57,7 @@ Early implementation. Current code supports:
 - browser-facing HTML gateway error pages with escaped details and stable HTTP status codes,
 - explicit test coverage that Kubo RPC/WebUI paths such as `/api/v0/version`
   and `/webui` are not exposed,
-- Kubo-generated CAR parity smoke for UnixFS files/directories, empty files, percent-encoded browser paths, byte ranges, `HEAD` requests, and HAMT directories when `KUBO_BIN` is available,
+- Kubo-generated CAR parity smoke for UnixFS files/directories, no-index directory listings, empty files, percent-encoded browser paths, byte ranges, `HEAD` requests, and HAMT directories when `KUBO_BIN` is available,
 - opt-in public corpus smoke that fetches documented `/ipfs` and DNSLink-backed `/ipns` paths and byte ranges through the local gateway,
 - five-attempt opt-in live harness retries with backoff for transient local-gateway `408`/`502`/`503`/`504` responses caused by public-network provider timeouts,
 - opt-in local gateway soak that repeats cached reads and checks bounded RSS growth on Linux,

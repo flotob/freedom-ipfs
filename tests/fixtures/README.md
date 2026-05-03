@@ -10,9 +10,10 @@ Offline tests currently generate minimal fixtures in Rust so they remain reprodu
 - Kubo-generated UnixFS directory and HAMT directory CAR parity smokes via
   `make kubo-parity` when `KUBO_BIN` points at an `ipfs` binary, including
   empty files, percent-encoded browser paths, and fixed/open-ended/suffix byte
-  ranges, plus full and ranged `HEAD` requests.
+  ranges, no-index directory listings, HAMT directory listings, plus full and
+  ranged `HEAD` requests.
 - Kubo-generated CIDv0 DAG-PB UnixFS CAR parity smoke via `make kubo-parity`
-  to cover non-raw-leaf legacy gateway content.
+  to cover non-raw-leaf legacy gateway content and no-index directory listings.
 - Opt-in public corpus smoke via `make live-corpus`, using immutable `/ipfs`
   paths and DNSLink-backed `/ipns` paths listed in `public_corpus.txt` through
   the local Rust gateway/retrieval path. Entries may include an optional range

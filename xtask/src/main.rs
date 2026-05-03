@@ -394,6 +394,42 @@ enum FreedomIpfsSmoke {{
               !diagnostics.isBackgrounded else {{
             fatalError("unexpected diagnostics snapshot: \(diagnostics)")
         }}
+        guard reader.enterBackground(),
+              reader.diagnostics.isBackgrounded else {{
+            fatalError("background lifecycle hook did not update diagnostics")
+        }}
+        guard reader.enterForeground(),
+              !reader.diagnostics.isBackgrounded else {{
+            fatalError("foreground lifecycle hook did not update diagnostics")
+        }}
+        guard reader.handleLowMemory(maxCacheBytes: 1024 * 1024) else {{
+            fatalError("low-memory hook failed")
+        }}
+        guard reader.handleNetworkChange() else {{
+            fatalError("network-change hook failed")
+        }}
+        try reader.setRoutingMode(
+            .delegated,
+            delegatedRouters: ["http://127.0.0.1:9/routing/v1"],
+            maxConcurrentRequests: 1
+        )
+        guard reader.gatewayURL != nil,
+              reader.diagnostics.isGatewayRunning,
+              reader.activePreloadCount == 0 else {{
+            fatalError("routing restart did not leave the gateway running")
+        }}
+        guard let restartedURL = reader.localGatewayURL(for: "/ipfs/{fixture_cid}") else {{
+            fatalError("restarted fixture gateway URL missing")
+        }}
+        let (restartedData, restartedResponse) = try await URLSession.shared.data(from: restartedURL)
+        guard (restartedResponse as? HTTPURLResponse)?.statusCode == 200,
+              restartedData == Data([{fixture_body}]) else {{
+            fatalError("fixture request after routing restart failed")
+        }}
+        guard reader.diagnostics.activePreloadCount == 0,
+              !reader.diagnostics.isBackgrounded else {{
+            fatalError("unexpected diagnostics after routing restart: \(reader.diagnostics)")
+        }}
         _ = reader.stopGateway()
     }}
 }}
@@ -507,6 +543,24 @@ final class SmokeViewController: UIViewController, WKNavigationDelegate {{
                 self.reader = reader
                 try reader.importCar(Data([{car}]))
                 try reader.startGateway()
+                guard reader.diagnostics.isGatewayRunning,
+                      !reader.diagnostics.isBackgrounded else {{
+                    throw SmokeError("unexpected initial app diagnostics")
+                }}
+                guard reader.enterBackground(),
+                      reader.diagnostics.isBackgrounded else {{
+                    throw SmokeError("background lifecycle hook failed")
+                }}
+                guard reader.enterForeground(),
+                      !reader.diagnostics.isBackgrounded else {{
+                    throw SmokeError("foreground lifecycle hook failed")
+                }}
+                guard reader.handleLowMemory(maxCacheBytes: 1024 * 1024) else {{
+                    throw SmokeError("low-memory hook failed")
+                }}
+                guard reader.handleNetworkChange() else {{
+                    throw SmokeError("network-change hook failed")
+                }}
                 guard let url = reader.localGatewayURL(for: "/ipfs/{cid}") else {{
                     throw SmokeError("fixture gateway URL missing")
                 }}

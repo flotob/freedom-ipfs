@@ -113,7 +113,7 @@ impl SqliteBlockStore {
 
     pub fn put_block(&self, cid: &Cid, data: &[u8]) -> Result<()> {
         verify_block(cid, data)?;
-        let cid_bytes = cid.to_bytes();
+        let cid_bytes = block_key(cid);
         let now = now_secs();
         self.conn.lock().execute(
             r#"
@@ -147,7 +147,7 @@ impl SqliteBlockStore {
     }
 
     pub fn get(&self, cid: &Cid) -> Result<Option<Block>> {
-        let cid_bytes = cid.to_bytes();
+        let cid_bytes = block_key(cid);
         if let Some(data) = self.hot.lock().get(&cid_bytes) {
             verify_block(cid, &data)?;
             self.touch(cid)?;
@@ -332,7 +332,7 @@ impl SqliteBlockStore {
     fn touch(&self, cid: &Cid) -> Result<()> {
         self.conn.lock().execute(
             "UPDATE blocks SET last_accessed_at = ?1 WHERE cid = ?2",
-            params![now_secs() as i64, cid.to_bytes()],
+            params![now_secs() as i64, block_key(cid)],
         )?;
         Ok(())
     }
@@ -419,12 +419,12 @@ impl BlockProvider for SqliteBlockStore {
     }
 
     fn retain_block(&self, cid: &Cid) -> CoreResult<()> {
-        self.retain_cid_bytes(cid.to_bytes());
+        self.retain_cid_bytes(block_key(cid));
         Ok(())
     }
 
     fn release_block(&self, cid: &Cid) {
-        self.release_cid_bytes(&cid.to_bytes());
+        self.release_cid_bytes(&block_key(cid));
     }
 }
 
@@ -437,6 +437,10 @@ fn now_secs() -> u64 {
 
 fn provider_cache_key(cid: &Cid) -> Vec<u8> {
     cid.hash().to_bytes()
+}
+
+fn block_key(cid: &Cid) -> Vec<u8> {
+    Cid::new_v1(cid.codec(), *cid.hash()).to_bytes()
 }
 
 fn hot_cache_bytes(max_bytes: u64) -> u64 {
@@ -522,7 +526,7 @@ impl HotCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use freedom_ipfs_core::{cid_from_data, CODEC_RAW};
+    use freedom_ipfs_core::{cid_from_data, CODEC_DAG_PB, CODEC_RAW};
 
     #[test]
     fn stores_and_verifies_blocks() {
@@ -535,6 +539,45 @@ mod tests {
         assert_eq!(block.data(), data);
         assert_eq!(block.cid(), &cid);
         assert_eq!(store.block_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn dag_pb_blocks_are_addressable_by_cidv0_and_cidv1() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let data = b"dag-pb alias block";
+        let cidv1 = cid_from_data(CODEC_DAG_PB, data);
+        let cidv0 = Cid::new_v0(*cidv1.hash()).unwrap();
+
+        store.put_block(&cidv0, data).unwrap();
+
+        assert_eq!(store.get(&cidv0).unwrap().unwrap().data(), data);
+        let block = store.get(&cidv1).unwrap().unwrap();
+        assert_eq!(block.cid(), &cidv1);
+        assert_eq!(block.data(), data);
+        assert_eq!(store.block_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn cidv0_cidv1_aliases_share_retention_state() {
+        let store = SqliteBlockStore::in_memory(20).unwrap();
+        let first = vec![1u8; 16];
+        let second = vec![2u8; 16];
+        let first_cidv1 = cid_from_data(CODEC_DAG_PB, &first);
+        let first_cidv0 = Cid::new_v0(*first_cidv1.hash()).unwrap();
+        let second_cid = cid_from_data(CODEC_RAW, &second);
+
+        store.put_block(&first_cidv0, &first).unwrap();
+        store.retain_block(&first_cidv1).unwrap();
+        store.put_block(&second_cid, &second).unwrap();
+
+        assert_eq!(store.get(&first_cidv0).unwrap().unwrap().data(), first);
+        assert!(store.get(&second_cid).unwrap().is_none());
+
+        store.release_block(&first_cidv1);
+        store.put_block(&second_cid, &second).unwrap();
+
+        assert!(store.get(&first_cidv0).unwrap().is_none());
+        assert_eq!(store.get(&second_cid).unwrap().unwrap().data(), second);
     }
 
     #[test]

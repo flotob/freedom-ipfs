@@ -61,6 +61,7 @@ Early implementation. Current code supports:
 - mobile gateway start/restart rejects non-loopback bind addresses so the iOS
   data plane stays local-only,
 - bounded 16 MiB in-memory hot block cache in front of the SQLite cache,
+- CIDv0/CIDv1 DAG-PB aliases share block-cache and stream-retention state,
 - CAR import/export for tests, diagnostics, and cache warmup,
 - mobile lifecycle hooks for background/foreground, low-memory cache trimming, and network-change provider cache hygiene,
 - an iOS staticlib/XCFramework build skeleton with staged C headers/module map, exported-symbol verification, a simulator Swift gateway smoke, a generated UIKit/WebKit app-rendering smoke in the verifier, and a Swift wrapper for persistent-cache node creation, cache import/export, cache trimming, routing-mode selection and restart, multi-router configuration, local gateway URL mapping, lifecycle hooks, preload/cancel for `/ipfs`, `/ipns`, `ipfs://`, `ipns://`, and bare-CID inputs, and offline/online gateway start.

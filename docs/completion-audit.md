@@ -79,9 +79,9 @@ Results:
 | Dual MIT/Apache-2.0 licensing | `LICENSE-MIT`, `LICENSE-APACHE`, workspace license `MIT OR Apache-2.0`. | Done |
 | Rust workspace from scratch | Workspace crates exist for core, store, unixfs, namesys, routing, retrieval, gateway, mobile, and `xtask`. | Done |
 | Clean-room implementation discipline | No vendored IPFS implementation is present; existing projects are listed as mining targets in the spec. | Done |
-| CIDv0/CIDv1 parse/format | `freedom-ipfs-core` unit tests cover CID round-trip and verification. | Done |
+| CIDv0/CIDv1 parse/format | `freedom-ipfs-core` unit tests cover CID round-trip and verification; store tests cover equivalent CIDv0/CIDv1 DAG-PB cache lookup. | Done |
 | Block verification before cache/serve | Core verification, store verified insertion, retrieval invalid HTTP block rejection. | Done |
-| Bounded SQLite cache | `freedom-ipfs-store` implements SQLite cache, LRU eviction, active block retention during streaming, stats, clear, trim, provider and bad-provider caches. | Done |
+| Bounded SQLite cache | `freedom-ipfs-store` implements SQLite cache, LRU eviction, active block retention during streaming, CIDv0/CIDv1 DAG-PB alias keys, stats, clear, trim, provider and bad-provider caches. | Done |
 | Memory hot cache | Store has a bounded 16 MiB in-memory hot block cache in front of SQLite; tests cover clear/trim removing hot entries. | Done |
 | Default disk cache 256 MiB | CLI/mobile default to `256 * 1024 * 1024`. | Done |
 | CAR import/export for fixtures/cache warmup | Core CAR parse/encode and store import/export tests; CLI/mobile import/export APIs. | Done |

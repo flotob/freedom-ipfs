@@ -48,7 +48,7 @@ Early implementation. Current code supports:
 - full local-gateway responses streamed in bounded UnixFS chunks instead of one full-file buffer,
 - gateway rejection of `.`/`..` path traversal segments before UnixFS lookup,
 - Kubo-generated CAR parity smoke for UnixFS files/directories and HAMT directories when `KUBO_BIN` is available,
-- opt-in public CID corpus smoke that fetches documented immutable paths through the local gateway,
+- opt-in public corpus smoke that fetches documented `/ipfs` and DNSLink-backed `/ipns` paths through the local gateway,
 - opt-in local gateway soak that repeats cached reads and checks bounded RSS growth on Linux,
 - configurable local-gateway request concurrency limiting,
 - bounded 16 MiB in-memory hot block cache in front of the SQLite cache,
@@ -111,7 +111,7 @@ Live smoke test, intentionally ignored by default because it uses the public IPF
 make live-smoke
 ```
 
-Public CID corpus smoke, also ignored by default:
+Public corpus smoke, also ignored by default:
 
 ```bash
 make live-corpus

@@ -19,8 +19,8 @@ const DEFAULT_CORPUS: &str = include_str!("../../../tests/fixtures/public_corpus
 const REQUEST_ATTEMPTS: usize = 3;
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "network corpus smoke test against documented public CIDs"]
-async fn public_cid_corpus_fetches_through_local_gateway() {
+#[ignore = "network corpus smoke test against documented public /ipfs and /ipns paths"]
+async fn public_corpus_fetches_through_local_gateway() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init()
@@ -29,7 +29,7 @@ async fn public_cid_corpus_fetches_through_local_gateway() {
     let corpus =
         env::var("FREEDOM_IPFS_LIVE_CORPUS").unwrap_or_else(|_| DEFAULT_CORPUS.to_string());
     let entries = parse_corpus(&corpus);
-    assert!(!entries.is_empty(), "public CID corpus is empty");
+    assert!(!entries.is_empty(), "public corpus is empty");
 
     let router = env::var("FREEDOM_IPFS_DELEGATED_ROUTER")
         .unwrap_or_else(|_| DEFAULT_DELEGATED_ROUTER.to_string());

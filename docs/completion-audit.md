@@ -47,7 +47,13 @@ Results:
   - `vitalik.eth` resolved to `/ipfs/bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u`, returned `38394` bytes.
   - `daicowtf.eth` resolved to `/ipfs/bafybeidznfolm74c5cephzdycedx7hk76iawno45wemcvkflieotzo2lne`, returned `403507` bytes.
   - Retrieval stats: `cache_hits=25 http_provider_blocks=2 bitswap_blocks=3`.
-- Public corpus smoke passed for the checked-in `vitalik-home` and `daicowtf-home` entries with the same byte counts and retrieval stats.
+- Public corpus smoke passed for the checked-in `vitalik-home`, `daicowtf-home`, `ipfs-tech`, `dist-ipfs-tech`, and `cid-ipfs-tech` entries:
+  - `vitalik-home` returned `38394` bytes.
+  - `daicowtf-home` returned `403507` bytes.
+  - `ipfs-tech` returned `112239` bytes from `/ipns/ipfs.tech`.
+  - `dist-ipfs-tech` returned `38953` bytes from `/ipns/dist.ipfs.tech`.
+  - `cid-ipfs-tech` returned `24995` bytes from `/ipns/cid.ipfs.tech`.
+  - Retrieval stats: `cache_hits=43 http_provider_blocks=2 bitswap_blocks=9`.
 - Kubo parity passed for generated UnixFS site files, directory-index fallback, range reads, and HAMT directories.
 - Local cached-gateway soak passed: `500` requests, Linux RSS from `8960` KiB to `13312` KiB.
 - GitHub Actions `iOS XCFramework` passed on `macos-15` with Xcode 16.4. It built the real `FreedomIpfs.xcframework`, verified headers/module maps/exported C symbols, booted an iOS simulator, compiled and linked the Swift wrapper smoke, started the local gateway in the simulator via `simctl spawn booted`, fetched the CAR fixture through loopback, stopped the gateway, built and installed a generated UIKit/WebKit simulator app, imported the same CAR fixture, started the gateway from app process, fetched `/ipfs/{cid}` through loopback with `URLSession`, rendered the HTML in `WKWebView`, verified the DOM marker with JavaScript, and uploaded `FreedomIpfs.xcframework` as artifact ID `6767974097` (`59993954` bytes).
@@ -105,7 +111,7 @@ Results:
 | Lifecycle hooks | ABI/Swift hooks for background, foreground, low memory, network change; unit tests cover behavior. | Implemented; host-app/device wiring unverified |
 | Browser integration helpers | Local gateway URL, `ipfs://`/`ipns://`/gateway-style URL mapping helpers, preload/cancel with path/URI/bare-CID normalization, cache stats/control. | Swift compile/link and generated `WKWebView` app smoke verified in simulator; Freedom app integration unverified |
 | Live ENS-backed smoke | `make live-smoke` resolves `vitalik.eth` and `daicowtf.eth` at runtime, mounts the online IPNS/DNSLink resolver, and fetches through the local gateway. | Done on Linux |
-| Public CID corpus | Small checked-in corpus and opt-in smoke. | Started; should grow |
+| Public IPFS/IPNS corpus | Checked-in opt-in corpus covers the ENS-derived immutable `/ipfs` paths plus DNSLink-backed `/ipns` paths for `ipfs.tech`, `dist.ipfs.tech`, and `cid.ipfs.tech`; `make live-corpus` passed. | Expanded; should still grow with larger/range-media cases |
 | Kubo parity | Deterministic Kubo-generated UnixFS/HAMT/range/directory-index parity tests. | Started; should grow |
 | Long-running soak | Local cached-gateway RSS soak exists and passes. | Host-side only; device/network soak missing |
 | Security parser/network limits | Tests cover oversized/malformed routing, traversal, invalid blocks, redirects, IPNS tamper/expiry, recursion, provider fanout. | Good MVP coverage |
@@ -114,7 +120,7 @@ Results:
 
 1. Integrate the Swift wrapper into the Freedom iOS app and wire background/foreground, low-memory, and network-path events.
 2. Profile real devices with Bee running beside this node and record RSS, CPU, startup, active retrieval, and idle network behavior.
-3. Expand the public corpus with more stable IPFS/IPNS/DNSLink paths and larger/range-media cases.
+3. Expand the public corpus with larger/range-media cases and documented pass/fail notes.
 4. Add longer host and device soaks for live retrieval, not just cached local reads.
 
 ## Completion Rule

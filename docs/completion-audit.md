@@ -1,8 +1,11 @@
 # Completion Audit
 
-Last audited: 2026-05-03  
-Repository: `github.com/flotob/freedom-ipfs`  
-Implementation audited head: the commit containing this file version  
+Last audited: 2026-05-03
+
+Repository: `github.com/flotob/freedom-ipfs`
+
+Implementation audited head: current repository head; latest Apple-platform implementation/workflow CI evidence is recorded below by head SHA
+
 Spec: `/root/codex/mobile-rust-ipfs-node-spec.md`
 
 ## Verdict

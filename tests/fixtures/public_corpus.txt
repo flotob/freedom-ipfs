@@ -9,5 +9,6 @@ daicowtf-home /ipfs/bafybeidznfolm74c5cephzdycedx7hk76iawno45wemcvkflieotzo2lne 
 # retrieval through the local gateway. Exclude heavier domains here if they
 # make the opt-in smoke flaky.
 ipfs-tech /ipns/ipfs.tech 1024 128
+ipfs-tech-developers-hero /ipns/ipfs.tech/_nuxt/developers-hero.BRuJDQyf.jpg 10000 128
 dist-ipfs-tech /ipns/dist.ipfs.tech 1024 128
 cid-ipfs-tech /ipns/cid.ipfs.tech 1024 128

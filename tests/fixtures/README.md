@@ -31,8 +31,11 @@ Follow-up fixture work:
 Rejected public-corpus candidates:
 
 - 2026-05-03: `/ipns/ipfs.tech/_nuxt/community-hero.Cp0BCcC7.jpg`
-  resolved but returned `504 Gateway Timeout` through the local Rust gateway
-  after Bitswap retrieval timed out.
+  resolved but returned `502 Bad Gateway` through the local Rust gateway
+  after retries ended with no HTTP-capable providers.
+
+Previously rejected public-corpus candidates now accepted:
+
 - 2026-05-03: `/ipns/ipfs.tech/_nuxt/developers-hero.BRuJDQyf.jpg`
-  resolved but returned `504 Gateway Timeout` through the local Rust gateway
-  after Bitswap retrieval timed out.
+  passed after transient-status retry hardening and is now included in
+  `public_corpus.txt`.

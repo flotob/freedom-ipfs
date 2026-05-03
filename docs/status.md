@@ -77,11 +77,12 @@ Observed live-corpus result:
 - `vitalik-home` fetched `/ipfs/bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u`
 - `daicowtf-home` fetched `/ipfs/bafybeidznfolm74c5cephzdycedx7hk76iawno45wemcvkflieotzo2lne`
 - `ipfs-tech` fetched `/ipns/ipfs.tech`
+- `ipfs-tech-developers-hero` fetched `/ipns/ipfs.tech/_nuxt/developers-hero.BRuJDQyf.jpg`
 - `dist-ipfs-tech` fetched `/ipns/dist.ipfs.tech`
 - `cid-ipfs-tech` fetched `/ipns/cid.ipfs.tech`
-- byte counts were `38394`, `403507`, `112239`, `38953`, and `24995`
+- byte counts were `38394`, `403507`, `112239`, `184141`, `38953`, and `24995`
 - each entry also passed a `bytes=0-127` request through the local gateway; each returned `128` bytes, matched the full response prefix, and included a valid `Content-Range` header
-- retrieval stats were `cache_hits=90 http_provider_blocks=2 bitswap_blocks=9`
+- retrieval stats were `cache_hits=132 http_provider_blocks=3 bitswap_blocks=10`
 - transient local-gateway `408`, `502`, `503`, and `504` responses are retried in opt-in live harnesses before failing a corpus, smoke, or soak run.
 
 Observed local-soak result:
@@ -132,7 +133,7 @@ M8 mobile resource hardening: partially complete. Bounded in-memory hot block ca
 
 M9 browser integration: partially complete. The local gateway path, mobile ABI, Swift wrapper source, loopback bind enforcement for mobile gateway start/restart, gateway URL mapping helpers for `ipfs://`, `ipns://`, `/ipfs`, and `/ipns` addresses, browser-facing HTML error pages, preload normalization for path/URI/bare-CID inputs, routing-mode restart helpers, lifecycle hooks, and preload/cancel controls exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. The live smoke now prints per-target retrieval and routing deltas that distinguish cache hits, HTTP-provider blocks, Bitswap blocks, delegated provider lookup, and light-DHT fallback. The live smoke and corpus harnesses mount the online IPNS/DNSLink resolver for `/ipns` paths and retry transient local-gateway timeout/service-unavailable statuses. Swift wrapper compilation/linking and generated `WKWebView` app rendering are verified by the GitHub Actions simulator smoke; integration into the Freedom browser app is not verified yet.
 
-M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, no-listener libp2p client swarm tests, Kubo RPC/WebUI route absence tests, Kubo-generated UnixFS/HAMT/range parity smoke, live ENS smoke with per-target transport/routing diagnostics, a checked-in public corpus covering immutable `/ipfs` and DNSLink-backed `/ipns` paths with live byte-range checks and transient-status retries, a local cached-gateway RSS soak, and a host live-retrieval RSS soak exist, but larger media public corpus cases, broader Kubo parity matrix, and device network soaks remain follow-up work.
+M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, no-listener libp2p client swarm tests, Kubo RPC/WebUI route absence tests, Kubo-generated UnixFS/HAMT/range parity smoke, live ENS smoke with per-target transport/routing diagnostics, a checked-in public corpus covering immutable `/ipfs` and DNSLink-backed `/ipns` paths with live byte-range checks, one larger media asset, and transient-status retries, a local cached-gateway RSS soak, and a host live-retrieval RSS soak exist, but more media public corpus cases, broader Kubo parity matrix, and device network soaks remain follow-up work.
 
 M11 optional features: not started except CAR export/import support, which was promoted into the MVP diagnostics/cache path.
 
@@ -142,6 +143,6 @@ M11 optional features: not started except CAR export/import support, which was p
 - iOS lifecycle hooks exist at the ABI/Swift level, but actual host-app background/foreground, low-memory, and network-path event wiring is not verified on iOS.
 - DHT-only retrieval of `daicowtf.eth` is not reliable on the public DHT; current auto mode succeeds because delegated routing returns usable providers.
 - DNSLink still defaults to Cloudflare DoH, with TTL-aware caching. Native/system TXT lookup should be evaluated for artifact size and iOS behavior.
-- The checked-in public corpus is still intentionally small; it needs larger media and documented pass/fail cases.
+- The checked-in public corpus is still intentionally small; it needs more larger media and documented pass/fail cases.
 - The soak coverage is still host-side only; iOS device memory-growth and network soaks are still missing.
 - No broad Kubo parity matrix exists yet for deterministic cross-implementation gateway/routing regression coverage.

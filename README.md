@@ -50,6 +50,7 @@ Early implementation. Current code supports:
 - Kubo-generated CAR parity smoke for UnixFS files/directories and HAMT directories when `KUBO_BIN` is available,
 - opt-in public corpus smoke that fetches documented `/ipfs` and DNSLink-backed `/ipns` paths through the local gateway,
 - opt-in local gateway soak that repeats cached reads and checks bounded RSS growth on Linux,
+- opt-in live retrieval soak that repeats cold public-network gateway rounds and checks bounded RSS growth on Linux,
 - configurable local-gateway request concurrency limiting,
 - bounded 16 MiB in-memory hot block cache in front of the SQLite cache,
 - CAR import/export for tests, diagnostics, and cache warmup,
@@ -121,6 +122,12 @@ Local cached gateway soak:
 
 ```bash
 make local-soak
+```
+
+Live retrieval soak with cold gateway rounds:
+
+```bash
+make live-soak
 ```
 
 Light-DHT provider discovery smoke:

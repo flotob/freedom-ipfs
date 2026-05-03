@@ -46,6 +46,12 @@ Local cached-gateway soak passed:
 make local-soak
 ```
 
+Live retrieval soak passed:
+
+```bash
+make live-soak
+```
+
 iOS XCFramework CI passed:
 
 ```text
@@ -77,6 +83,13 @@ Observed local-soak result:
 
 - 500 cached local-gateway requests completed against an in-memory raw block.
 - Linux RSS moved from `8960` KiB to `13312` KiB, within the 32 MiB maximum growth budget.
+
+Observed live-soak result:
+
+- 2 cold gateway rounds completed against `vitalik-home` and `daicowtf-home`.
+- total bytes fetched through the local gateway: `883802`
+- retrieval stats were `cache_hits=50 http_provider_blocks=4 bitswap_blocks=6`
+- Linux RSS moved from `11264` KiB to `41856` KiB, within the 128 MiB maximum growth budget.
 
 iOS packaging command was exercised on Linux and correctly refused to run:
 
@@ -114,7 +127,7 @@ M8 mobile resource hardening: partially complete. Bounded in-memory hot block ca
 
 M9 browser integration: partially complete. The local gateway path, mobile ABI, Swift wrapper source, gateway URL mapping helpers for `ipfs://`, `ipns://`, `/ipfs`, and `/ipns` addresses, preload normalization for path/URI/bare-CID inputs, lifecycle hooks, and preload/cancel controls exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. The live smoke and corpus harnesses now mount the online IPNS/DNSLink resolver for `/ipns` paths. Swift wrapper compilation/linking and generated `WKWebView` app rendering are verified by the GitHub Actions simulator smoke; integration into the Freedom browser app is not verified yet.
 
-M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, Kubo-generated UnixFS/HAMT/range parity smoke, live ENS smoke, a checked-in public corpus covering immutable `/ipfs` and DNSLink-backed `/ipns` paths, and a local cached-gateway RSS soak exist, but larger/range-media public corpus cases, broader Kubo parity matrix, and longer network/device soak tests remain follow-up work.
+M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, Kubo-generated UnixFS/HAMT/range parity smoke, live ENS smoke, a checked-in public corpus covering immutable `/ipfs` and DNSLink-backed `/ipns` paths, a local cached-gateway RSS soak, and a host live-retrieval RSS soak exist, but larger/range-media public corpus cases, broader Kubo parity matrix, and device network soaks remain follow-up work.
 
 M11 optional features: not started except CAR export/import support, which was promoted into the MVP diagnostics/cache path.
 
@@ -125,5 +138,5 @@ M11 optional features: not started except CAR export/import support, which was p
 - DHT-only retrieval of `daicowtf.eth` is not reliable on the public DHT; current auto mode succeeds because delegated routing returns usable providers.
 - DNSLink still defaults to Cloudflare DoH, with TTL-aware caching. Native/system TXT lookup should be evaluated for artifact size and iOS behavior.
 - The checked-in public corpus is still intentionally small; it needs larger/range-media and documented pass/fail cases.
-- The local soak is host-side only; long network soaks and iOS device memory-growth soaks are still missing.
+- The soak coverage is still host-side only; iOS device memory-growth and network soaks are still missing.
 - No broad Kubo parity matrix exists yet for deterministic cross-implementation gateway/routing regression coverage.

@@ -14,6 +14,8 @@ Offline tests currently generate minimal fixtures in Rust so they remain reprodu
   the local Rust gateway/retrieval path.
 - Opt-in local gateway soak via `make local-soak`, using generated in-memory
   blocks and checking bounded RSS growth on Linux.
+- Opt-in live retrieval soak via `make live-soak`, using repeated cold
+  public-network gateway rounds and checking bounded RSS growth on Linux.
 
 Follow-up fixture work:
 
@@ -21,5 +23,6 @@ Follow-up fixture work:
 - expand HAMT-sharded directory fixture coverage,
 - expand the public corpus with larger/range-media paths and known pass/fail
   notes,
+- add device-side soak fixtures and scripts once target iPhones are available,
 - add signed IPNS records and expired/invalid variants,
 - add DNSLink TXT fixtures.

@@ -23,6 +23,7 @@ Fresh checks run against this file version:
 ```bash
 cargo fmt --all --check && make verify
 make live-smoke && make live-corpus
+make live-soak
 ```
 
 Apple-platform CI evidence:
@@ -56,6 +57,7 @@ Results:
   - Retrieval stats: `cache_hits=43 http_provider_blocks=2 bitswap_blocks=9`.
 - Kubo parity passed for generated UnixFS site files, directory-index fallback, range reads, and HAMT directories.
 - Local cached-gateway soak passed: `500` requests, Linux RSS from `8960` KiB to `13312` KiB.
+- Host live-retrieval soak passed: `2` cold gateway rounds against `vitalik-home` and `daicowtf-home`, `883802` total bytes, retrieval stats `cache_hits=50 http_provider_blocks=4 bitswap_blocks=6`, Linux RSS from `11264` KiB to `41856` KiB.
 - GitHub Actions `iOS XCFramework` passed on `macos-15` with Xcode 16.4. It built the real `FreedomIpfs.xcframework`, verified headers/module maps/exported C symbols, booted an iOS simulator, compiled and linked the Swift wrapper smoke, started the local gateway in the simulator via `simctl spawn booted`, fetched the CAR fixture through loopback, stopped the gateway, built and installed a generated UIKit/WebKit simulator app, imported the same CAR fixture, started the gateway from app process, fetched `/ipfs/{cid}` through loopback with `URLSession`, rendered the HTML in `WKWebView`, verified the DOM marker with JavaScript, and uploaded `FreedomIpfs.xcframework` as artifact ID `6768097033` (`59993954` bytes).
 - `xtask build-xcframework` and `xtask verify-xcframework` still correctly refuse to run on Linux with the macOS/Xcode requirement message.
 
@@ -113,7 +115,7 @@ Results:
 | Live ENS-backed smoke | `make live-smoke` resolves `vitalik.eth` and `daicowtf.eth` at runtime, mounts the online IPNS/DNSLink resolver, and fetches through the local gateway. | Done on Linux |
 | Public IPFS/IPNS corpus | Checked-in opt-in corpus covers the ENS-derived immutable `/ipfs` paths plus DNSLink-backed `/ipns` paths for `ipfs.tech`, `dist.ipfs.tech`, and `cid.ipfs.tech`; `make live-corpus` passed. | Expanded; should still grow with larger/range-media cases |
 | Kubo parity | Deterministic Kubo-generated UnixFS/HAMT/range/directory-index parity tests. | Started; should grow |
-| Long-running soak | Local cached-gateway RSS soak exists and passes. | Host-side only; device/network soak missing |
+| Long-running soak | Local cached-gateway RSS soak and host live-retrieval RSS soak exist and pass. | Host-side coverage improved; device soak missing |
 | Security parser/network limits | Tests cover oversized/malformed routing, traversal, invalid blocks, redirects, IPNS tamper/expiry, recursion, provider fanout. | Good MVP coverage |
 
 ## Remaining Work To Close The Goal
@@ -121,7 +123,7 @@ Results:
 1. Integrate the Swift wrapper into the Freedom iOS app and wire background/foreground, low-memory, and network-path events.
 2. Profile real devices with Bee running beside this node and record RSS, CPU, startup, active retrieval, and idle network behavior.
 3. Expand the public corpus with larger/range-media cases and documented pass/fail notes.
-4. Add longer host and device soaks for live retrieval, not just cached local reads.
+4. Add device soaks for live retrieval, background/foreground, and memory growth.
 
 ## Completion Rule
 

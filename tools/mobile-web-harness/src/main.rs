@@ -170,12 +170,20 @@ async fn run_harness(args: &Args, corpus: &Corpus) -> Result<RunReport> {
         )
         .await?;
         let elapsed_ms = started.elapsed().as_millis();
+        let gateway_rss_kib = if let Some(gateway) = run_gateway.as_ref() {
+            gateway.rss_kib()
+        } else {
+            persistent_gateway
+                .as_ref()
+                .and_then(SpawnedGateway::rss_kib)
+        };
         let passed = results.iter().all(|result| result.passed);
         runs.push(RunResult {
             phase,
             run_index,
             gateway_url,
             elapsed_ms,
+            gateway_rss_kib,
             passed,
             results,
         });
@@ -425,8 +433,12 @@ fn print_summary(report: &RunReport) {
             .filter(|run| run.phase == RunPhase::Measured)
         {
             let mark = if run.passed { "PASS" } else { "FAIL" };
+            let rss = run
+                .gateway_rss_kib
+                .map(|rss| format!(" rss={}KiB", rss))
+                .unwrap_or_default();
             println!(
-                "{mark} measured run {:02} total={}ms",
+                "{mark} measured run {:02} total={}ms{rss}",
                 run.run_index, run.elapsed_ms
             );
         }
@@ -1381,6 +1393,25 @@ impl SpawnedGateway {
             let _ = stderr_task.await;
         }
     }
+
+    fn rss_kib(&self) -> Option<u64> {
+        let pid = self.child.id()?;
+        child_rss_kib(pid)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn child_rss_kib(pid: u32) -> Option<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status.lines().find_map(|line| {
+        let value = line.strip_prefix("VmRSS:")?;
+        value.split_whitespace().next()?.parse().ok()
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn child_rss_kib(_pid: u32) -> Option<u64> {
+    None
 }
 
 #[derive(Debug, Deserialize)]
@@ -1442,6 +1473,7 @@ struct RunResult {
     run_index: usize,
     gateway_url: String,
     elapsed_ms: u128,
+    gateway_rss_kib: Option<u64>,
     passed: bool,
     results: Vec<CaseResult>,
 }

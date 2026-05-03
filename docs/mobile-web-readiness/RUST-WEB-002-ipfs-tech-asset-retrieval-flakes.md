@@ -220,23 +220,25 @@ measured run totals: 342ms, 427ms, 407ms, 331ms, 266ms
 Fresh process with persistent warm store:
 
 ```sh
-rm -f /tmp/freedom-ipfs-ipfs-tech-persistent.db
+rm -f /tmp/freedom-ipfs-ipfs-tech-rss.db
 cargo run -p mobile-web-harness -- \
   --case ipfs-tech-page-assets \
   --warmup-runs 1 \
   --repeat 3 \
   --fresh-gateway-per-run \
   --asset-concurrency 6 \
-  --gateway-db /tmp/freedom-ipfs-ipfs-tech-persistent.db \
-  --trace-output /tmp/ipfs-tech-persistent-warm-3-trace.jsonl \
-  --output /tmp/ipfs-tech-persistent-warm-3.json
+  --gateway-db /tmp/freedom-ipfs-ipfs-tech-rss.db \
+  --trace-output /tmp/ipfs-tech-persistent-rss-3-trace.jsonl \
+  --output /tmp/ipfs-tech-persistent-rss-3.json
 ```
 
 ```text
 passed=3 failed=0 pass_rate=100.0%
-root_ttfb p50=91ms p90=198ms p95=198ms max=198ms
-asset_ttfb p50=32ms p90=87ms p95=121ms max=216ms
-measured run totals: 428ms, 363ms, 484ms
+root_ttfb p50=92ms p90=169ms p95=169ms max=169ms
+asset_ttfb p50=33ms p90=139ms p95=165ms max=219ms
+measured run totals: 460ms, 394ms, 393ms
+measured gateway RSS: 28084 KiB, 28844 KiB, 28132 KiB
+warmup gateway RSS: 52664 KiB
 ```
 
 Trace evidence:
@@ -255,8 +257,9 @@ Resource impact:
 The changes keep existing caps: gateway request concurrency remains 8, asset
 concurrency remains harness-side, Bitswap connection limits are unchanged, and
 in-flight block coalescing is capped at 256 CIDs with hedged waiters. The
-fresh-process persistent warm-store `ipfs.tech` run produced a 2.1 MiB SQLite
-cache DB for the warmed page.
+fresh-process persistent warm-store `ipfs.tech` run produced a 2.3 MiB SQLite
+cache DB for the warmed page and measured fresh-process RSS of about 28-29 MiB
+after each warm-cache run.
 
 Failed experiments:
 

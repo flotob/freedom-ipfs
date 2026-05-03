@@ -30,6 +30,12 @@ pub struct FreedomIpfsNode {
     gateway_task: Mutex<Option<JoinHandle<()>>>,
 }
 
+#[repr(C)]
+pub struct FreedomIpfsBuffer {
+    pub data: *mut u8,
+    pub len: usize,
+}
+
 #[no_mangle]
 pub extern "C" fn freedom_ipfs_version() -> *mut c_char {
     CString::new(env!("CARGO_PKG_VERSION"))
@@ -131,6 +137,55 @@ pub unsafe extern "C" fn freedom_ipfs_node_import_car(
     let node = &*ptr;
     let bytes = std::slice::from_raw_parts(data, len);
     node.store.import_car(bytes).is_ok()
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer. The returned buffer must be released
+/// with `freedom_ipfs_buffer_free`.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_export_car(
+    ptr: *mut FreedomIpfsNode,
+) -> FreedomIpfsBuffer {
+    if ptr.is_null() {
+        return empty_buffer();
+    }
+    let node = &*ptr;
+    match node.store.export_car() {
+        Ok(bytes) => buffer_from_vec(bytes),
+        Err(_) => empty_buffer(),
+    }
+}
+
+/// # Safety
+///
+/// `buffer` must be a buffer returned by `freedom_ipfs_node_export_car` and
+/// must not be freed more than once.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_buffer_free(buffer: FreedomIpfsBuffer) {
+    if buffer.data.is_null() {
+        return;
+    }
+    let slice = std::ptr::slice_from_raw_parts_mut(buffer.data, buffer.len);
+    let _ = Box::from_raw(slice);
+}
+
+fn buffer_from_vec(bytes: Vec<u8>) -> FreedomIpfsBuffer {
+    if bytes.is_empty() {
+        return empty_buffer();
+    }
+    let mut bytes = bytes.into_boxed_slice();
+    let data = bytes.as_mut_ptr();
+    let len = bytes.len();
+    let _ = Box::into_raw(bytes);
+    FreedomIpfsBuffer { data, len }
+}
+
+fn empty_buffer() -> FreedomIpfsBuffer {
+    FreedomIpfsBuffer {
+        data: ptr::null_mut(),
+        len: 0,
+    }
 }
 
 /// # Safety
@@ -377,7 +432,7 @@ fn stop_gateway(node: &FreedomIpfsNode) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use freedom_ipfs_core::{cid_from_data, CODEC_RAW};
+    use freedom_ipfs_core::{cid_from_data, parse_car_v1, CODEC_RAW};
     use std::io::{Read, Write};
 
     #[test]
@@ -475,6 +530,30 @@ mod tests {
             assert!(freedom_ipfs_node_clear_cache(node));
             assert_eq!(freedom_ipfs_node_block_count(node), 0);
             assert_eq!(freedom_ipfs_node_total_bytes(node), 0);
+
+            freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
+    fn exports_cache_as_car_buffer() {
+        unsafe {
+            let node = freedom_ipfs_node_new_in_memory();
+            assert!(!node.is_null());
+
+            let data = b"mobile export";
+            let cid = cid_from_data(CODEC_RAW, data);
+            (*node).store.put_block(&cid, data).unwrap();
+
+            let buffer = freedom_ipfs_node_export_car(node);
+            assert!(!buffer.data.is_null());
+            assert!(buffer.len > 0);
+            let bytes = std::slice::from_raw_parts(buffer.data, buffer.len);
+            let car = parse_car_v1(bytes).unwrap();
+            assert_eq!(car.blocks.len(), 1);
+            assert_eq!(car.blocks[0].cid, cid);
+            assert_eq!(car.blocks[0].data, data);
+            freedom_ipfs_buffer_free(buffer);
 
             freedom_ipfs_node_free(node);
         }

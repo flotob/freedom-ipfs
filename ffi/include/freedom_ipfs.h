@@ -10,6 +10,10 @@ extern "C" {
 #endif
 
 typedef struct FreedomIpfsNode FreedomIpfsNode;
+typedef struct FreedomIpfsBuffer {
+    uint8_t *data;
+    size_t len;
+} FreedomIpfsBuffer;
 
 #define FREEDOM_IPFS_ROUTING_MODE_AUTO ((uint32_t)0)
 #define FREEDOM_IPFS_ROUTING_MODE_DELEGATED ((uint32_t)1)
@@ -25,6 +29,8 @@ FreedomIpfsNode *freedom_ipfs_node_new_with_data_dir(
 void freedom_ipfs_node_free(FreedomIpfsNode *ptr);
 
 bool freedom_ipfs_node_import_car(FreedomIpfsNode *ptr, const uint8_t *data, size_t len);
+FreedomIpfsBuffer freedom_ipfs_node_export_car(FreedomIpfsNode *ptr);
+void freedom_ipfs_buffer_free(FreedomIpfsBuffer buffer);
 uint64_t freedom_ipfs_node_block_count(FreedomIpfsNode *ptr);
 uint64_t freedom_ipfs_node_total_bytes(FreedomIpfsNode *ptr);
 bool freedom_ipfs_node_clear_cache(FreedomIpfsNode *ptr);

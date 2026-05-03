@@ -360,7 +360,7 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway(
 /// `ptr` must be a valid node pointer. `addr` must point to a NUL-terminated
 /// UTF-8 socket address string for the duration of this call. `delegated_router`
 /// may be null to use the default delegated routing endpoint, otherwise it must
-/// point to a NUL-terminated UTF-8 URL string.
+/// point to a NUL-terminated UTF-8 URL string or comma-separated URL list.
 #[no_mangle]
 pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online(
     ptr: *mut FreedomIpfsNode,
@@ -381,8 +381,9 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online(
 /// `ptr` must be a valid node pointer. `addr` must point to a NUL-terminated
 /// UTF-8 socket address string for the duration of this call. `delegated_router`
 /// may be null to use the default delegated routing endpoint, otherwise it must
-/// point to a NUL-terminated UTF-8 URL string. `routing_mode` must be one of the
-/// `FREEDOM_IPFS_ROUTING_MODE_*` constants from the C header.
+/// point to a NUL-terminated UTF-8 URL string or comma-separated URL list.
+/// `routing_mode` must be one of the `FREEDOM_IPFS_ROUTING_MODE_*` constants
+/// from the C header.
 #[no_mangle]
 pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config(
     ptr: *mut FreedomIpfsNode,
@@ -407,9 +408,10 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config(
 /// `ptr` must be a valid node pointer. `addr` must point to a NUL-terminated
 /// UTF-8 socket address string for the duration of this call. `delegated_router`
 /// may be null to use the default delegated routing endpoint, otherwise it must
-/// point to a NUL-terminated UTF-8 URL string. `routing_mode` must be one of the
-/// `FREEDOM_IPFS_ROUTING_MODE_*` constants from the C header. `dht_*` values may
-/// be 0 to use the built-in mobile defaults.
+/// point to a NUL-terminated UTF-8 URL string or comma-separated URL list.
+/// `routing_mode` must be one of the `FREEDOM_IPFS_ROUTING_MODE_*` constants
+/// from the C header. `dht_*` values may be 0 to use the built-in mobile
+/// defaults.
 #[no_mangle]
 pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config_v2(
     ptr: *mut FreedomIpfsNode,
@@ -432,7 +434,7 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config_v2(
         Some(addr) => addr,
         None => return false,
     };
-    let delegated_router = if delegated_router.is_null() {
+    let delegated_routers = if delegated_router.is_null() {
         DEFAULT_DELEGATED_ROUTER.to_string()
     } else {
         match CStr::from_ptr(delegated_router).to_str() {
@@ -441,7 +443,7 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config_v2(
         }
     };
 
-    let delegated = DelegatedRoutingClient::new(delegated_router.clone());
+    let delegated = delegated_routing_client(&delegated_routers);
     let dht = light_dht_client(dht_query_timeout_secs, dht_max_providers);
     let routing = match routing_mode {
         ROUTING_MODE_AUTO => {
@@ -459,7 +461,11 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config_v2(
     };
     let name_resolver = CachedNameResolver::new(DefaultNameResolver::new(
         CloudflareDohResolver::default(),
-        ipns_resolver(routing_mode, delegated_router, dht),
+        ipns_resolver(
+            routing_mode,
+            first_delegated_router(&delegated_routers),
+            dht,
+        ),
     ));
     start_gateway_with_router(
         node,
@@ -481,6 +487,26 @@ fn light_dht_client(dht_query_timeout_secs: u64, dht_max_providers: usize) -> Li
         dht = dht.with_max_providers(dht_max_providers);
     }
     dht
+}
+
+fn delegated_routing_client(delegated_routers: &str) -> DelegatedRoutingClient {
+    DelegatedRoutingClient::with_endpoints(delegated_router_endpoints(delegated_routers))
+}
+
+fn first_delegated_router(delegated_routers: &str) -> String {
+    delegated_router_endpoints(delegated_routers)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| DEFAULT_DELEGATED_ROUTER.to_string())
+}
+
+fn delegated_router_endpoints(delegated_routers: &str) -> Vec<String> {
+    delegated_routers
+        .split(',')
+        .map(str::trim)
+        .filter(|endpoint| !endpoint.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn ipns_resolver(

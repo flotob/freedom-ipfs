@@ -24,7 +24,7 @@ Early implementation. Current code supports:
 - deterministic in-process light-DHT IPNS record lookup test coverage,
 - offline gateway constructors keep name resolution cache-only/no-network by default,
 - short-lived in-memory DNSLink/IPNS name-resolution cache,
-- delegated routing provider lookup,
+- delegated routing provider lookup, including optional comma-separated multi-router race/failover,
 - bounded delegated-routing response size and provider fanout,
 - client-mode light DHT provider/IPNS lookup fallback with configurable provider fanout,
 - deterministic in-process light-DHT provider lookup test coverage,
@@ -66,6 +66,12 @@ Run the gateway online with the mobile default `auto` routing mode:
 
 ```bash
 cargo run -p freedom-ipfs-gateway -- --online --routing-mode auto
+```
+
+Use multiple delegated routers for provider discovery by passing a comma-separated endpoint list:
+
+```bash
+cargo run -p freedom-ipfs-gateway -- --online --delegated-router https://delegated-ipfs.dev/routing/v1,https://example-router.invalid/routing/v1
 ```
 
 Limit local-gateway request concurrency for mobile resource testing:

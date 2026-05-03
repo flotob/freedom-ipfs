@@ -2,6 +2,7 @@ use cid::Cid;
 use freedom_ipfs_namesys::{
     ipns_dht_record_key, verify_ipns_record, IpnsRecord, IpnsResolver, NamesysError,
 };
+use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use libp2p::kad::{
     self, store::MemoryStore, store::RecordStore, GetProvidersOk, GetRecordError, GetRecordOk,
@@ -111,7 +112,7 @@ impl From<LightDhtClient> for ProviderRoutingClient {
 
 #[derive(Debug, Clone)]
 pub struct DelegatedRoutingClient {
-    endpoint: String,
+    endpoints: Vec<String>,
     client: reqwest::Client,
 }
 
@@ -123,14 +124,64 @@ impl Default for DelegatedRoutingClient {
 
 impl DelegatedRoutingClient {
     pub fn new(endpoint: impl Into<String>) -> Self {
+        Self::with_endpoints([endpoint])
+    }
+
+    pub fn with_endpoints<I, S>(endpoints: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut endpoints = endpoints
+            .into_iter()
+            .map(|endpoint| endpoint.into().trim_end_matches('/').to_string())
+            .filter(|endpoint| !endpoint.is_empty())
+            .collect::<Vec<_>>();
+        if endpoints.is_empty() {
+            endpoints.push(DEFAULT_DELEGATED_ROUTER.to_string());
+        }
         Self {
-            endpoint: endpoint.into().trim_end_matches('/').to_string(),
+            endpoints,
             client: timeout_http_client(DEFAULT_DELEGATED_ROUTING_TIMEOUT),
         }
     }
 
     pub async fn providers(&self, cid: &Cid) -> Result<Vec<Provider>> {
-        let url = format!("{}/providers/{}", self.endpoint, cid);
+        if self.endpoints.len() == 1 {
+            return self.providers_from_endpoint(&self.endpoints[0], cid).await;
+        }
+
+        let mut queries = self
+            .endpoints
+            .iter()
+            .map(|endpoint| self.providers_from_endpoint(endpoint, cid))
+            .collect::<FuturesUnordered<_>>();
+        let mut saw_empty_response = false;
+        let mut first_error = None;
+
+        while let Some(result) = queries.next().await {
+            match result {
+                Ok(providers) if !providers.is_empty() => return Ok(providers),
+                Ok(_) => saw_empty_response = true,
+                Err(err) => {
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
+                }
+            }
+        }
+
+        if saw_empty_response {
+            Ok(Vec::new())
+        } else {
+            Err(first_error.unwrap_or_else(|| {
+                RoutingError::InvalidResponse("no delegated routing endpoints configured".into())
+            }))
+        }
+    }
+
+    async fn providers_from_endpoint(&self, endpoint: &str, cid: &Cid) -> Result<Vec<Provider>> {
+        let url = format!("{endpoint}/providers/{cid}");
         let response = self
             .client
             .get(url)
@@ -733,6 +784,46 @@ mod tests {
         assert_eq!(providers[0].addrs[0], "/ip4/164.92.225.198/tcp/4001");
     }
 
+    #[tokio::test]
+    async fn delegated_routing_races_multiple_endpoints_until_success() {
+        let cid = "bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u"
+            .parse::<Cid>()
+            .unwrap();
+        let (bad_endpoint, bad_task) = spawn_delegated_response("not-json").await;
+        let (empty_endpoint, empty_task) = spawn_delegated_response(r#"{"Providers":[]}"#).await;
+        let (good_endpoint, good_task) = spawn_delegated_response(
+            r#"{"Providers":[{"ID":"peer","Addrs":["/dns4/example.com/tcp/443/tls/http"]}]}"#,
+        )
+        .await;
+
+        let providers =
+            DelegatedRoutingClient::with_endpoints([bad_endpoint, empty_endpoint, good_endpoint])
+                .providers(&cid)
+                .await
+                .unwrap();
+
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id.as_deref(), Some("peer"));
+        assert_eq!(providers[0].http_urls[0].as_str(), "https://example.com/");
+        for task in [bad_task, empty_task, good_task] {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_delegated_provider_responses() {
+        assert!(matches!(
+            parse_provider_response("not-json").unwrap_err(),
+            RoutingError::InvalidResponse(_)
+        ));
+        assert!(matches!(
+            parse_provider_response(r#"{"Providers":[{"Addrs":["/tcp/443/tls/http"]}]}"#)
+                .unwrap_err(),
+            RoutingError::InvalidProviderUrl(_)
+        ));
+    }
+
     #[test]
     fn caps_delegated_provider_records() {
         let providers = (0..(MAX_DELEGATED_ROUTING_PROVIDERS + 8))
@@ -776,6 +867,23 @@ mod tests {
 
         assert!(matches!(err, RoutingError::InvalidResponse(_)));
         task.await.unwrap();
+    }
+
+    async fn spawn_delegated_response(body: &'static str) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes())
+                .await
+                .unwrap();
+        });
+        (format!("http://{addr}/routing/v1"), task)
     }
 
     #[test]

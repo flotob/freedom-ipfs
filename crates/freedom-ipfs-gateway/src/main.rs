@@ -88,8 +88,8 @@ async fn main() -> Result<()> {
 
     let gateway_config = GatewayConfig::new(args.max_concurrent_requests);
     let bound = if args.online {
-        let delegated_router = args.delegated_router.clone();
-        let delegated = DelegatedRoutingClient::new(delegated_router.clone());
+        let delegated_routers = args.delegated_router.clone();
+        let delegated = delegated_routing_client(&delegated_routers);
         let dht = light_dht_client(args.dht_query_timeout_secs, args.dht_max_providers);
         let routing = match args.routing_mode {
             RoutingMode::Auto => {
@@ -101,7 +101,11 @@ async fn main() -> Result<()> {
         let provider = FetchingBlockProvider::new(store, routing);
         let name_resolver = CachedNameResolver::new(DefaultNameResolver::new(
             CloudflareDohResolver::default(),
-            ipns_resolver(args.routing_mode, delegated_router, dht),
+            ipns_resolver(
+                args.routing_mode,
+                first_delegated_router(&delegated_routers),
+                dht,
+            ),
         ));
         serve_with_provider_and_name_resolver_config(
             Arc::new(provider),
@@ -121,6 +125,26 @@ fn light_dht_client(dht_query_timeout_secs: u64, dht_max_providers: usize) -> Li
     LightDhtClient::default()
         .with_query_timeout(Duration::from_secs(dht_query_timeout_secs))
         .with_max_providers(dht_max_providers)
+}
+
+fn delegated_routing_client(delegated_routers: &str) -> DelegatedRoutingClient {
+    DelegatedRoutingClient::with_endpoints(delegated_router_endpoints(delegated_routers))
+}
+
+fn first_delegated_router(delegated_routers: &str) -> String {
+    delegated_router_endpoints(delegated_routers)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| DEFAULT_DELEGATED_ROUTER.to_string())
+}
+
+fn delegated_router_endpoints(delegated_routers: &str) -> Vec<String> {
+    delegated_routers
+        .split(',')
+        .map(str::trim)
+        .filter(|endpoint| !endpoint.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn ipns_resolver(

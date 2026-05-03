@@ -236,6 +236,7 @@ fn verify_exported_symbols(library: &Path) -> Result<()> {
         "freedom_ipfs_node_retrieval_stats",
         "freedom_ipfs_node_routing_stats",
         "freedom_ipfs_node_active_preload_count",
+        "freedom_ipfs_node_diagnostics",
     ] {
         if !stdout.contains(symbol) {
             bail!("{} does not export {symbol}", library.display());
@@ -380,6 +381,18 @@ enum FreedomIpfsSmoke {{
         guard routingStats.delegatedProviderLookups == 0,
               routingStats.dhtProviderLookups == 0 else {{
             fatalError("cached fixture unexpectedly routed: \(routingStats)")
+        }}
+        let diagnostics = reader.diagnostics
+        guard diagnostics.stats.blockCount == 1,
+              diagnostics.retrievalStats.cacheHits > 0,
+              diagnostics.retrievalStats.httpProviderBlocks == 0,
+              diagnostics.retrievalStats.bitswapBlocks == 0,
+              diagnostics.routingStats.delegatedProviderLookups == 0,
+              diagnostics.routingStats.dhtProviderLookups == 0,
+              diagnostics.activePreloadCount == 0,
+              diagnostics.isGatewayRunning,
+              !diagnostics.isBackgrounded else {{
+            fatalError("unexpected diagnostics snapshot: \(diagnostics)")
         }}
         _ = reader.stopGateway()
     }}

@@ -22,7 +22,7 @@ Wire the Swift wrapper into the browser app before measuring:
 - Call `handleLowMemory(maxCacheBytes:)` from the app memory-warning path.
 - Call `handleNetworkChange()` from the `NWPathMonitor` path when connectivity class changes.
 - Start preload on committed navigation and cancel preload when navigation is cancelled or replaced.
-- Log `retrievalStats`, `routingStats`, `stats`, and `activePreloadCount` around each measured navigation so device evidence records cache hits, HTTP-provider blocks, Bitswap blocks, delegated lookups, DHT fallback, cache size, and stuck preloads.
+- Log `diagnostics` around each measured navigation so device evidence records cache hits, HTTP-provider blocks, Bitswap blocks, delegated lookups, DHT fallback, cache size, gateway state, lifecycle state, and stuck preloads from one timestamped snapshot.
 - Stop the gateway when the app tears down the node.
 
 Minimal shape:
@@ -41,8 +41,7 @@ try reader.startOnlineGateway(
 )
 
 let localURL = reader.localGatewayURL(for: "/ipfs/bafy...")
-let beforeRetrieval = reader.retrievalStats
-let beforeRouting = reader.routingStats
+let before = reader.diagnostics
 ```
 
 ## Device Matrix
@@ -67,7 +66,7 @@ Record device model, iOS version, app commit, Freedom IPFS commit, Bee commit, r
    - Resolve `vitalik.eth` outside the node.
    - Load the resulting `/ipfs/bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u` through the local gateway.
    - Repeat three times after clearing the Freedom IPFS cache.
-   - Record first byte, complete load time, peak RSS, end RSS, CPU, network bytes, `FreedomIpfsReader.stats`, `retrievalStats`, and `routingStats`.
+   - Record first byte, complete load time, peak RSS, end RSS, CPU, network bytes, and `FreedomIpfsReader.diagnostics`.
 
 3. Larger ENS-derived immutable content:
    - Resolve `daicowtf.eth` outside the node.
@@ -76,7 +75,7 @@ Record device model, iOS version, app commit, Freedom IPFS commit, Bee commit, r
 
 4. DNSLink/IPNS content:
    - Load `/ipns/ipfs.tech`, `/ipns/dist.ipfs.tech`, and `/ipns/cid.ipfs.tech`.
-   - Record successful render, first byte, complete load time, and whether fallback routing was needed from `routingStats`.
+   - Record successful render, first byte, complete load time, and whether fallback routing was needed from `diagnostics.routingStats`.
 
 5. Byte-range behavior:
    - Load a page or media object that causes WebKit range requests, or issue `Range: bytes=0-127` against one known loaded path through the local gateway.
@@ -89,7 +88,7 @@ Record device model, iOS version, app commit, Freedom IPFS commit, Bee commit, r
 
 7. Background and foreground:
    - Load one IPFS page, background the app for 5 minutes, then foreground it.
-   - Verify preloads are cancelled or quiesced using `activePreloadCount`, memory does not grow while backgrounded, and foreground retrieval still works.
+   - Verify preloads are cancelled or quiesced using `diagnostics.activePreloadCount`, `diagnostics.isBackgrounded` reflects the lifecycle hook, memory does not grow while backgrounded, and foreground retrieval still works.
 
 8. Low-memory path:
    - Trigger a memory warning from Xcode or the test harness.
@@ -97,7 +96,7 @@ Record device model, iOS version, app commit, Freedom IPFS commit, Bee commit, r
 
 9. Network change:
    - Start on Wi-Fi, load an IPFS page, switch to cellular or another network path, then load again.
-   - Verify provider metadata is cleared, `routingStats` records fresh lookups after the path change, and retrieval recovers without restarting the app.
+   - Verify provider metadata is cleared, `diagnostics.routingStats` records fresh lookups after the path change, and retrieval recovers without restarting the app.
 
 10. Repeated retrieval soak:
     - Run 20 alternating loads of `vitalik.eth`, `daicowtf.eth`, and one `/ipns` path.
@@ -114,7 +113,7 @@ The first product-usable release should meet these targets on every target devic
 - Local gateway remains loopback-only.
 - No block serving, content providing, DHT server mode, or Kubo RPC surface is visible on device.
 - `vitalik.eth`, `daicowtf.eth`, and the three checked-in `/ipns` paths render through the local gateway.
-- `retrievalStats` and `routingStats` show non-zero retrieval/routing work for cold network loads, and `activePreloadCount` returns to zero after cancelled or completed preloads.
+- `diagnostics.retrievalStats` and `diagnostics.routingStats` show non-zero retrieval/routing work for cold network loads, and `diagnostics.activePreloadCount` returns to zero after cancelled or completed preloads.
 - Routing can be changed from `auto` to `delegated` or `light_dht` with `setRoutingMode(...)` or `restartOnlineGateway(...)`; active preloads are cancelled and a new loopback gateway URL is surfaced to the app.
 - Background, foreground, low-memory, and network-change hooks run without process death or stuck retrieval.
 - Repeated retrieval soak does not show unbounded RSS growth.

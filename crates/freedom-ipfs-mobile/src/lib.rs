@@ -73,6 +73,25 @@ pub struct FreedomIpfsRoutingStats {
     pub dht_provider_errors: u64,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FreedomIpfsDiagnostics {
+    pub block_count: u64,
+    pub total_bytes: u64,
+    pub cache_hits: u64,
+    pub http_provider_blocks: u64,
+    pub bitswap_blocks: u64,
+    pub delegated_provider_lookups: u64,
+    pub delegated_provider_results: u64,
+    pub delegated_provider_errors: u64,
+    pub dht_provider_lookups: u64,
+    pub dht_provider_results: u64,
+    pub dht_provider_errors: u64,
+    pub active_preload_count: u64,
+    pub gateway_running: u64,
+    pub lifecycle_background: u64,
+}
+
 #[no_mangle]
 pub extern "C" fn freedom_ipfs_version() -> *mut c_char {
     CString::new(env!("CARGO_PKG_VERSION"))
@@ -318,6 +337,37 @@ pub unsafe extern "C" fn freedom_ipfs_node_active_preload_count(ptr: *mut Freedo
     }
     let node = &*ptr;
     active_preload_count(node) as u64
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_diagnostics(
+    ptr: *mut FreedomIpfsNode,
+) -> FreedomIpfsDiagnostics {
+    if ptr.is_null() {
+        return FreedomIpfsDiagnostics::default();
+    }
+    let node = &*ptr;
+    let retrieval = freedom_ipfs_node_retrieval_stats(ptr);
+    let routing = freedom_ipfs_node_routing_stats(ptr);
+    FreedomIpfsDiagnostics {
+        block_count: node.store.block_count().unwrap_or(0),
+        total_bytes: node.store.total_bytes().unwrap_or(0),
+        cache_hits: retrieval.cache_hits,
+        http_provider_blocks: retrieval.http_provider_blocks,
+        bitswap_blocks: retrieval.bitswap_blocks,
+        delegated_provider_lookups: routing.delegated_provider_lookups,
+        delegated_provider_results: routing.delegated_provider_results,
+        delegated_provider_errors: routing.delegated_provider_errors,
+        dht_provider_lookups: routing.dht_provider_lookups,
+        dht_provider_results: routing.dht_provider_results,
+        dht_provider_errors: routing.dht_provider_errors,
+        active_preload_count: active_preload_count(node) as u64,
+        gateway_running: if gateway_is_running(node) { 1 } else { 0 },
+        lifecycle_background: if lifecycle_is_background(node) { 1 } else { 0 },
+    }
 }
 
 /// # Safety
@@ -749,6 +799,13 @@ fn gateway_is_running(node: &FreedomIpfsNode) -> bool {
         .unwrap_or(false)
 }
 
+fn lifecycle_is_background(node: &FreedomIpfsNode) -> bool {
+    node.lifecycle_state
+        .lock()
+        .map(|state| *state == LifecycleState::Background)
+        .unwrap_or(false)
+}
+
 /// # Safety
 ///
 /// `ptr` must be a valid node pointer.
@@ -1063,6 +1120,10 @@ mod tests {
                 FreedomIpfsRoutingStats::default()
             );
             assert_eq!(freedom_ipfs_node_active_preload_count(node), 0);
+            assert_eq!(
+                freedom_ipfs_node_diagnostics(node),
+                FreedomIpfsDiagnostics::default()
+            );
 
             let data = b"mobile transport stats";
             let cid = cid_from_data(CODEC_RAW, data);
@@ -1088,6 +1149,31 @@ mod tests {
                 freedom_ipfs_node_routing_stats(node),
                 FreedomIpfsRoutingStats::default()
             );
+            let diagnostics = freedom_ipfs_node_diagnostics(node);
+            assert_eq!(diagnostics.block_count, 1);
+            assert_eq!(diagnostics.total_bytes, data.len() as u64);
+            assert!(diagnostics.cache_hits > 0);
+            assert_eq!(diagnostics.http_provider_blocks, 0);
+            assert_eq!(diagnostics.bitswap_blocks, 0);
+            assert_eq!(diagnostics.delegated_provider_lookups, 0);
+            assert_eq!(diagnostics.delegated_provider_results, 0);
+            assert_eq!(diagnostics.delegated_provider_errors, 0);
+            assert_eq!(diagnostics.dht_provider_lookups, 0);
+            assert_eq!(diagnostics.dht_provider_results, 0);
+            assert_eq!(diagnostics.dht_provider_errors, 0);
+            assert_eq!(diagnostics.active_preload_count, 0);
+            assert_eq!(diagnostics.gateway_running, 1);
+            assert_eq!(diagnostics.lifecycle_background, 0);
+
+            assert!(freedom_ipfs_node_enter_background(node));
+            let diagnostics = freedom_ipfs_node_diagnostics(node);
+            assert_eq!(diagnostics.gateway_running, 1);
+            assert_eq!(diagnostics.lifecycle_background, 1);
+
+            assert!(freedom_ipfs_node_enter_foreground(node));
+            let diagnostics = freedom_ipfs_node_diagnostics(node);
+            assert_eq!(diagnostics.gateway_running, 1);
+            assert_eq!(diagnostics.lifecycle_background, 0);
 
             assert!(freedom_ipfs_node_stop_gateway(node));
             assert_eq!(
@@ -1098,6 +1184,14 @@ mod tests {
                 freedom_ipfs_node_routing_stats(node),
                 FreedomIpfsRoutingStats::default()
             );
+            let diagnostics = freedom_ipfs_node_diagnostics(node);
+            assert_eq!(diagnostics.block_count, 1);
+            assert_eq!(diagnostics.total_bytes, data.len() as u64);
+            assert_eq!(diagnostics.cache_hits, 0);
+            assert_eq!(diagnostics.http_provider_blocks, 0);
+            assert_eq!(diagnostics.bitswap_blocks, 0);
+            assert_eq!(diagnostics.gateway_running, 0);
+            assert_eq!(diagnostics.lifecycle_background, 0);
             freedom_ipfs_node_free(node);
         }
     }

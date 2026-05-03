@@ -35,6 +35,15 @@ public struct FreedomIpfsRoutingCounters: Equatable, Sendable {
     public let dhtProviderErrors: UInt64
 }
 
+public struct FreedomIpfsDiagnostics: Equatable, Sendable {
+    public let stats: FreedomIpfsStats
+    public let retrievalStats: FreedomIpfsRetrievalCounters
+    public let routingStats: FreedomIpfsRoutingCounters
+    public let activePreloadCount: UInt64
+    public let isGatewayRunning: Bool
+    public let isBackgrounded: Bool
+}
+
 public final class FreedomIpfsReader {
     private var handle: OpaquePointer?
 
@@ -356,6 +365,53 @@ public final class FreedomIpfsReader {
             return 0
         }
         return freedom_ipfs_node_active_preload_count(handle)
+    }
+
+    public var diagnostics: FreedomIpfsDiagnostics {
+        guard let handle else {
+            return FreedomIpfsDiagnostics(
+                stats: FreedomIpfsStats(blockCount: 0, totalBytes: 0),
+                retrievalStats: FreedomIpfsRetrievalCounters(
+                    cacheHits: 0,
+                    httpProviderBlocks: 0,
+                    bitswapBlocks: 0
+                ),
+                routingStats: FreedomIpfsRoutingCounters(
+                    delegatedProviderLookups: 0,
+                    delegatedProviderResults: 0,
+                    delegatedProviderErrors: 0,
+                    dhtProviderLookups: 0,
+                    dhtProviderResults: 0,
+                    dhtProviderErrors: 0
+                ),
+                activePreloadCount: 0,
+                isGatewayRunning: false,
+                isBackgrounded: false
+            )
+        }
+        let snapshot = freedom_ipfs_node_diagnostics(handle)
+        return FreedomIpfsDiagnostics(
+            stats: FreedomIpfsStats(
+                blockCount: snapshot.block_count,
+                totalBytes: snapshot.total_bytes
+            ),
+            retrievalStats: FreedomIpfsRetrievalCounters(
+                cacheHits: snapshot.cache_hits,
+                httpProviderBlocks: snapshot.http_provider_blocks,
+                bitswapBlocks: snapshot.bitswap_blocks
+            ),
+            routingStats: FreedomIpfsRoutingCounters(
+                delegatedProviderLookups: snapshot.delegated_provider_lookups,
+                delegatedProviderResults: snapshot.delegated_provider_results,
+                delegatedProviderErrors: snapshot.delegated_provider_errors,
+                dhtProviderLookups: snapshot.dht_provider_lookups,
+                dhtProviderResults: snapshot.dht_provider_results,
+                dhtProviderErrors: snapshot.dht_provider_errors
+            ),
+            activePreloadCount: snapshot.active_preload_count,
+            isGatewayRunning: snapshot.gateway_running != 0,
+            isBackgrounded: snapshot.lifecycle_background != 0
+        )
     }
 
     public func clearCache() -> Bool {

@@ -19,6 +19,7 @@ freedom-ipfs-retrieval.workspace = true
 freedom-ipfs-routing.workspace = true
 freedom-ipfs-store.workspace = true
 freedom-ipfs-unixfs.workspace = true
+futures.workspace = true
 http.workspace = true
 mime_guess.workspace = true
 tokio.workspace = true

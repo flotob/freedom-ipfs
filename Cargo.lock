@@ -919,6 +919,7 @@ dependencies = [
  "freedom-ipfs-routing",
  "freedom-ipfs-store",
  "freedom-ipfs-unixfs",
+ "futures",
  "http",
  "mime_guess",
  "reqwest",

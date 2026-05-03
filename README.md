@@ -30,11 +30,12 @@ Early implementation. Current code supports:
 - verified caching of extra CIDv0/CIDv1 blocks returned in Bitswap payload responses,
 - basic HAMT-sharded UnixFS directory traversal,
 - UnixFS range reads that avoid assembling entire multi-block files for byte-range responses,
+- full local-gateway responses streamed in bounded UnixFS chunks instead of one full-file buffer,
 - configurable local-gateway request concurrency limiting,
 - CAR import/export for tests, diagnostics, and cache warmup,
 - an iOS staticlib/XCFramework build skeleton with C ABI headers for persistent-cache node creation, cache trimming, routing-mode selection, and offline/online gateway start.
 
-Still incomplete: production iOS packaging validation, resource profiling on device, full streaming gateway responses, and hardened DHT-only retrieval for sites whose DHT providers are slow or stale.
+Still incomplete: production iOS packaging validation, resource profiling on device, and hardened DHT-only retrieval for sites whose DHT providers are slow or stale.
 
 ## Development
 

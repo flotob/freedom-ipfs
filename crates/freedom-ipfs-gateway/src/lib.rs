@@ -10,13 +10,16 @@ use cid::Cid;
 use freedom_ipfs_core::{parse_cid, BlockProvider};
 use freedom_ipfs_namesys::{CachedNameResolver, DefaultNameResolver, NameResolver};
 use freedom_ipfs_store::SqliteBlockStore;
-use freedom_ipfs_unixfs::{file_size, read_file, read_file_range, UnixfsError};
+use freedom_ipfs_unixfs::{file_size, read_file_range, UnixfsError};
+use futures::stream;
+use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
 pub const DEFAULT_GATEWAY_MAX_CONCURRENT_REQUESTS: usize = 8;
+const GATEWAY_STREAM_CHUNK_SIZE: u64 = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct GatewayConfig {
@@ -177,7 +180,7 @@ async fn ipfs_get(
         return gateway_error(GatewayError::Busy);
     };
 
-    match serve_ipfs_path(state.provider.as_ref(), &path, headers.get(RANGE)).await {
+    match serve_ipfs_path(state.provider.clone(), &path, headers.get(RANGE)).await {
         Ok(response) => response,
         Err(err) => gateway_error(err),
     }
@@ -193,7 +196,7 @@ async fn ipns_get(
     };
 
     match serve_ipns_path(
-        state.provider.as_ref(),
+        state.provider.clone(),
         state.name_resolver.as_ref(),
         &path,
         headers.get(RANGE),
@@ -206,21 +209,20 @@ async fn ipns_get(
 }
 
 async fn serve_ipfs_path(
-    provider: &dyn BlockProvider,
+    provider: Arc<dyn BlockProvider>,
     path: &str,
     range: Option<&HeaderValue>,
 ) -> Result<Response, GatewayError> {
     let (cid, unixfs_path) = split_ipfs_path(path)?;
-    let served_path = served_file_path(provider, &cid, unixfs_path)?;
+    let (served_path, len) = served_file_path(provider.as_ref(), &cid, unixfs_path)?;
     let mime = mime_guess::from_path(&served_path)
         .first_or_octet_stream()
         .to_string();
 
     let response = if let Some(range) = range {
-        ranged_response(provider, &cid, &served_path, range, &mime)?
+        ranged_response(provider.as_ref(), &cid, &served_path, range, &mime)?
     } else {
-        let bytes = read_file(provider, &cid, &served_path).map_err(GatewayError::Unixfs)?;
-        full_response(bytes, &mime)?
+        streaming_response(provider, cid, served_path, len, &mime)?
     };
     Ok(response)
 }
@@ -229,13 +231,13 @@ fn served_file_path(
     provider: &dyn BlockProvider,
     cid: &Cid,
     unixfs_path: &str,
-) -> Result<String, GatewayError> {
+) -> Result<(String, u64), GatewayError> {
     match file_size(provider, cid, unixfs_path) {
-        Ok(_) => Ok(unixfs_path.to_string()),
+        Ok(len) => Ok((unixfs_path.to_string(), len)),
         Err(UnixfsError::IsDirectory) => {
             let index_path = append_path(unixfs_path, "index.html");
-            file_size(provider, cid, &index_path).map_err(GatewayError::Unixfs)?;
-            Ok(index_path)
+            let len = file_size(provider, cid, &index_path).map_err(GatewayError::Unixfs)?;
+            Ok((index_path, len))
         }
         Err(err) => Err(GatewayError::Unixfs(err)),
     }
@@ -254,7 +256,7 @@ fn split_ipfs_path(path: &str) -> Result<(Cid, &str), GatewayError> {
 }
 
 async fn serve_ipns_path(
-    provider: &dyn BlockProvider,
+    provider: Arc<dyn BlockProvider>,
     name_resolver: &dyn NameResolver,
     path: &str,
     range: Option<&HeaderValue>,
@@ -263,7 +265,7 @@ async fn serve_ipns_path(
 
     for _ in 0..4 {
         if let Some(ipfs) = target.strip_prefix("/ipfs/") {
-            return serve_ipfs_path(provider, ipfs, range).await;
+            return serve_ipfs_path(provider.clone(), ipfs, range).await;
         }
 
         let Some(ipns) = target.strip_prefix("/ipns/") else {
@@ -306,9 +308,30 @@ fn append_path(base: &str, rest: &str) -> String {
     }
 }
 
-fn full_response(bytes: Vec<u8>, mime: &str) -> Result<Response, GatewayError> {
-    let len = bytes.len();
-    let mut response = Body::from(Bytes::from(bytes)).into_response();
+fn streaming_response(
+    provider: Arc<dyn BlockProvider>,
+    cid: Cid,
+    path: String,
+    len: u64,
+    mime: &str,
+) -> Result<Response, GatewayError> {
+    let stream = stream::unfold(0u64, move |offset| {
+        let provider = provider.clone();
+        let path = path.clone();
+        async move {
+            if offset >= len {
+                return None;
+            }
+            let end = (offset + GATEWAY_STREAM_CHUNK_SIZE - 1).min(len - 1);
+            let next = end + 1;
+            let chunk = read_file_range(provider.as_ref(), &cid, &path, offset, end)
+                .map(Bytes::from)
+                .map_err(|err| io::Error::other(err.to_string()));
+            Some((chunk, next))
+        }
+    });
+
+    let mut response = Body::from_stream(stream).into_response();
     response.headers_mut().insert(
         CONTENT_TYPE,
         HeaderValue::from_str(mime).map_err(|err| GatewayError::Internal(err.to_string()))?,
@@ -486,6 +509,37 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(response.bytes().await.unwrap(), Bytes::from_static(b"2345"));
+    }
+
+    #[tokio::test]
+    async fn streams_full_response_across_chunks() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let data = (0..(GATEWAY_STREAM_CHUNK_SIZE as usize + 17))
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        let cid = cid_from_data(CODEC_RAW, &data);
+        store.put_block(&cid, &data).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router(store);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{addr}/ipfs/{cid}");
+        let response = reqwest::get(url).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_LENGTH)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            data.len().to_string()
+        );
+        assert_eq!(response.bytes().await.unwrap(), Bytes::from(data));
     }
 
     #[tokio::test]

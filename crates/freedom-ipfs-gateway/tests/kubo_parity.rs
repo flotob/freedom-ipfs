@@ -1,4 +1,4 @@
-use axum::http::header::{CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE};
+use axum::http::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE};
 use axum::http::{HeaderValue, StatusCode};
 use freedom_ipfs_gateway::router;
 use freedom_ipfs_store::SqliteBlockStore;
@@ -118,6 +118,7 @@ async fn kubo_generated_unixfs_site_matches_local_gateway_bytes() {
 
     let range_start = 123_456usize;
     let range_end = 124_567usize;
+    let range_len = range_end - range_start + 1;
     let url = format!("http://{addr}/ipfs/{root}/assets/blob.bin");
     let response = reqwest::Client::new()
         .get(url)
@@ -139,6 +140,36 @@ async fn kubo_generated_unixfs_site_matches_local_gateway_bytes() {
         response.bytes().await.unwrap().as_ref(),
         &large[range_start..=range_end]
     );
+
+    let url = format!("http://{addr}/ipfs/{root}/assets/blob.bin");
+    let response = reqwest::Client::new().head(&url).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(CONTENT_LENGTH).unwrap(),
+        HeaderValue::from_str(&large.len().to_string()).unwrap()
+    );
+    assert_eq!(
+        response.headers().get(ACCEPT_RANGES).unwrap(),
+        HeaderValue::from_static("bytes")
+    );
+    assert!(response.bytes().await.unwrap().is_empty());
+
+    let response = reqwest::Client::new()
+        .head(&url)
+        .header(RANGE, format!("bytes={range_start}-{range_end}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response.headers().get(CONTENT_RANGE).unwrap(),
+        HeaderValue::from_str(&format!("bytes {range_start}-{range_end}/{}", large.len())).unwrap()
+    );
+    assert_eq!(
+        response.headers().get(CONTENT_LENGTH).unwrap(),
+        HeaderValue::from_str(&range_len.to_string()).unwrap()
+    );
+    assert!(response.bytes().await.unwrap().is_empty());
 
     let open_start = large.len() - 16;
     let url = format!("http://{addr}/ipfs/{root}/assets/blob.bin");

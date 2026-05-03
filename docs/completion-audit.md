@@ -20,7 +20,7 @@ Do not mark the overall implementation goal complete until those Apple-platform 
 
 ## Current Verification Evidence
 
-Fresh checks run against code changes through `d05ead4`:
+Fresh checks run against code changes through `d98e8ca`:
 
 ```bash
 cargo fmt --all --check && make verify

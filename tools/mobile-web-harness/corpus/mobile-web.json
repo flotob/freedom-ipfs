@@ -1,0 +1,37 @@
+{
+  "entries": [
+    {
+      "id": "daicowtf-root-html-range",
+      "description": "ENS-resolved daicowtf.eth root CID. Root UnixFS file must render as HTML, not octet-stream.",
+      "path": "/ipfs/QmWWbDw6kriAjRLyJNaeXjqqoyNn6kA18C42ubVzYKS4wS/",
+      "range": "bytes=0-256",
+      "expect_status": 206,
+      "expect_content_type_prefix": "text/html",
+      "expect_content_range_prefix": "bytes 0-256/",
+      "expect_body_contains": "<!DOCTYPE html",
+      "min_bytes": 257,
+      "max_ttfb_ms": 30000
+    },
+    {
+      "id": "ipfs-tech-root-html-range",
+      "description": "DNSLink-backed IPNS website root. Exercises name resolution plus HTML gateway serving.",
+      "path": "/ipns/ipfs.tech/",
+      "range": "bytes=0-4095",
+      "expect_status": 206,
+      "expect_content_type_prefix": "text/html",
+      "expect_content_range_prefix": "bytes 0-4095/",
+      "expect_body_contains": "<title>IPFS",
+      "min_bytes": 4096,
+      "max_ttfb_ms": 45000
+    },
+    {
+      "id": "daicowtf-dot-eth-is-not-ipns",
+      "description": "Control case: .eth names are resolved by the app ENS layer, not by the IPFS gateway IPNS resolver.",
+      "path": "/ipns/daicowtf.eth/",
+      "expect_status": 404,
+      "expect_content_type_prefix": "text/html",
+      "expect_body_contains": "name not found",
+      "max_ttfb_ms": 5000
+    }
+  ]
+}

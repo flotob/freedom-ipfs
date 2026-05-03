@@ -8,6 +8,7 @@ members = [
     "crates/freedom-ipfs-retrieval",
     "crates/freedom-ipfs-gateway",
     "crates/freedom-ipfs-mobile",
+    "tools/mobile-web-harness",
     "xtask",
 ]
 resolver = "2"

@@ -75,7 +75,9 @@ Record device model, iOS version, app commit, Freedom IPFS commit, Bee commit, X
    - Repeat the same measurements as case 2.
 
 4. DNSLink/IPNS content:
-   - Load `/ipns/ipfs.tech`, `/ipns/dist.ipfs.tech`, and `/ipns/cid.ipfs.tech`.
+   - Load checked-in DNSLink-backed paths from `tests/fixtures/public_corpus.txt`.
+   - At minimum, cover `/ipns/dnslink.dev`, `/ipns/dnslink.dev/assets/style.b1c0d942.css`, and one larger `/ipns/ipfs.tech/_nuxt/...jpg` asset such as `/ipns/ipfs.tech/_nuxt/developers-hero.BRuJDQyf.jpg`.
+   - Do not use mutable `/ipns/ipfs.tech`, `/ipns/dist.ipfs.tech`, or `/ipns/cid.ipfs.tech` roots as acceptance targets unless they are revalidated; they were retired from the default corpus after public-provider flakiness.
    - Record successful render, first byte, complete load time, and whether fallback routing was needed from `diagnostics.routingStats`.
 
 5. Byte-range behavior:
@@ -100,7 +102,7 @@ Record device model, iOS version, app commit, Freedom IPFS commit, Bee commit, X
    - Verify provider metadata is cleared, `diagnostics.routingStats` records fresh lookups after the path change, and retrieval recovers without restarting the app.
 
 10. Repeated retrieval soak:
-    - Run 20 alternating loads of `vitalik.eth`, `daicowtf.eth`, and one `/ipns` path.
+    - Run 20 alternating loads of `vitalik.eth`, `daicowtf.eth`, and one checked-in DNSLink-backed `/ipns` path from `tests/fixtures/public_corpus.txt`.
     - Clear cache every fifth run.
     - Record RSS before, peak, and after the run.
 
@@ -113,7 +115,7 @@ The first product-usable release should meet these targets on every target devic
 - No continuous idle network traffic after name/routing caches settle.
 - Local gateway remains loopback-only.
 - No block serving, content providing, DHT server mode, or Kubo RPC surface is visible on device.
-- `vitalik.eth`, `daicowtf.eth`, and the three checked-in `/ipns` paths render through the local gateway.
+- `vitalik.eth`, `daicowtf.eth`, and the checked-in DNSLink-backed `/ipns` acceptance paths render through the local gateway.
 - `diagnostics.retrievalStats` and `diagnostics.routingStats` show non-zero retrieval/routing work for cold network loads, and `diagnostics.activePreloadCount` returns to zero after cancelled or completed preloads.
 - Routing can be changed from `auto` to `delegated` or `light_dht` with `setRoutingMode(...)` or `restartOnlineGateway(...)`; active preloads are cancelled and a new loopback gateway URL is surfaced to the app.
 - Background, foreground, low-memory, and network-change hooks run without process death or stuck retrieval.

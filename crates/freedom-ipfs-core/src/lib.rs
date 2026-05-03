@@ -154,8 +154,10 @@ pub fn parse_car_v1(bytes: &[u8]) -> Result<CarFile> {
         let cid = Cid::read_bytes(&mut cursor)
             .map_err(|err| CoreError::InvalidCar(format!("invalid block cid: {err}")))?;
         let cid_len = cursor.position() as usize;
-        if cid_len >= section.len() {
-            return Err(CoreError::InvalidCar("block section has no data".into()));
+        if cid_len > section.len() {
+            return Err(CoreError::InvalidCar(
+                "block cid consumed beyond section".into(),
+            ));
         }
         let data = section[cid_len..].to_vec();
         verify_block(&cid, &data)?;
@@ -247,5 +249,20 @@ mod tests {
         assert_eq!(parsed.blocks.len(), 1);
         assert_eq!(parsed.blocks[0].cid, cid);
         assert_eq!(parsed.blocks[0].data, data);
+    }
+
+    #[test]
+    fn encodes_and_parses_empty_raw_block() {
+        let data = Vec::new();
+        let cid = cid_from_data(CODEC_RAW, &data);
+        let car = encode_car_v1(&[CarBlock {
+            cid,
+            data: data.clone(),
+        }]);
+
+        let parsed = parse_car_v1(&car).unwrap();
+        assert_eq!(parsed.blocks.len(), 1);
+        assert_eq!(parsed.blocks[0].cid, cid);
+        assert!(parsed.blocks[0].data.is_empty());
     }
 }

@@ -735,14 +735,24 @@ mod tests {
 
         let url = format!("http://{addr}/ipfs/{cid}");
         let client = reqwest::Client::new();
-        let response = client
-            .get(url)
-            .header(RANGE, "bytes=2-5")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
-        assert_eq!(response.bytes().await.unwrap(), Bytes::from_static(b"2345"));
+        for (range, expected_range, expected) in [
+            ("bytes=2-5", "bytes 2-5/10", b"2345".as_slice()),
+            ("bytes=7-", "bytes 7-9/10", b"789".as_slice()),
+            ("bytes=-3", "bytes 7-9/10", b"789".as_slice()),
+        ] {
+            let response = client.get(&url).header(RANGE, range).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT, "{range}");
+            assert_eq!(
+                response.headers().get(CONTENT_RANGE).unwrap(),
+                HeaderValue::from_static(expected_range),
+                "{range}"
+            );
+            assert_eq!(
+                response.bytes().await.unwrap().as_ref(),
+                expected,
+                "{range}"
+            );
+        }
     }
 
     #[tokio::test]

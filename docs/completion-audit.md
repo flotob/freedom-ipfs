@@ -26,8 +26,8 @@ Fresh checks run against this file version:
 
 ```bash
 cargo fmt --all --check && make verify
-make live-smoke && make live-corpus
-make live-soak
+KUBO_BIN=$PWD/target/tools/kubo/kubo/ipfs make kubo-parity
+make live-smoke
 ```
 
 Apple-platform CI evidence:
@@ -41,7 +41,8 @@ Job URL: https://github.com/flotob/freedom-ipfs/actions/runs/25274751928/job/741
 Earlier checks for unchanged areas:
 
 ```bash
-KUBO_BIN=$PWD/target/tools/kubo/kubo/ipfs make kubo-parity
+make live-corpus
+make live-soak
 make local-soak
 ```
 
@@ -50,11 +51,11 @@ Results:
 - `cargo fmt --all --check && make verify` passed.
 - Live smoke passed through the local gateway:
   - `vitalik.eth` resolved to `/ipfs/bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u`, returned `38394` bytes.
-    - Per-target diagnostics: `retrieval_delta=cache_hits=5,http_provider_blocks=2,bitswap_blocks=0`; `routing_delta=delegated_lookups=2,delegated_results=46,delegated_errors=0,dht_lookups=0,dht_results=0,dht_errors=0`.
+    - Per-target diagnostics: `retrieval_delta=cache_hits=5,http_provider_blocks=2,bitswap_blocks=0`; `routing_delta=delegated_lookups=2,delegated_results=42,delegated_errors=0,dht_lookups=0,dht_results=0,dht_errors=0`.
   - `daicowtf.eth` resolved to `/ipfs/bafybeidznfolm74c5cephzdycedx7hk76iawno45wemcvkflieotzo2lne`, returned `403507` bytes.
     - Per-target diagnostics: `retrieval_delta=cache_hits=20,http_provider_blocks=0,bitswap_blocks=3`; `routing_delta=delegated_lookups=3,delegated_results=5,delegated_errors=0,dht_lookups=0,dht_results=0,dht_errors=0`.
   - Retrieval stats: `cache_hits=25 http_provider_blocks=2 bitswap_blocks=3`.
-  - Routing provider stats: `delegated_lookups=5 delegated_results=51 delegated_errors=0 dht_lookups=0 dht_results=0 dht_errors=0`.
+  - Routing provider stats: `delegated_lookups=5 delegated_results=47 delegated_errors=0 dht_lookups=0 dht_results=0 dht_errors=0`.
 - Public corpus smoke passed for the checked-in `vitalik-home`, `daicowtf-home`, `ipfs-tech`, `ipfs-tech-developers-hero`, `dist-ipfs-tech`, and `cid-ipfs-tech` entries, including a `bytes=0-127` range request for each entry:
   - `vitalik-home` returned `38394` bytes.
   - `daicowtf-home` returned `403507` bytes.
@@ -65,7 +66,7 @@ Results:
   - Each range response returned `128` bytes, matched the full response prefix, and included a valid `Content-Range` header.
   - Retrieval stats: `cache_hits=132 http_provider_blocks=3 bitswap_blocks=10`.
 - The opt-in live harnesses retry transient local-gateway `408`, `502`, `503`, and `504` responses so temporary public-network provider timeouts do not fail the first attempt when later attempts succeed.
-- Kubo parity passed for generated CIDv1/raw-leaf UnixFS site files, CIDv0/DAG-PB UnixFS site files, directory-index fallback, range reads, and HAMT directories.
+- Kubo parity passed for generated CIDv1/raw-leaf UnixFS site files, CIDv0/DAG-PB UnixFS site files, empty files, directory-index fallback, fixed/open-ended/suffix range reads, and HAMT directories.
 - Local cached-gateway soak passed: `500` requests, Linux RSS from `8960` KiB to `13312` KiB.
 - Host live-retrieval soak passed: `2` cold gateway rounds against `vitalik-home` and `daicowtf-home`, `883802` total bytes, retrieval stats `cache_hits=50 http_provider_blocks=4 bitswap_blocks=6`, Linux RSS from `11264` KiB to `42240` KiB.
 - GitHub Actions `iOS XCFramework` passed on `macos-15` with Xcode 16.4 using `actions/checkout@v6` and `actions/upload-artifact@v7`, both Node 24-backed releases. It built the real `FreedomIpfs.xcframework`, verified headers/module maps/exported C symbols, including the routing restart export, booted an iOS simulator, compiled and linked the Swift wrapper smoke, asserted that Swift gateway start rejects a non-loopback bind address, started the local gateway in the simulator via `simctl spawn booted`, fetched the CAR fixture through loopback, stopped the gateway, built and installed a generated UIKit/WebKit simulator app, imported the same CAR fixture, started the gateway from app process, fetched `/ipfs/{cid}` through loopback with `URLSession`, rendered the HTML in `WKWebView`, verified the DOM marker with JavaScript, and uploaded `FreedomIpfs.xcframework` as artifact ID `6769532787` (`60045292` bytes).
@@ -84,7 +85,7 @@ Results:
 | Bounded SQLite cache | `freedom-ipfs-store` implements SQLite cache, LRU eviction, active block retention during streaming, CIDv0/CIDv1 DAG-PB alias keys, stats, clear, trim, provider and bad-provider caches. | Done |
 | Memory hot cache | Store has a bounded 16 MiB in-memory hot block cache in front of SQLite; tests cover clear/trim removing hot entries. | Done |
 | Default disk cache 256 MiB | CLI/mobile default to `256 * 1024 * 1024`. | Done |
-| CAR import/export for fixtures/cache warmup | Core CAR parse/encode and store import/export tests; CLI/mobile import/export APIs. | Done |
+| CAR import/export for fixtures/cache warmup | Core CAR parse/encode accepts empty raw blocks and store import/export tests pass; CLI/mobile import/export APIs. | Done |
 | Max block guard | Core verifies blocks with a max block size path. | Done for MVP |
 | UnixFS raw/dag-pb files | `freedom-ipfs-unixfs` tests cover raw and dag-pb files. | Done |
 | Multi-block UnixFS raw leaves | Range-across-inline-and-linked-block tests plus Kubo CIDv1/raw-leaf parity. | Done |
@@ -94,7 +95,7 @@ Results:
 | Local HTTP gateway data plane | Gateway crate and binary serve `/health`, `/ipfs`, `/ipns`; live smoke uses the local gateway; mobile FFI start/restart rejects non-loopback bind addresses. | Done |
 | Streaming responses | Gateway streams full responses in bounded chunks. | Done |
 | Stream eviction guard | Gateway stream scopes retain blocks they read; SQLite LRU eviction and explicit trim skip retained blocks until the stream scope releases them. | Done |
-| HTTP range support | Gateway range tests cover success, malformed ranges, and unsatisfiable ranges. | Done |
+| HTTP range support | Gateway range tests cover fixed, open-ended, suffix, malformed, and unsatisfiable ranges. | Done |
 | Browser MIME behavior | Directory `index.html` fallback with path-based `text/html` test. | Done for MVP |
 | Useful gateway status codes and browser error pages | Tests cover invalid path/range, not found/name not found, timeout, busy, traversal cases, `text/html` browser-facing error pages, and escaped error details. | Done |
 | Bounded gateway concurrency | Gateway semaphore and concurrency-limit test. | Done |
@@ -127,7 +128,7 @@ Results:
 | Browser integration helpers | Local gateway URL, `ipfs://`/`ipns://`/gateway-style URL mapping helpers, preload/cancel with path/URI/bare-CID normalization, cache stats/control. | Swift compile/link and generated `WKWebView` app smoke verified in simulator; Freedom app integration unverified |
 | Live ENS-backed smoke | `make live-smoke` resolves `vitalik.eth` and `daicowtf.eth` at runtime, mounts the online IPNS/DNSLink resolver, fetches through the local gateway, and prints per-target retrieval/routing deltas that distinguish cache, HTTP-provider blocks, Bitswap blocks, delegated provider lookups, and light-DHT fallback. | Done on Linux |
 | Public IPFS/IPNS corpus | Checked-in opt-in corpus covers the ENS-derived immutable `/ipfs` paths plus DNSLink-backed `/ipns` paths for `ipfs.tech`, one larger `ipfs.tech` media asset, `dist.ipfs.tech`, and `cid.ipfs.tech`; `make live-corpus` passed with full-response and `bytes=0-127` range checks. | Expanded; should still grow with more media cases |
-| Kubo parity | Deterministic Kubo-generated CIDv1/raw-leaf UnixFS, CIDv0/DAG-PB UnixFS, HAMT, range, and directory-index parity tests. | Expanded |
+| Kubo parity | Deterministic Kubo-generated CIDv1/raw-leaf UnixFS, CIDv0/DAG-PB UnixFS, empty-file, HAMT, fixed/open-ended/suffix range, and directory-index parity tests. | Expanded |
 | Long-running soak | Local cached-gateway RSS soak and host live-retrieval RSS soak exist and pass. | Host-side coverage improved; device soak missing |
 | Security parser/network limits | Tests cover oversized/malformed routing, traversal, invalid blocks, redirects, IPNS tamper/expiry, recursion, provider fanout. | Good MVP coverage |
 

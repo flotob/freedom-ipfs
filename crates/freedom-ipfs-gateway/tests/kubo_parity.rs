@@ -1,5 +1,5 @@
-use axum::http::header::{CONTENT_RANGE, CONTENT_TYPE, RANGE};
-use axum::http::StatusCode;
+use axum::http::header::{CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE};
+use axum::http::{HeaderValue, StatusCode};
 use freedom_ipfs_gateway::router;
 use freedom_ipfs_store::SqliteBlockStore;
 use std::env;
@@ -23,6 +23,7 @@ async fn kubo_generated_unixfs_site_matches_local_gateway_bytes() {
     )
     .unwrap();
     fs::write(site.join("assets/style.css"), b"body { color: #111; }\n").unwrap();
+    fs::write(site.join("assets/empty.txt"), b"").unwrap();
     let large = (0..600_000)
         .map(|index| (index % 251) as u8)
         .collect::<Vec<_>>();
@@ -79,12 +80,23 @@ async fn kubo_generated_unixfs_site_matches_local_gateway_bytes() {
     );
     assert_eq!(response.bytes().await.unwrap().as_ref(), expected_index);
 
-    for path in ["index.html", "assets/style.css", "assets/blob.bin"] {
+    for path in [
+        "index.html",
+        "assets/style.css",
+        "assets/empty.txt",
+        "assets/blob.bin",
+    ] {
         let kubo_path = format!("/ipfs/{root}/{path}");
         let expected = kubo_stdout(&kubo, &repo, [OsStr::new("cat"), OsStr::new(&kubo_path)]);
         let url = format!("http://{addr}/ipfs/{root}/{path}");
         let response = reqwest::get(url).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        if path == "assets/empty.txt" {
+            assert_eq!(
+                response.headers().get(CONTENT_LENGTH).unwrap(),
+                HeaderValue::from_static("0")
+            );
+        }
         assert_eq!(
             response.bytes().await.unwrap().as_ref(),
             expected.as_slice()
@@ -114,6 +126,53 @@ async fn kubo_generated_unixfs_site_matches_local_gateway_bytes() {
         response.bytes().await.unwrap().as_ref(),
         &large[range_start..=range_end]
     );
+
+    let open_start = large.len() - 16;
+    let url = format!("http://{addr}/ipfs/{root}/assets/blob.bin");
+    let response = reqwest::Client::new()
+        .get(url)
+        .header(RANGE, format!("bytes={open_start}-"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_RANGE)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        format!("bytes {open_start}-{}/{}", large.len() - 1, large.len())
+    );
+    assert_eq!(
+        response.bytes().await.unwrap().as_ref(),
+        &large[open_start..]
+    );
+
+    let suffix_len = 32usize;
+    let suffix_start = large.len() - suffix_len;
+    let url = format!("http://{addr}/ipfs/{root}/assets/blob.bin");
+    let response = reqwest::Client::new()
+        .get(url)
+        .header(RANGE, format!("bytes=-{suffix_len}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_RANGE)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        format!("bytes {suffix_start}-{}/{}", large.len() - 1, large.len())
+    );
+    assert_eq!(
+        response.bytes().await.unwrap().as_ref(),
+        &large[suffix_start..]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -126,6 +185,7 @@ async fn kubo_generated_cidv0_dagpb_site_matches_local_gateway_bytes() {
     fs::create_dir_all(site.join("docs")).unwrap();
     fs::write(site.join("index.html"), b"<html><body>cidv0</body></html>").unwrap();
     fs::write(site.join("docs/readme.txt"), b"cidv0 dag-pb fixture\n").unwrap();
+    fs::write(site.join("docs/empty.txt"), b"").unwrap();
     let large = (0..700_000)
         .map(|index| (255 - (index % 251)) as u8)
         .collect::<Vec<_>>();
@@ -183,12 +243,23 @@ async fn kubo_generated_cidv0_dagpb_site_matches_local_gateway_bytes() {
     );
     assert_eq!(response.bytes().await.unwrap().as_ref(), expected_index);
 
-    for path in ["index.html", "docs/readme.txt", "docs/blob.bin"] {
+    for path in [
+        "index.html",
+        "docs/readme.txt",
+        "docs/empty.txt",
+        "docs/blob.bin",
+    ] {
         let kubo_path = format!("/ipfs/{root}/{path}");
         let expected = kubo_stdout(&kubo, &repo, [OsStr::new("cat"), OsStr::new(&kubo_path)]);
         let url = format!("http://{addr}/ipfs/{root}/{path}");
         let response = reqwest::get(url).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        if path == "docs/empty.txt" {
+            assert_eq!(
+                response.headers().get(CONTENT_LENGTH).unwrap(),
+                HeaderValue::from_static("0")
+            );
+        }
         assert_eq!(
             response.bytes().await.unwrap().as_ref(),
             expected.as_slice()

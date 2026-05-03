@@ -3,12 +3,13 @@
 Offline tests currently generate minimal fixtures in Rust so they remain reproducible:
 
 - raw CIDv1 block,
-- minimal CAR v1 with one raw block,
+- minimal CAR v1 with one raw block, including empty raw-block coverage,
 - dag-pb UnixFS file,
 - dag-pb UnixFS directory pointing at a file,
 - missing and malformed block cases through unit tests.
 - Kubo-generated UnixFS directory and HAMT directory CAR parity smokes via
-  `make kubo-parity` when `KUBO_BIN` points at an `ipfs` binary.
+  `make kubo-parity` when `KUBO_BIN` points at an `ipfs` binary, including
+  empty files and fixed/open-ended/suffix byte ranges.
 - Kubo-generated CIDv0 DAG-PB UnixFS CAR parity smoke via `make kubo-parity`
   to cover non-raw-leaf legacy gateway content.
 - Opt-in public corpus smoke via `make live-corpus`, using immutable `/ipfs`

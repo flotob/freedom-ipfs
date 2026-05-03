@@ -643,6 +643,15 @@ fn timeout_http_client(timeout: Duration) -> reqwest::Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ipld_core::ipld::Ipld;
+    use libp2p_identity::Keypair;
+    use multihash::Multihash;
+    use prost::Message;
+    use std::collections::BTreeMap;
+
+    const TEST_IPNS_VALIDITY: &str = "2126-01-01T00:00:00.000000000Z";
+    const IPNS_SIGNATURE_PREFIX: &[u8] = b"ipns-signature:";
+    const LIBP2P_KEY_CODEC: u64 = 0x72;
 
     #[test]
     fn extracts_tls_http_provider_urls() {
@@ -734,6 +743,23 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn dht_ipns_resolver_reads_verified_record_from_local_server_peer() {
+        let value = "/ipfs/bafkqaddwgevxmmraojswg33smq";
+        let (name, record) = signed_ipns_record(value);
+        let (peer_id, addr, swarm_task) = spawn_local_dht_record(&name, record).await;
+        let bootstrap = format!("{addr}/p2p/{peer_id}");
+        let resolver = DhtIpnsResolver::new(
+            LightDhtClient::new(vec![bootstrap]).with_query_timeout(Duration::from_secs(5)),
+        );
+
+        let resolved = resolver.resolve_ipns(&name).await.unwrap();
+
+        assert_eq!(resolved.value, value);
+        assert_eq!(resolved.sequence, 7);
+        swarm_task.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     #[ignore = "network smoke test against the public Amino DHT"]
     async fn live_light_dht_finds_public_providers() {
         let cid = std::env::var("FREEDOM_IPFS_LIVE_DHT_CID")
@@ -756,6 +782,40 @@ mod tests {
             );
         }
         assert!(!providers.is_empty());
+    }
+
+    fn signed_ipns_record(value: &str) -> (String, Vec<u8>) {
+        let keypair = Keypair::generate_ed25519();
+        let public = keypair.public();
+        let name = Cid::new_v1(
+            LIBP2P_KEY_CODEC,
+            Multihash::<64>::from_bytes(&public.to_peer_id().to_bytes()).unwrap(),
+        )
+        .to_string();
+        let data = ipns_data(value);
+        let mut signed = IPNS_SIGNATURE_PREFIX.to_vec();
+        signed.extend_from_slice(&data);
+        let signature = keypair.sign(&signed).unwrap();
+
+        let entry = TestIpnsEntry {
+            signature_v2: Some(signature),
+            data: Some(data),
+            ..TestIpnsEntry::default()
+        };
+        (name, entry.encode_to_vec())
+    }
+
+    fn ipns_data(value: &str) -> Vec<u8> {
+        let mut map = BTreeMap::new();
+        map.insert("Sequence".to_string(), Ipld::Integer(7));
+        map.insert("TTL".to_string(), Ipld::Integer(300_000_000_000));
+        map.insert(
+            "Validity".to_string(),
+            Ipld::Bytes(TEST_IPNS_VALIDITY.as_bytes().to_vec()),
+        );
+        map.insert("ValidityType".to_string(), Ipld::Integer(0));
+        map.insert("Value".to_string(), Ipld::Bytes(value.as_bytes().to_vec()));
+        serde_ipld_dagcbor::to_vec(&Ipld::Map(map)).unwrap()
     }
 
     async fn spawn_local_dht_provider(
@@ -787,6 +847,35 @@ mod tests {
         (peer_id, addr, task)
     }
 
+    async fn spawn_local_dht_record(
+        name: &str,
+        value: Vec<u8>,
+    ) -> (PeerId, Multiaddr, tokio::task::JoinHandle<()>) {
+        let mut swarm = build_local_dht_server().await;
+        let peer_id = *swarm.local_peer_id();
+        swarm
+            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .unwrap();
+        let addr = loop {
+            if let SwarmEvent::NewListenAddr { address, .. } = swarm.select_next_some().await {
+                break address;
+            }
+        };
+        let key = kad::RecordKey::new(&ipns_dht_record_key(name).unwrap());
+        swarm
+            .behaviour_mut()
+            .store_mut()
+            .put(kad::Record::new(key, value))
+            .unwrap();
+
+        let task = tokio::spawn(async move {
+            loop {
+                let _ = swarm.select_next_some().await;
+            }
+        });
+        (peer_id, addr, task)
+    }
+
     async fn build_local_dht_server() -> libp2p::Swarm<kad::Behaviour<MemoryStore>> {
         SwarmBuilder::with_new_identity()
             .with_tokio()
@@ -808,5 +897,33 @@ mod tests {
             })
             .unwrap()
             .build()
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct TestIpnsEntry {
+        #[prost(bytes = "vec", optional, tag = "1")]
+        value: Option<Vec<u8>>,
+        #[prost(bytes = "vec", optional, tag = "2")]
+        signature_v1: Option<Vec<u8>>,
+        #[prost(enumeration = "TestValidityType", optional, tag = "3")]
+        validity_type: Option<i32>,
+        #[prost(bytes = "vec", optional, tag = "4")]
+        validity: Option<Vec<u8>>,
+        #[prost(uint64, optional, tag = "5")]
+        sequence: Option<u64>,
+        #[prost(uint64, optional, tag = "6")]
+        ttl: Option<u64>,
+        #[prost(bytes = "vec", optional, tag = "7")]
+        pub_key: Option<Vec<u8>>,
+        #[prost(bytes = "vec", optional, tag = "8")]
+        signature_v2: Option<Vec<u8>>,
+        #[prost(bytes = "vec", optional, tag = "9")]
+        data: Option<Vec<u8>>,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
+    #[repr(i32)]
+    enum TestValidityType {
+        Eol = 0,
     }
 }

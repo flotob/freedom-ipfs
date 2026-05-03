@@ -62,13 +62,13 @@ M5 delegated routing and verified HTTP retrieval: implemented. Delegated Routing
 
 M6 minimal Bitswap client: implemented for read-only retrieval. It dials bounded provider candidates, supports TCP/WebSocket/QUIC transports, verifies returned blocks, caches extra payload blocks, and sends cancels. It does not serve blocks. The retrieval crate includes a deterministic in-process libp2p Bitswap peer test that validates stream negotiation, block response handling, cache insertion, and cancel emission.
 
-M7 light DHT fallback: implemented for provider lookup and IPNS record lookup. It uses Kademlia client mode, lazy per-lookup swarms, query timeout, and provider fanout limits. The routing crate includes a deterministic local server-mode Kademlia peer test for provider lookup through the light-DHT client.
+M7 light DHT fallback: implemented for provider lookup and IPNS record lookup. It uses Kademlia client mode, lazy per-lookup swarms, query timeout, and provider fanout limits. The routing crate includes deterministic local server-mode Kademlia peer tests for provider lookup and verified IPNS record lookup through the light-DHT client.
 
 M8 mobile resource hardening: partially complete. Cache trim, concurrency limit, DHT timeout/fanout knobs, provider/badness caches, and network timeouts exist. Real idle RSS, CPU, network, startup, Bee concurrency, background/foreground, and low-memory behavior are not measured yet.
 
 M9 browser integration: partially complete. The local gateway path and mobile ABI exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. Swift wrapper and app integration are not implemented in this repo.
 
-M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT provider coverage, and live smoke exist, but public CID corpus tests, Kubo parity matrix, deterministic DHT IPNS record tests, and long soak tests remain follow-up work.
+M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, and live smoke exist, but public CID corpus tests, Kubo parity matrix, and long soak tests remain follow-up work.
 
 M11 optional features: not started except CAR export/import support, which was promoted into the MVP diagnostics/cache path.
 
@@ -79,4 +79,4 @@ M11 optional features: not started except CAR export/import support, which was p
 - Real iPhone resource targets are unverified, including the provisional under-60-MiB idle RSS target beside Bee.
 - DHT-only retrieval of `daicowtf.eth` is not reliable on the public DHT; current auto mode succeeds because delegated routing returns usable providers.
 - DNSLink still defaults to Cloudflare DoH. Native/system TXT lookup should be evaluated for artifact size and iOS behavior.
-- No controlled local Kubo/libp2p DHT IPNS record test exists yet for deterministic DHT IPNS fallback regression coverage.
+- No controlled local Kubo parity harness exists yet for deterministic cross-implementation gateway/routing regression coverage.

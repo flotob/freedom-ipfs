@@ -35,6 +35,22 @@ cargo build -p freedom-ipfs-gateway
 cargo run -p mobile-web-harness -- --output /tmp/mobile-web-run.json
 ```
 
+Run a focused case repeatedly and write an aggregate JSON report:
+
+```sh
+cargo run -p mobile-web-harness -- \
+  --case ipfs-tech-page-assets \
+  --repeat 20 \
+  --output /tmp/ipfs-tech-repeat.json
+```
+
+The repeat report includes measured pass/fail counts, pass rate, root and asset
+TTFB/total-time p50/p90/p95/max summaries, failed asset kinds, and failed URLs
+grouped by status/error. Use `--warmup-runs` to separate warm-cache behavior, or
+`--fresh-gateway-per-run` when measuring repeated cold gateways. Spawning uses
+the same routing, DHT, request-concurrency, and asset-concurrency knobs as the
+single-run harness.
+
 The default live corpus is `tools/mobile-web-harness/corpus/mobile-web.json`.
 It captures browser-facing checks such as status, MIME type, byte ranges,
 minimum body size, body snippets, TTFB, and total response time.

@@ -3,7 +3,7 @@ use clap::Parser;
 use reqwest::header::{CONTENT_RANGE, CONTENT_TYPE, RANGE};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -37,11 +37,20 @@ struct Args {
     /// Optional JSON report output path.
     #[arg(long)]
     output: Option<PathBuf>,
+    /// Number of measured runs to execute.
+    #[arg(long, default_value_t = 1)]
+    repeat: usize,
+    /// Number of unmeasured warmup runs to execute before measured runs.
+    #[arg(long, default_value_t = 0)]
+    warmup_runs: usize,
+    /// Spawn a fresh gateway for every run instead of reusing one gateway.
+    #[arg(long)]
+    fresh_gateway_per_run: bool,
     /// Request timeout in seconds.
     #[arg(long, default_value_t = 180)]
     timeout_secs: u64,
     /// Gateway request concurrency budget when spawning a gateway.
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, alias = "gateway-max-concurrent-requests", default_value_t = 4)]
     max_concurrent_requests: usize,
     /// Gateway routing mode when spawning a gateway.
     #[arg(long, default_value = "auto")]
@@ -61,29 +70,8 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
     let corpus = Corpus::read(&args.corpus)?;
-    let mut spawned = None;
-    let gateway_url = if let Some(url) = args.gateway_url.as_deref() {
-        normalize_gateway_url(url)
-    } else {
-        let gateway = SpawnedGateway::start(&args).await?;
-        let url = gateway.url.clone();
-        spawned = Some(gateway);
-        url
-    };
 
-    let report = run_corpus(
-        &gateway_url,
-        &corpus,
-        Duration::from_secs(args.timeout_secs),
-        args.asset_concurrency,
-        &args.cases,
-    )
-    .await;
-    if let Some(mut gateway) = spawned {
-        gateway.stop().await;
-    }
-
-    let report = report?;
+    let report = run_harness(&args, &corpus).await?;
     print_summary(&report);
     if let Some(output) = args.output {
         let json = serde_json::to_string_pretty(&report)?;
@@ -91,19 +79,103 @@ async fn main() -> Result<()> {
         eprintln!("wrote report to {}", output.display());
     }
 
-    if report.results.iter().any(|result| !result.passed) {
+    if report.summary.fail_count > 0 {
         bail!("mobile web harness found failures");
     }
     Ok(())
 }
 
-async fn run_corpus(
+async fn run_harness(args: &Args, corpus: &Corpus) -> Result<RunReport> {
+    if args.gateway_url.is_some() && args.fresh_gateway_per_run {
+        bail!("--fresh-gateway-per-run cannot be used with --gateway-url");
+    }
+
+    let timeout = Duration::from_secs(args.timeout_secs);
+    let measured_runs = args.repeat.max(1);
+    let total_runs = args.warmup_runs + measured_runs;
+    let mut persistent_gateway = None;
+    let persistent_gateway_url = if args.fresh_gateway_per_run {
+        None
+    } else if let Some(url) = args.gateway_url.as_deref() {
+        Some(normalize_gateway_url(url))
+    } else {
+        let gateway = SpawnedGateway::start(args).await?;
+        let url = gateway.url.clone();
+        persistent_gateway = Some(gateway);
+        Some(url)
+    };
+
+    let mut runs = Vec::new();
+    for sequence in 0..total_runs {
+        let phase = if sequence < args.warmup_runs {
+            RunPhase::Warmup
+        } else {
+            RunPhase::Measured
+        };
+        let run_index = match phase {
+            RunPhase::Warmup => sequence + 1,
+            RunPhase::Measured => sequence - args.warmup_runs + 1,
+        };
+
+        let mut run_gateway = None;
+        let gateway_url = if let Some(url) = &persistent_gateway_url {
+            url.clone()
+        } else {
+            let gateway = SpawnedGateway::start(args).await?;
+            let url = gateway.url.clone();
+            run_gateway = Some(gateway);
+            url
+        };
+
+        let started = Instant::now();
+        let results = run_corpus_once(
+            &gateway_url,
+            corpus,
+            timeout,
+            args.asset_concurrency,
+            &args.cases,
+        )
+        .await?;
+        let elapsed_ms = started.elapsed().as_millis();
+        let passed = results.iter().all(|result| result.passed);
+        runs.push(RunResult {
+            phase,
+            run_index,
+            gateway_url,
+            elapsed_ms,
+            passed,
+            results,
+        });
+
+        if let Some(mut gateway) = run_gateway {
+            gateway.stop().await;
+        }
+    }
+
+    if let Some(mut gateway) = persistent_gateway {
+        gateway.stop().await;
+    }
+
+    let summary = RepeatSummary::from_runs(&runs);
+    Ok(RunReport {
+        gateway_url: persistent_gateway_url,
+        generated_at_unix_seconds: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+        repeat: measured_runs,
+        warmup_runs: args.warmup_runs,
+        fresh_gateway_per_run: args.fresh_gateway_per_run,
+        asset_concurrency: args.asset_concurrency,
+        summary,
+        runs,
+    })
+}
+
+async fn run_corpus_once(
     gateway_url: &str,
     corpus: &Corpus,
     timeout: Duration,
     asset_concurrency: usize,
     cases: &[String],
-) -> Result<RunReport> {
+) -> Result<Vec<CaseResult>> {
     let client = reqwest::Client::builder()
         .timeout(timeout)
         .build()
@@ -115,11 +187,10 @@ async fn run_corpus(
         }
         results.push(run_case(&client, gateway_url, entry, asset_concurrency).await);
     }
-    Ok(RunReport {
-        gateway_url: gateway_url.to_string(),
-        generated_at_unix_seconds: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
-        results,
-    })
+    if results.is_empty() {
+        bail!("no corpus entries matched the requested case filters");
+    }
+    Ok(results)
 }
 
 async fn run_case(
@@ -227,51 +298,118 @@ async fn run_case(
 }
 
 fn print_summary(report: &RunReport) {
-    println!("gateway: {}", report.gateway_url);
-    for result in &report.results {
-        let mark = if result.passed { "PASS" } else { "FAIL" };
+    println!(
+        "gateway: {}",
+        report.gateway_url.as_deref().unwrap_or("fresh per run")
+    );
+    println!(
+        "runs: measured={} warmup={} fresh_gateway_per_run={} asset_concurrency={}",
+        report.repeat, report.warmup_runs, report.fresh_gateway_per_run, report.asset_concurrency
+    );
+    println!(
+        "summary: passed={} failed={} pass_rate={:.1}%",
+        report.summary.pass_count,
+        report.summary.fail_count,
+        report.summary.pass_rate * 100.0
+    );
+
+    for case in &report.summary.cases {
         println!(
-            "{mark} {:32} status={} type={} bytes={} ttfb={}ms total={}ms",
-            result.id,
-            result
-                .status
-                .map(|status| status.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-            result.content_type.as_deref().unwrap_or("-"),
-            result.body_bytes,
-            result.ttfb_ms,
-            result.total_ms
+            "case {}: passed={} failed={} pass_rate={:.1}% root_ttfb={} root_total={} asset_ttfb={} asset_total={}",
+            case.id,
+            case.pass_count,
+            case.fail_count,
+            case.pass_rate * 100.0,
+            case.root_ttfb_ms,
+            case.root_total_ms,
+            case.asset_ttfb_ms,
+            case.asset_total_ms
         );
-        for failure in &result.failures {
-            println!("  - {failure}");
+        if !case.asset_kind_failures.is_empty() {
+            let failures = case
+                .asset_kind_failures
+                .iter()
+                .map(|failure| format!("{}={}", failure.kind, failure.count))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("  failed asset kinds: {failures}");
         }
-        if let Some(summary) = &result.asset_summary {
+        for group in case.failure_groups.iter().take(12) {
+            println!("  failure x{}: {}", group.count, group.key);
+            for example in &group.examples {
+                println!("    - {example}");
+            }
+        }
+    }
+
+    if report.repeat == 1 && report.warmup_runs == 0 {
+        for run in report
+            .runs
+            .iter()
+            .filter(|run| run.phase == RunPhase::Measured)
+        {
+            for result in &run.results {
+                print_case_result(result);
+            }
+        }
+    } else {
+        for run in report
+            .runs
+            .iter()
+            .filter(|run| run.phase == RunPhase::Measured)
+        {
+            let mark = if run.passed { "PASS" } else { "FAIL" };
             println!(
-                "  assets: discovered={} fetched={} passed={} failed={} skipped_external={} skipped_unsupported={} truncated={}",
-                summary.discovered,
-                summary.fetched,
-                summary.passed,
-                summary.failed,
-                summary.skipped_external,
-                summary.skipped_unsupported,
-                summary.truncated
+                "{mark} measured run {:02} total={}ms",
+                run.run_index, run.elapsed_ms
             );
-            for asset in result.assets.iter().filter(|asset| !asset.passed).take(8) {
-                println!(
-                    "    - {} {} status={} type={} bytes={} total={}ms",
-                    asset.kind,
-                    asset.url,
-                    asset
-                        .status
-                        .map(|status| status.to_string())
-                        .unwrap_or_else(|| "-".to_string()),
-                    asset.content_type.as_deref().unwrap_or("-"),
-                    asset.body_bytes,
-                    asset.total_ms
-                );
-                for failure in &asset.failures {
-                    println!("      - {failure}");
-                }
+        }
+    }
+}
+
+fn print_case_result(result: &CaseResult) {
+    let mark = if result.passed { "PASS" } else { "FAIL" };
+    println!(
+        "{mark} {:32} status={} type={} bytes={} ttfb={}ms total={}ms",
+        result.id,
+        result
+            .status
+            .map(|status| status.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        result.content_type.as_deref().unwrap_or("-"),
+        result.body_bytes,
+        result.ttfb_ms,
+        result.total_ms
+    );
+    for failure in &result.failures {
+        println!("  - {failure}");
+    }
+    if let Some(summary) = &result.asset_summary {
+        println!(
+            "  assets: discovered={} fetched={} passed={} failed={} skipped_external={} skipped_unsupported={} truncated={}",
+            summary.discovered,
+            summary.fetched,
+            summary.passed,
+            summary.failed,
+            summary.skipped_external,
+            summary.skipped_unsupported,
+            summary.truncated
+        );
+        for asset in result.assets.iter().filter(|asset| !asset.passed).take(8) {
+            println!(
+                "    - {} {} status={} type={} bytes={} total={}ms",
+                asset.kind,
+                asset.url,
+                asset
+                    .status
+                    .map(|status| status.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                asset.content_type.as_deref().unwrap_or("-"),
+                asset.body_bytes,
+                asset.total_ms
+            );
+            for failure in &asset.failures {
+                println!("      - {failure}");
             }
         }
     }
@@ -1213,9 +1351,283 @@ struct CrawlConfig {
 
 #[derive(Debug, Serialize)]
 struct RunReport {
-    gateway_url: String,
+    gateway_url: Option<String>,
     generated_at_unix_seconds: u64,
+    repeat: usize,
+    warmup_runs: usize,
+    fresh_gateway_per_run: bool,
+    asset_concurrency: usize,
+    summary: RepeatSummary,
+    runs: Vec<RunResult>,
+}
+
+#[derive(Debug, Serialize)]
+struct RunResult {
+    phase: RunPhase,
+    run_index: usize,
+    gateway_url: String,
+    elapsed_ms: u128,
+    passed: bool,
     results: Vec<CaseResult>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RunPhase {
+    Warmup,
+    Measured,
+}
+
+#[derive(Debug, Serialize)]
+struct RepeatSummary {
+    measured_runs: usize,
+    pass_count: usize,
+    fail_count: usize,
+    pass_rate: f64,
+    cases: Vec<CaseAggregate>,
+}
+
+impl RepeatSummary {
+    fn from_runs(runs: &[RunResult]) -> Self {
+        let measured = runs
+            .iter()
+            .filter(|run| run.phase == RunPhase::Measured)
+            .collect::<Vec<_>>();
+        let pass_count = measured.iter().filter(|run| run.passed).count();
+        let fail_count = measured.len().saturating_sub(pass_count);
+        let pass_rate = rate(pass_count, measured.len());
+
+        let mut case_ids = Vec::new();
+        for run in &measured {
+            for result in &run.results {
+                if !case_ids.contains(&result.id) {
+                    case_ids.push(result.id.clone());
+                }
+            }
+        }
+
+        let cases = case_ids
+            .into_iter()
+            .map(|id| CaseAggregate::from_runs(&id, &measured))
+            .collect();
+
+        Self {
+            measured_runs: measured.len(),
+            pass_count,
+            fail_count,
+            pass_rate,
+            cases,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct CaseAggregate {
+    id: String,
+    run_count: usize,
+    pass_count: usize,
+    fail_count: usize,
+    pass_rate: f64,
+    root_ttfb_ms: LatencySummary,
+    root_total_ms: LatencySummary,
+    asset_ttfb_ms: LatencySummary,
+    asset_total_ms: LatencySummary,
+    asset_kind_failures: Vec<AssetKindFailure>,
+    failure_groups: Vec<FailureGroup>,
+}
+
+impl CaseAggregate {
+    fn from_runs(id: &str, runs: &[&RunResult]) -> Self {
+        let mut run_count = 0usize;
+        let mut pass_count = 0usize;
+        let mut root_ttfb = Vec::new();
+        let mut root_total = Vec::new();
+        let mut asset_ttfb = Vec::new();
+        let mut asset_total = Vec::new();
+        let mut kind_failures = BTreeMap::<String, usize>::new();
+        let mut failure_groups = BTreeMap::<String, FailureGroupBuilder>::new();
+
+        for run in runs {
+            let Some(result) = run.results.iter().find(|result| result.id == id) else {
+                continue;
+            };
+            run_count += 1;
+            if result.passed {
+                pass_count += 1;
+            }
+            root_ttfb.push(result.ttfb_ms);
+            root_total.push(result.total_ms);
+            if !result.passed {
+                for failure in &result.failures {
+                    push_failure_group(
+                        &mut failure_groups,
+                        format!("case failure: {failure}"),
+                        result.url.clone(),
+                    );
+                }
+            }
+            for asset in &result.assets {
+                asset_ttfb.push(asset.ttfb_ms);
+                asset_total.push(asset.total_ms);
+                if asset.passed {
+                    continue;
+                }
+                *kind_failures.entry(asset.kind.to_string()).or_default() += 1;
+                let status = asset
+                    .status
+                    .map(|status| format!("status={status}"))
+                    .unwrap_or_else(|| "status=request_error".to_string());
+                let detail = if asset.failures.is_empty() {
+                    "no detail".to_string()
+                } else {
+                    asset.failures.join("; ")
+                };
+                push_failure_group(
+                    &mut failure_groups,
+                    format!("asset kind={} {status}: {detail}", asset.kind),
+                    asset.url.clone(),
+                );
+            }
+        }
+
+        let fail_count = run_count.saturating_sub(pass_count);
+        let mut asset_kind_failures = kind_failures
+            .into_iter()
+            .map(|(kind, count)| AssetKindFailure { kind, count })
+            .collect::<Vec<_>>();
+        asset_kind_failures.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| left.kind.cmp(&right.kind))
+        });
+        let mut failure_groups = failure_groups
+            .into_values()
+            .map(FailureGroupBuilder::finish)
+            .collect::<Vec<_>>();
+        failure_groups.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| left.key.cmp(&right.key))
+        });
+
+        Self {
+            id: id.to_string(),
+            run_count,
+            pass_count,
+            fail_count,
+            pass_rate: rate(pass_count, run_count),
+            root_ttfb_ms: LatencySummary::from_values(root_ttfb),
+            root_total_ms: LatencySummary::from_values(root_total),
+            asset_ttfb_ms: LatencySummary::from_values(asset_ttfb),
+            asset_total_ms: LatencySummary::from_values(asset_total),
+            asset_kind_failures,
+            failure_groups,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct LatencySummary {
+    count: usize,
+    p50_ms: Option<u128>,
+    p90_ms: Option<u128>,
+    p95_ms: Option<u128>,
+    max_ms: Option<u128>,
+}
+
+impl LatencySummary {
+    fn from_values(mut values: Vec<u128>) -> Self {
+        values.sort_unstable();
+        Self {
+            count: values.len(),
+            p50_ms: percentile(&values, 50),
+            p90_ms: percentile(&values, 90),
+            p95_ms: percentile(&values, 95),
+            max_ms: values.last().copied(),
+        }
+    }
+}
+
+impl std::fmt::Display for LatencySummary {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.count == 0 {
+            return formatter.write_str("n/a");
+        }
+        write!(
+            formatter,
+            "p50={}ms p90={}ms p95={}ms max={}ms",
+            self.p50_ms.unwrap_or_default(),
+            self.p90_ms.unwrap_or_default(),
+            self.p95_ms.unwrap_or_default(),
+            self.max_ms.unwrap_or_default()
+        )
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct AssetKindFailure {
+    kind: String,
+    count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct FailureGroup {
+    key: String,
+    count: usize,
+    examples: Vec<String>,
+}
+
+#[derive(Debug)]
+struct FailureGroupBuilder {
+    key: String,
+    count: usize,
+    examples: Vec<String>,
+}
+
+impl FailureGroupBuilder {
+    fn finish(self) -> FailureGroup {
+        FailureGroup {
+            key: self.key,
+            count: self.count,
+            examples: self.examples,
+        }
+    }
+}
+
+fn push_failure_group(
+    groups: &mut BTreeMap<String, FailureGroupBuilder>,
+    key: String,
+    example: String,
+) {
+    let group = groups
+        .entry(key.clone())
+        .or_insert_with(|| FailureGroupBuilder {
+            key,
+            count: 0,
+            examples: Vec::new(),
+        });
+    group.count += 1;
+    if group.examples.len() < 5 && !group.examples.iter().any(|seen| seen == &example) {
+        group.examples.push(example);
+    }
+}
+
+fn rate(count: usize, total: usize) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        count as f64 / total as f64
+    }
+}
+
+fn percentile(values: &[u128], percentile: usize) -> Option<u128> {
+    if values.is_empty() {
+        return None;
+    }
+    let rank = (values.len() * percentile).div_ceil(100).max(1);
+    values.get(rank - 1).copied()
 }
 
 #[derive(Debug, Serialize)]

@@ -8,6 +8,7 @@ This runbook is the remaining evidence gate for calling the first mobile reader 
 - Freedom iOS app branch with Bee available in the same app process.
 - At least two real iPhones: the oldest supported target device and one current target device.
 - Xcode Instruments or `xctrace` access for memory, CPU, and network captures.
+- A copy of `docs/ios-device-evidence-template.csv` for recording measurements and trace links.
 
 ## App Wiring Checklist
 
@@ -52,7 +53,7 @@ Run each case with:
 - Bee enabled, Freedom IPFS enabled.
 - Bee enabled, Freedom IPFS disabled as the baseline for app process deltas.
 
-Record device model, iOS version, app commit, Freedom IPFS commit, Bee commit, routing mode, cache state, and network type.
+Record device model, iOS version, app commit, Freedom IPFS commit, Bee commit, XCFramework artifact ID, routing mode, cache state, and network type in `docs/ios-device-evidence-template.csv` or an equivalent checked-in run result file.
 
 ## Test Cases
 
@@ -121,6 +122,8 @@ The first product-usable release should meet these targets on every target devic
 If a device misses a target, keep the project open and record the failure with logs, trace files, and the smallest repro path.
 
 ## Evidence Template
+
+Use `docs/ios-device-evidence-template.csv` for the full structured record. The table below is the compact human-readable summary expected in the audit once evidence is collected.
 
 | Case | Device | Bee | Cache | Result | RSS idle delta | RSS peak | CPU idle | Network idle | Retrieval delta | Routing delta | Active preloads | Notes |
 |---|---|---|---|---|---:|---:|---:|---:|---|---|---:|---|

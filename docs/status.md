@@ -10,7 +10,7 @@ Detailed prompt-to-artifact audit: `docs/completion-audit.md`
 
 This is a running Rust IPFS reader, not just a scaffold. It starts a local gateway, resolves externally supplied `/ipfs` and `/ipns` paths, discovers providers through delegated routing with light-DHT fallback, retrieves verified blocks through HTTP providers and Bitswap, reads UnixFS data, and serves browser-facing responses and HTML error pages from the local gateway.
 
-The implementation remains iOS-first. Linux verification, live public-network retrieval, and macOS/Xcode XCFramework plus simulator command-line and app-rendering smoke verification have passed. Production browser-app integration and real-device resource profiling still require target iPhones; `docs/ios-device-verification.md` is the runbook for that final gate.
+The implementation remains iOS-first. Linux verification, live public-network retrieval, and macOS/Xcode XCFramework plus simulator command-line and app-rendering smoke verification have passed. Production browser-app integration and real-device resource profiling still require target iPhones; `docs/ios-device-verification.md` is the runbook for that final gate, and `docs/ios-device-evidence-template.csv` is the structured measurement template.
 
 ## Verification
 
@@ -145,7 +145,7 @@ M11 optional features: not started except CAR export/import support, which was p
 
 ## Known Gaps
 
-- Real iPhone resource targets are unverified, including the provisional under-60-MiB idle RSS target beside Bee; use `docs/ios-device-verification.md` to collect the missing evidence.
+- Real iPhone resource targets are unverified, including the provisional under-60-MiB idle RSS target beside Bee; use `docs/ios-device-verification.md` and `docs/ios-device-evidence-template.csv` to collect the missing evidence.
 - iOS lifecycle hooks exist at the ABI/Swift level and are exercised in generated simulator smokes, but actual Freedom host-app background/foreground, low-memory, and network-path event wiring is not verified on device.
 - DHT-only retrieval of `daicowtf.eth` is not reliable on the public DHT; current auto mode succeeds because delegated routing returns usable providers.
 - The public Amino DHT smoke has no stable default CID yet; set `FREEDOM_IPFS_LIVE_DHT_CID` to a known-good advertised CID before using it as live evidence. The current `_dnslink.ipfs.tech` root and three common example CIDs returned zero public DHT providers on 2026-05-03; see `tests/fixtures/README.md`.

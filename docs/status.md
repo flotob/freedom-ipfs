@@ -32,12 +32,24 @@ Live public-network smoke passed:
 make live-smoke
 ```
 
+Public CID corpus smoke passed for the checked-in immutable paths:
+
+```bash
+make live-corpus
+```
+
 Observed live-smoke result:
 
 - `vitalik.eth` resolved at runtime to `/ipfs/bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u`
 - `daicowtf.eth` resolved at runtime to `/ipfs/bafybeidznfolm74c5cephzdycedx7hk76iawno45wemcvkflieotzo2lne`
 - local gateway returned `38394` bytes for `vitalik.eth`
 - local gateway returned `403507` bytes for `daicowtf.eth`
+- retrieval stats were `cache_hits=25 http_provider_blocks=2 bitswap_blocks=3`
+
+Observed live-corpus result:
+
+- `vitalik-home` fetched `/ipfs/bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u`
+- `daicowtf-home` fetched `/ipfs/bafybeidznfolm74c5cephzdycedx7hk76iawno45wemcvkflieotzo2lne`
 - retrieval stats were `cache_hits=25 http_provider_blocks=2 bitswap_blocks=3`
 
 iOS packaging command was exercised on Linux and correctly refused to run:
@@ -74,7 +86,7 @@ M8 mobile resource hardening: partially complete. Cache trim, gateway concurrenc
 
 M9 browser integration: partially complete. The local gateway path, mobile ABI, Swift wrapper source, lifecycle hooks, and preload/cancel controls exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. Swift wrapper compilation/linking and app integration are not verified in this Linux environment.
 
-M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, Kubo-generated UnixFS/HAMT parity smoke, and live smoke exist, but a larger public CID corpus, broader Kubo parity matrix, and long soak tests remain follow-up work.
+M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, Kubo-generated UnixFS/HAMT parity smoke, live ENS smoke, and a small checked-in public CID corpus smoke exist, but a larger public CID corpus, broader Kubo parity matrix, and long soak tests remain follow-up work.
 
 M11 optional features: not started except CAR export/import support, which was promoted into the MVP diagnostics/cache path.
 
@@ -86,4 +98,5 @@ M11 optional features: not started except CAR export/import support, which was p
 - iOS lifecycle hooks exist at the ABI/Swift level, but actual host-app background/foreground, low-memory, and network-path event wiring is not verified on iOS.
 - DHT-only retrieval of `daicowtf.eth` is not reliable on the public DHT; current auto mode succeeds because delegated routing returns usable providers.
 - DNSLink still defaults to Cloudflare DoH. Native/system TXT lookup should be evaluated for artifact size and iOS behavior.
+- The checked-in public CID corpus is intentionally small; it needs more IPNS, DNSLink, large/range-media, and documented pass/fail cases.
 - No broad Kubo parity matrix exists yet for deterministic cross-implementation gateway/routing regression coverage.

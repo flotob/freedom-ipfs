@@ -41,6 +41,7 @@ Early implementation. Current code supports:
 - UnixFS range reads that avoid assembling entire multi-block files for byte-range responses,
 - full local-gateway responses streamed in bounded UnixFS chunks instead of one full-file buffer,
 - Kubo-generated CAR parity smoke for UnixFS files/directories and HAMT directories when `KUBO_BIN` is available,
+- opt-in public CID corpus smoke that fetches documented immutable paths through the local gateway,
 - configurable local-gateway request concurrency limiting,
 - CAR import/export for tests, diagnostics, and cache warmup,
 - mobile lifecycle hooks for background/foreground, low-memory cache trimming, and network-change provider cache hygiene,
@@ -83,6 +84,12 @@ Live smoke test, intentionally ignored by default because it uses the public IPF
 
 ```bash
 make live-smoke
+```
+
+Public CID corpus smoke, also ignored by default:
+
+```bash
+make live-corpus
 ```
 
 Light-DHT provider discovery smoke:

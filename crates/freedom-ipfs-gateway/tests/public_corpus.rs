@@ -1,0 +1,139 @@
+use axum::http::StatusCode;
+use freedom_ipfs_gateway::router_with_provider;
+use freedom_ipfs_retrieval::FetchingBlockProvider;
+use freedom_ipfs_routing::{
+    AutoRoutingClient, DelegatedRoutingClient, LightDhtClient, DEFAULT_DELEGATED_ROUTER,
+};
+use freedom_ipfs_store::SqliteBlockStore;
+use std::env;
+use std::sync::Arc;
+use tokio::net::TcpListener;
+
+const DEFAULT_CORPUS: &str = include_str!("../../../tests/fixtures/public_corpus.txt");
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "network corpus smoke test against documented public CIDs"]
+async fn public_cid_corpus_fetches_through_local_gateway() {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init()
+        .ok();
+
+    let corpus =
+        env::var("FREEDOM_IPFS_LIVE_CORPUS").unwrap_or_else(|_| DEFAULT_CORPUS.to_string());
+    let entries = parse_corpus(&corpus);
+    assert!(!entries.is_empty(), "public CID corpus is empty");
+
+    let router = env::var("FREEDOM_IPFS_DELEGATED_ROUTER")
+        .unwrap_or_else(|_| DEFAULT_DELEGATED_ROUTER.to_string());
+    let store = SqliteBlockStore::in_memory(256 * 1024 * 1024).unwrap();
+    let routing = AutoRoutingClient::new(
+        DelegatedRoutingClient::new(router),
+        LightDhtClient::default(),
+    );
+    let provider = Arc::new(FetchingBlockProvider::new(store, routing));
+    let stats_provider = provider.clone();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router_with_provider(provider))
+            .await
+            .unwrap();
+    });
+    eprintln!("local gateway listening on http://{addr} with auto routing");
+
+    let client = reqwest::Client::new();
+    for entry in entries {
+        let url = format!("http://{addr}{}", entry.path);
+        let response = client.get(&url).send().await.unwrap();
+        let status = response.status();
+        let body = response.bytes().await.unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "public corpus request failed for {} ({}): {}",
+            entry.name,
+            entry.path,
+            String::from_utf8_lossy(&body)
+        );
+        assert!(
+            body.len() >= entry.min_bytes,
+            "public corpus response too small for {} ({}): {} bytes, expected at least {}",
+            entry.name,
+            entry.path,
+            body.len(),
+            entry.min_bytes
+        );
+        eprintln!(
+            "fetched corpus entry {} {} through local gateway: {} bytes",
+            entry.name,
+            entry.path,
+            body.len()
+        );
+    }
+
+    let stats = stats_provider.stats();
+    eprintln!(
+        "retrieval transport counts: cache_hits={} http_provider_blocks={} bitswap_blocks={}",
+        stats.cache_hits, stats.http_provider_blocks, stats.bitswap_blocks
+    );
+    assert!(
+        stats.cache_hits + stats.http_provider_blocks + stats.bitswap_blocks > 0,
+        "public corpus smoke did not record any retrieval transport"
+    );
+}
+
+fn parse_corpus(corpus: &str) -> Vec<CorpusEntry> {
+    corpus
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            assert_eq!(fields.len(), 3, "invalid corpus line: {line}");
+            let path = fields[1].to_string();
+            assert!(
+                path.starts_with("/ipfs/") || path.starts_with("/ipns/"),
+                "corpus path must be a local gateway path: {path}"
+            );
+            CorpusEntry {
+                name: fields[0].to_string(),
+                path,
+                min_bytes: fields[2]
+                    .parse()
+                    .unwrap_or_else(|_| panic!("invalid min_bytes in corpus line: {line}")),
+            }
+        })
+        .collect()
+}
+
+struct CorpusEntry {
+    name: String,
+    path: String,
+    min_bytes: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_public_corpus_entries() {
+        let entries = parse_corpus(
+            r#"
+            # comment
+            example /ipfs/bafyexample 42
+            ipns-example /ipns/example.net 7
+            "#,
+        );
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "example");
+        assert_eq!(entries[0].path, "/ipfs/bafyexample");
+        assert_eq!(entries[0].min_bytes, 42);
+        assert_eq!(entries[1].name, "ipns-example");
+        assert_eq!(entries[1].path, "/ipns/example.net");
+        assert_eq!(entries[1].min_bytes, 7);
+    }
+}

@@ -98,6 +98,8 @@ status, MIME type, byte count, and timing.
   starts same-provider retry after a 5s connection-ready miss; fresh
   `ipfs.tech` root-only repeat=3 passed with a 3.6s root max, while
   `ipfs.tech-page-assets` repeat=3 passed with root p50 1.9s and max 8.5s.
+  A longer repeat=5 also passed 5/5; assets stayed tight with p95 1.3s and max
+  1.8s, while live root TTFB still varied from 4.0s to 10.4s.
 
 ## Next Scenario Targets
 

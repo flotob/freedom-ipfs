@@ -370,6 +370,21 @@ The 8.5s root tail was a same-provider retry after all initial connection-ready
 waits hit the new 5s window. The 10.1s asset tail was a successful Bitswap block
 response from a slow peer, not a gateway failure.
 
+Longer fresh full-page sample in the same window:
+
+```text
+ipfs-tech-page-assets repeat=5, fresh gateway, asset_concurrency=6:
+passed=5 failed=0 pass_rate=100.0%
+root_ttfb p50=7993ms p90=10428ms max=10428ms
+asset_ttfb p50=138ms p90=844ms p95=1306ms max=1776ms
+measured run totals: 4378ms, 3991ms, 10005ms, 11547ms, 9794ms
+bitswap_fetch count=105 total=46250ms p50=128ms p90=794ms p95=2593ms max=5014ms
+```
+
+This longer sample is the better reliability signal: the asset path remained
+much faster than the earlier shared-swarm baseline, but live root startup still
+has a public-provider tail that Kubo handles better.
+
 Secondary page validation:
 
 ```text

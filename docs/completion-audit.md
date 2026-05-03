@@ -20,11 +20,16 @@ Do not mark the overall implementation goal complete until those Apple-platform 
 
 ## Current Verification Evidence
 
-Fresh checks run against code changes through `5c070a6`:
+Fresh checks run against this file version:
 
 ```bash
 cargo fmt --all --check && make verify
 make live-smoke && make live-corpus
+```
+
+Earlier checks for unchanged areas:
+
+```bash
 KUBO_BIN=$PWD/target/tools/kubo/kubo/ipfs make kubo-parity
 make local-soak
 cargo run -p xtask -- build-xcframework
@@ -80,7 +85,7 @@ Results:
 | Verified HTTP raw-block retrieval | Retrieval requests provider `/ipfs/{cid}?format=raw`, bounds response bodies, disables redirects, verifies CIDs. | Done |
 | Invalid provider blocks fail closed | Invalid, redirected, and oversized HTTP provider tests; bad-provider suppression. | Done |
 | No public trustless gateway fallback | No public gateway fallback path exists; live smoke goes through routing/providers and local gateway. | Done |
-| Minimal Bitswap client | Deterministic in-process libp2p Bitswap peer test verifies retrieval, cache insert, and cancel behavior. | Done for MVP |
+| Minimal Bitswap client | Deterministic in-process libp2p Bitswap tests verify retrieval, cache insert, want-have before want-block for multi-peer sessions, DONT_HAVE handling, and cancel behavior. | Done for MVP |
 | Bitswap transports | TCP/WebSocket/QUIC configured; supported address filtering tests. | Done |
 | No block serving to peers | Retrieval implements client-only Bitswap path and does not expose a serving strategy. | Done by design, needs packet-level/device audit for final confidence |
 | Light DHT fallback | Kademlia client mode provider lookup and IPNS record lookup, deterministic local DHT tests. | Done |

@@ -41,6 +41,8 @@ const MAX_BITSWAP_PEERS_PER_BLOCK: usize = 16;
 const MAX_BITSWAP_ADDRS_PER_PEER: usize = 4;
 const CID_VERSION_0: u64 = 0;
 const CID_VERSION_1: u64 = 1;
+const BLOCK_PRESENCE_HAVE: i32 = 0;
+const BLOCK_PRESENCE_DONT_HAVE: i32 = 1;
 
 #[derive(Debug, Error)]
 pub enum RetrievalError {
@@ -447,6 +449,34 @@ struct ReceivedBitswapBlock {
     data: Vec<u8>,
 }
 
+#[derive(Default)]
+struct BitswapResponse {
+    blocks: Vec<ReceivedBitswapBlock>,
+    block_presences: Vec<ReceivedBlockPresence>,
+}
+
+impl BitswapResponse {
+    fn is_empty(&self) -> bool {
+        self.blocks.is_empty() && self.block_presences.is_empty()
+    }
+
+    fn has_presence(&self, cid: &Cid, type_pb: i32) -> bool {
+        self.block_presences
+            .iter()
+            .any(|presence| &presence.cid == cid && presence.type_pb == type_pb)
+    }
+}
+
+struct ReceivedBlockPresence {
+    cid: Cid,
+    type_pb: i32,
+}
+
+enum WantHaveFailure {
+    TryOtherProtocols(String),
+    PeerDoesNotHave(String),
+}
+
 #[derive(NetworkBehaviour)]
 #[behaviour(prelude = "libp2p::swarm::derive_prelude")]
 struct BitswapBehaviour {
@@ -674,8 +704,14 @@ async fn fetch_bitswap_over_streams(
 ) -> Result<BitswapFetchResult> {
     let mut incoming = select_all(incoming);
     let mut attempts = FuturesUnordered::new();
+    let prefer_want_have = peer_ids.len() > 1;
     for peer_id in peer_ids {
-        attempts.push(request_bitswap_block(control.clone(), peer_id, cid));
+        attempts.push(request_bitswap_block(
+            control.clone(),
+            peer_id,
+            cid,
+            prefer_want_have,
+        ));
     }
 
     let mut failures = Vec::new();
@@ -720,6 +756,7 @@ async fn request_bitswap_block(
     mut control: StreamControl,
     peer_id: PeerId,
     cid: Cid,
+    prefer_want_have: bool,
 ) -> std::result::Result<BitswapFetchResult, String> {
     let mut failures = Vec::new();
     for protocol in bitswap_protocols() {
@@ -741,32 +778,99 @@ async fn request_bitswap_block(
             }
         };
 
-        if let Err(err) = write_bitswap_want(&mut stream, &cid).await {
-            failures.push(format!("{protocol_name}: write failed: {err}"));
-            continue;
-        }
-        let blocks = match timeout(Duration::from_secs(10), read_bitswap_blocks(&mut stream)).await
-        {
-            Ok(Ok(blocks)) => blocks,
-            Ok(Err(err)) => {
-                failures.push(format!("{protocol_name}: read failed: {err}"));
-                continue;
+        if prefer_want_have && protocol_name == "/ipfs/bitswap/1.2.0" {
+            match request_bitswap_block_after_want_have(&mut stream, &cid, &protocol_name).await {
+                Ok(result) => return Ok(result),
+                Err(WantHaveFailure::TryOtherProtocols(err)) => {
+                    failures.push(err);
+                    continue;
+                }
+                Err(WantHaveFailure::PeerDoesNotHave(err)) => {
+                    failures.push(err);
+                    break;
+                }
             }
-            Err(_) => {
-                failures.push(format!("{protocol_name}: read timed out"));
-                continue;
-            }
-        };
-        if let Some(result) = collect_bitswap_result(&cid, blocks) {
-            let _ = write_bitswap_cancel(&mut stream, &cid).await;
-            return Ok(result);
         }
-        failures.push(format!("{protocol_name}: no valid block returned"));
+
+        match request_bitswap_block_on_stream(&mut stream, &cid, &protocol_name).await {
+            Ok(result) => return Ok(result),
+            Err(err) => failures.push(err),
+        }
     }
     Err(format!(
         "{peer_id}: no supported Bitswap protocol returned the requested block ({})",
         failures.join("; ")
     ))
+}
+
+async fn request_bitswap_block_after_want_have<T>(
+    stream: &mut T,
+    cid: &Cid,
+    protocol_name: &str,
+) -> std::result::Result<BitswapFetchResult, WantHaveFailure>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    if let Err(err) = write_bitswap_want_have(stream, cid).await {
+        return Err(WantHaveFailure::TryOtherProtocols(format!(
+            "{protocol_name}: write want-have failed: {err}"
+        )));
+    }
+    let response = match timeout(Duration::from_secs(5), read_bitswap_response(stream)).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(err)) => {
+            return Err(WantHaveFailure::TryOtherProtocols(format!(
+                "{protocol_name}: read want-have failed: {err}"
+            )))
+        }
+        Err(_) => {
+            return request_bitswap_block_on_stream(stream, cid, protocol_name)
+                .await
+                .map_err(WantHaveFailure::TryOtherProtocols);
+        }
+    };
+    let has_dont_have = response.has_presence(cid, BLOCK_PRESENCE_DONT_HAVE);
+    let has_have = response.has_presence(cid, BLOCK_PRESENCE_HAVE);
+    if let Some(result) = collect_bitswap_result(cid, response.blocks) {
+        let _ = write_bitswap_cancel(stream, cid).await;
+        return Ok(result);
+    }
+    if has_dont_have {
+        return Err(WantHaveFailure::PeerDoesNotHave(format!(
+            "{protocol_name}: peer returned DONT_HAVE"
+        )));
+    }
+    if !has_have {
+        return request_bitswap_block_on_stream(stream, cid, protocol_name)
+            .await
+            .map_err(WantHaveFailure::TryOtherProtocols);
+    }
+    request_bitswap_block_on_stream(stream, cid, protocol_name)
+        .await
+        .map_err(WantHaveFailure::TryOtherProtocols)
+}
+
+async fn request_bitswap_block_on_stream<T>(
+    stream: &mut T,
+    cid: &Cid,
+    protocol_name: &str,
+) -> std::result::Result<BitswapFetchResult, String>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    if let Err(err) = write_bitswap_want(stream, cid).await {
+        return Err(format!("{protocol_name}: write failed: {err}"));
+    }
+    let blocks = match timeout(Duration::from_secs(10), read_bitswap_blocks(stream)).await {
+        Ok(Ok(blocks)) => blocks,
+        Ok(Err(err)) => return Err(format!("{protocol_name}: read failed: {err}")),
+        Err(_) => return Err(format!("{protocol_name}: read timed out")),
+    };
+    if let Some(result) = collect_bitswap_result(cid, blocks) {
+        let _ = write_bitswap_cancel(stream, cid).await;
+        return Ok(result);
+    }
+    Err(format!("{protocol_name}: no valid block returned"))
 }
 
 fn bitswap_protocols() -> [StreamProtocol; 3] {
@@ -781,7 +885,16 @@ async fn write_bitswap_want<T>(io: &mut T, cid: &Cid) -> io::Result<()>
 where
     T: AsyncWrite + Unpin,
 {
-    let message = bitswap_want_message(cid, false);
+    let message = bitswap_want_message_with_type(cid, false, WantType::Block);
+    write_length_prefixed(io, &message.encode_to_vec()).await?;
+    io.flush().await
+}
+
+async fn write_bitswap_want_have<T>(io: &mut T, cid: &Cid) -> io::Result<()>
+where
+    T: AsyncWrite + Unpin,
+{
+    let message = bitswap_want_message_with_type(cid, false, WantType::Have);
     write_length_prefixed(io, &message.encode_to_vec()).await?;
     io.flush().await
 }
@@ -796,13 +909,17 @@ where
 }
 
 fn bitswap_want_message(cid: &Cid, cancel: bool) -> BitswapMessage {
+    bitswap_want_message_with_type(cid, cancel, WantType::Block)
+}
+
+fn bitswap_want_message_with_type(cid: &Cid, cancel: bool, want_type: WantType) -> BitswapMessage {
     BitswapMessage {
         wantlist: Some(Wantlist {
             entries: vec![WantEntry {
                 block: cid.to_bytes(),
                 priority: 1,
                 cancel,
-                want_type: WantType::Block as i32,
+                want_type: want_type as i32,
                 send_dont_have: true,
                 tokens: Vec::new(),
             }],
@@ -829,25 +946,64 @@ where
     T: AsyncRead + Unpin,
 {
     for _ in 0..4 {
-        let bytes = read_length_prefixed(io, 2 * 1024 * 1024 + 4096).await?;
-        let message = BitswapMessage::decode(bytes.as_slice()).map_err(invalid_data)?;
-        let mut blocks = message
-            .blocks
-            .into_iter()
-            .map(|data| ReceivedBitswapBlock { cid: None, data })
-            .collect::<Vec<_>>();
-        blocks.extend(message.payload.into_iter().map(|payload| {
-            let cid = cid_from_bitswap_payload_prefix(&payload.prefix, &payload.data);
-            ReceivedBitswapBlock {
-                cid,
-                data: payload.data,
-            }
-        }));
-        if !blocks.is_empty() {
-            return Ok(blocks);
+        let response = read_bitswap_response_once(io).await?;
+        if !response.blocks.is_empty() {
+            return Ok(response.blocks);
         }
     }
     Ok(Vec::new())
+}
+
+async fn read_bitswap_response<T>(io: &mut T) -> io::Result<BitswapResponse>
+where
+    T: AsyncRead + Unpin,
+{
+    for _ in 0..4 {
+        let response = read_bitswap_response_once(io).await?;
+        if !response.is_empty() {
+            return Ok(response);
+        }
+    }
+    Ok(BitswapResponse::default())
+}
+
+async fn read_bitswap_response_once<T>(io: &mut T) -> io::Result<BitswapResponse>
+where
+    T: AsyncRead + Unpin,
+{
+    let bytes = read_length_prefixed(io, 2 * 1024 * 1024 + 4096).await?;
+    let message = BitswapMessage::decode(bytes.as_slice()).map_err(invalid_data)?;
+    Ok(decode_bitswap_response(message))
+}
+
+fn decode_bitswap_response(message: BitswapMessage) -> BitswapResponse {
+    let mut blocks = message
+        .blocks
+        .into_iter()
+        .map(|data| ReceivedBitswapBlock { cid: None, data })
+        .collect::<Vec<_>>();
+    blocks.extend(message.payload.into_iter().map(|payload| {
+        let cid = cid_from_bitswap_payload_prefix(&payload.prefix, &payload.data);
+        ReceivedBitswapBlock {
+            cid,
+            data: payload.data,
+        }
+    }));
+    let block_presences = message
+        .block_presences
+        .into_iter()
+        .filter_map(|presence| {
+            let cid = Cid::read_bytes(&mut io::Cursor::new(presence.cid)).ok()?;
+            Some(ReceivedBlockPresence {
+                cid,
+                type_pb: presence.type_pb,
+            })
+        })
+        .collect();
+    BitswapResponse {
+        blocks,
+        block_presences,
+    }
 }
 
 fn collect_bitswap_result(
@@ -1165,6 +1321,20 @@ mod bitswap_tests {
         assert_eq!(entry.want_type, WantType::Block as i32);
     }
 
+    #[test]
+    fn want_have_message_queries_block_presence() {
+        let data = b"want-have me";
+        let cid = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, data);
+        let message = bitswap_want_message_with_type(&cid, false, WantType::Have);
+        let wantlist = message.wantlist.unwrap();
+        let entry = wantlist.entries.first().unwrap();
+
+        assert!(!entry.cancel);
+        assert_eq!(entry.block, cid.to_bytes());
+        assert_eq!(entry.want_type, WantType::Have as i32);
+        assert!(entry.send_dont_have);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn fetches_block_from_local_bitswap_peer() {
         let data = b"local bitswap block";
@@ -1193,6 +1363,52 @@ mod bitswap_tests {
             .unwrap()
             .unwrap();
         swarm_task.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multi_peer_bitswap_uses_want_have_before_want_block() {
+        let data = b"want-have selected block";
+        let cid = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, data);
+        let (missing_peer_id, missing_addr, missing_swarm, missing_stream) =
+            spawn_want_have_bitswap_peer(cid, data.to_vec(), false).await;
+        let (present_peer_id, present_addr, present_swarm, present_stream) =
+            spawn_want_have_bitswap_peer(cid, data.to_vec(), true).await;
+
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let retriever = HttpRetriever::new(
+            freedom_ipfs_routing::DelegatedRoutingClient::new("http://127.0.0.1:9/routing/v1"),
+            store.clone(),
+        );
+        let providers = vec![
+            Provider::from_parts(
+                Some(missing_peer_id.to_string()),
+                vec![missing_addr.to_string()],
+            )
+            .unwrap(),
+            Provider::from_parts(
+                Some(present_peer_id.to_string()),
+                vec![present_addr.to_string()],
+            )
+            .unwrap(),
+        ];
+
+        let (block, source) = retriever
+            .fetch_from_providers_with_source(&cid, &providers)
+            .await
+            .unwrap();
+
+        assert_eq!(source, RetrievalSource::Bitswap);
+        assert_eq!(block.data(), data);
+        tokio::time::timeout(Duration::from_secs(5), missing_stream)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), present_stream)
+            .await
+            .unwrap()
+            .unwrap();
+        missing_swarm.abort();
+        present_swarm.abort();
     }
 
     #[tokio::test]
@@ -1412,6 +1628,114 @@ mod bitswap_tests {
             let want = BitswapMessage::decode(want_bytes.as_slice()).unwrap();
             let entry = want.wantlist.unwrap().entries.remove(0);
             assert_eq!(entry.block, cid.to_bytes());
+            assert!(!entry.cancel);
+
+            let response = BitswapMessage {
+                payload: vec![BlockPayload {
+                    prefix: bitswap_payload_prefix(&cid),
+                    data,
+                    tokens: Vec::new(),
+                }],
+                ..BitswapMessage::default()
+            };
+            write_length_prefixed(&mut stream, &response.encode_to_vec())
+                .await
+                .unwrap();
+            stream.flush().await.unwrap();
+
+            let cancel_bytes = tokio::time::timeout(
+                Duration::from_secs(5),
+                read_length_prefixed(&mut stream, 1024),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let cancel = BitswapMessage::decode(cancel_bytes.as_slice()).unwrap();
+            let entry = cancel.wantlist.unwrap().entries.remove(0);
+            assert_eq!(entry.block, cid.to_bytes());
+            assert!(entry.cancel);
+        });
+
+        (peer_id, addr, swarm_task, stream_task)
+    }
+
+    async fn spawn_want_have_bitswap_peer(
+        cid: Cid,
+        data: Vec<u8>,
+        has_block: bool,
+    ) -> (
+        PeerId,
+        Multiaddr,
+        tokio::task::JoinHandle<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let mut swarm = SwarmBuilder::with_new_identity()
+            .with_tokio()
+            .with_tcp(
+                tcp::Config::default(),
+                (tls::Config::new, noise::Config::new),
+                yamux::Config::default,
+            )
+            .unwrap()
+            .with_behaviour(|_| libp2p_stream::Behaviour::new())
+            .unwrap()
+            .build();
+        let peer_id = *swarm.local_peer_id();
+        let mut control = swarm.behaviour().new_control();
+        let mut incoming = control
+            .accept(StreamProtocol::new("/ipfs/bitswap/1.2.0"))
+            .unwrap();
+        swarm
+            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .unwrap();
+        let addr = loop {
+            if let libp2p::swarm::SwarmEvent::NewListenAddr { address, .. } =
+                swarm.select_next_some().await
+            {
+                break address;
+            }
+        };
+
+        let swarm_task = tokio::spawn(async move {
+            loop {
+                let _ = swarm.select_next_some().await;
+            }
+        });
+        let stream_task = tokio::spawn(async move {
+            let (_peer, mut stream) = incoming.next().await.unwrap();
+            let want_have_bytes = read_length_prefixed(&mut stream, 1024).await.unwrap();
+            let want_have = BitswapMessage::decode(want_have_bytes.as_slice()).unwrap();
+            let entry = want_have.wantlist.unwrap().entries.remove(0);
+            assert_eq!(entry.block, cid.to_bytes());
+            assert_eq!(entry.want_type, WantType::Have as i32);
+            assert!(!entry.cancel);
+
+            let presence = BitswapMessage {
+                block_presences: vec![BlockPresence {
+                    cid: cid.to_bytes(),
+                    type_pb: if has_block {
+                        BLOCK_PRESENCE_HAVE
+                    } else {
+                        BLOCK_PRESENCE_DONT_HAVE
+                    },
+                    tokens: Vec::new(),
+                }],
+                ..BitswapMessage::default()
+            };
+            write_length_prefixed(&mut stream, &presence.encode_to_vec())
+                .await
+                .unwrap();
+            stream.flush().await.unwrap();
+
+            if !has_block {
+                return;
+            }
+
+            let want_block_bytes = read_length_prefixed(&mut stream, 1024).await.unwrap();
+            let want_block = BitswapMessage::decode(want_block_bytes.as_slice()).unwrap();
+            let entry = want_block.wantlist.unwrap().entries.remove(0);
+            assert_eq!(entry.block, cid.to_bytes());
+            assert_eq!(entry.want_type, WantType::Block as i32);
             assert!(!entry.cancel);
 
             let response = BitswapMessage {

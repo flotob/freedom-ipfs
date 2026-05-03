@@ -310,6 +310,10 @@ Failed experiments:
   produced many successful direct session fetches, but because it ran before the
   delegated lookup it added avoidable 2s stalls on misses. Replaced with the
   conservative 150ms-grace race described above.
+- IPv4/TCP-first Bitswap address ordering was tested after traces showed many
+  failed IPv6 dials. It did not move the `ipfs.tech` root tail in the live
+  window: fresh repeat=3 still passed 2/3 with a ~30.9s root 504, and passing
+  run totals were not better. Reverted.
 
 Kubo comparison:
 

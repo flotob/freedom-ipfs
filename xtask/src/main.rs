@@ -210,12 +210,16 @@ fn collect_named_files(path: &Path, name: &str, files: &mut Vec<PathBuf>) -> Res
 
 fn verify_exported_symbols(library: &Path) -> Result<()> {
     let output = Command::new("xcrun")
-        .args(["nm", "-gU"])
+        .args(["llvm-nm", "--extern-only", "--defined-only"])
         .arg(library)
         .output()
-        .with_context(|| format!("xcrun nm {}", library.display()))?;
+        .with_context(|| format!("xcrun llvm-nm {}", library.display()))?;
     if !output.status.success() {
-        bail!("xcrun nm {} failed", library.display());
+        bail!(
+            "xcrun llvm-nm {} failed: {}",
+            library.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     for symbol in [

@@ -12,9 +12,10 @@ use freedom_ipfs_namesys::{NameResolver, NamesysError};
 use freedom_ipfs_store::SqliteBlockStore;
 use freedom_ipfs_unixfs::{file_size, read_file_range, UnixfsError};
 use futures::stream;
+use std::collections::HashSet;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
@@ -396,6 +397,7 @@ fn streaming_response(
     len: u64,
     mime: &str,
 ) -> Result<Response, GatewayError> {
+    let provider = Arc::new(ScopedBlockProvider::new(provider));
     let stream = stream::unfold(0u64, move |offset| {
         let provider = provider.clone();
         let path = path.clone();
@@ -405,9 +407,15 @@ fn streaming_response(
             }
             let end = (offset + GATEWAY_STREAM_CHUNK_SIZE - 1).min(len - 1);
             let next = end + 1;
-            let chunk = read_file_range(provider.as_ref(), &cid, &path, offset, end)
-                .map(Bytes::from)
-                .map_err(|err| io::Error::other(err.to_string()));
+            let chunk = read_file_range(
+                provider.as_ref() as &dyn BlockProvider,
+                &cid,
+                &path,
+                offset,
+                end,
+            )
+            .map(Bytes::from)
+            .map_err(|err| io::Error::other(err.to_string()));
             Some((chunk, next))
         }
     });
@@ -426,6 +434,60 @@ fn streaming_response(
             .map_err(|err| GatewayError::Internal(err.to_string()))?,
     );
     Ok(response)
+}
+
+struct ScopedBlockProvider {
+    inner: Arc<dyn BlockProvider>,
+    retained: Mutex<HashSet<Cid>>,
+}
+
+impl ScopedBlockProvider {
+    fn new(inner: Arc<dyn BlockProvider>) -> Self {
+        Self {
+            inner,
+            retained: Mutex::new(HashSet::new()),
+        }
+    }
+}
+
+impl BlockProvider for ScopedBlockProvider {
+    fn get_block(&self, cid: &Cid) -> freedom_ipfs_core::Result<Option<freedom_ipfs_core::Block>> {
+        let mut retained_here = false;
+        {
+            let mut retained = self.retained.lock().map_err(|err| {
+                freedom_ipfs_core::CoreError::Storage(format!(
+                    "stream retention lock poisoned: {err}"
+                ))
+            })?;
+            if retained.insert(*cid) {
+                self.inner.retain_block(cid)?;
+                retained_here = true;
+            }
+        }
+
+        match self.inner.get_block(cid)? {
+            Some(block) => Ok(Some(block)),
+            None => {
+                if retained_here {
+                    if let Ok(mut retained) = self.retained.lock() {
+                        retained.remove(cid);
+                    }
+                    self.inner.release_block(cid);
+                }
+                Ok(None)
+            }
+        }
+    }
+}
+
+impl Drop for ScopedBlockProvider {
+    fn drop(&mut self) {
+        if let Ok(mut retained) = self.retained.lock() {
+            for cid in retained.drain() {
+                self.inner.release_block(&cid);
+            }
+        }
+    }
 }
 
 fn ranged_response(

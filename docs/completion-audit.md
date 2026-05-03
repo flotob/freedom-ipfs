@@ -53,7 +53,7 @@ Results:
 | Clean-room implementation discipline | No vendored IPFS implementation is present; existing projects are listed as mining targets in the spec. | Done |
 | CIDv0/CIDv1 parse/format | `freedom-ipfs-core` unit tests cover CID round-trip and verification. | Done |
 | Block verification before cache/serve | Core verification, store verified insertion, retrieval invalid HTTP block rejection. | Done |
-| Bounded SQLite cache | `freedom-ipfs-store` implements SQLite cache, LRU eviction, stats, clear, trim, provider and bad-provider caches. | Done |
+| Bounded SQLite cache | `freedom-ipfs-store` implements SQLite cache, LRU eviction, active block retention during streaming, stats, clear, trim, provider and bad-provider caches. | Done |
 | Memory hot cache | Store has a bounded 16 MiB in-memory hot block cache in front of SQLite; tests cover clear/trim removing hot entries. | Done |
 | Default disk cache 256 MiB | CLI/mobile default to `256 * 1024 * 1024`. | Done |
 | CAR import/export for fixtures/cache warmup | Core CAR parse/encode and store import/export tests; CLI/mobile import/export APIs. | Done |
@@ -64,6 +64,7 @@ Results:
 | HAMT directories | UnixFS HAMT tests and Kubo-generated HAMT parity. | Done for basic real-world compatibility |
 | Local HTTP gateway data plane | Gateway crate and binary serve `/health`, `/ipfs`, `/ipns`; live smoke uses the local gateway. | Done |
 | Streaming responses | Gateway streams full responses in bounded chunks. | Done |
+| Stream eviction guard | Gateway stream scopes retain blocks they read; SQLite LRU eviction and explicit trim skip retained blocks until the stream scope releases them. | Done |
 | HTTP range support | Gateway range tests cover success, malformed ranges, and unsatisfiable ranges. | Done |
 | Browser MIME behavior | Directory `index.html` fallback with path-based `text/html` test. | Done for MVP |
 | Useful gateway status codes | Tests cover invalid path/range, not found/name not found, timeout, busy, and traversal cases. | Mostly done |

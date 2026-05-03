@@ -33,6 +33,7 @@ pub struct SqliteBlockStore {
     conn: Arc<Mutex<Connection>>,
     max_bytes: u64,
     hot: Arc<Mutex<HotCache>>,
+    retained: Arc<Mutex<HashMap<Vec<u8>, usize>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +54,7 @@ impl SqliteBlockStore {
             conn: Arc::new(Mutex::new(conn)),
             max_bytes,
             hot: Arc::new(Mutex::new(HotCache::new(hot_cache_bytes(max_bytes)))),
+            retained: Arc::new(Mutex::new(HashMap::new())),
         };
         store.init()?;
         Ok(store)
@@ -69,6 +71,7 @@ impl SqliteBlockStore {
             conn: Arc::new(Mutex::new(conn)),
             max_bytes,
             hot: Arc::new(Mutex::new(HotCache::new(hot_cache_bytes(max_bytes)))),
+            retained: Arc::new(Mutex::new(HashMap::new())),
         };
         store.init()?;
         Ok(store)
@@ -344,19 +347,8 @@ impl SqliteBlockStore {
             if total <= max_bytes {
                 return Ok(());
             }
-            let cid_bytes = self
-                .conn
-                .lock()
-                .query_row(
-                    r#"
-                    SELECT cid FROM blocks
-                    ORDER BY last_accessed_at ASC, inserted_at ASC
-                    LIMIT 1
-                    "#,
-                    [],
-                    |row| row.get::<_, Vec<u8>>(0),
-                )
-                .optional()?;
+            let retained = self.retained.lock().clone();
+            let cid_bytes = self.oldest_evictable_cid(&retained)?;
             let Some(cid_bytes) = cid_bytes else {
                 return Ok(());
             };
@@ -368,6 +360,40 @@ impl SqliteBlockStore {
                 return Ok(());
             }
             self.hot.lock().remove(&cid_bytes);
+        }
+    }
+
+    fn oldest_evictable_cid(&self, retained: &HashMap<Vec<u8>, usize>) -> Result<Option<Vec<u8>>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT cid FROM blocks
+            ORDER BY last_accessed_at ASC, inserted_at ASC
+            "#,
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let cid_bytes = row.get::<_, Vec<u8>>(0)?;
+            if !retained.contains_key(&cid_bytes) {
+                return Ok(Some(cid_bytes));
+            }
+        }
+        Ok(None)
+    }
+
+    fn retain_cid_bytes(&self, cid_bytes: Vec<u8>) {
+        let mut retained = self.retained.lock();
+        *retained.entry(cid_bytes).or_insert(0) += 1;
+    }
+
+    fn release_cid_bytes(&self, cid_bytes: &[u8]) {
+        let mut retained = self.retained.lock();
+        let Some(count) = retained.get_mut(cid_bytes) else {
+            return;
+        };
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            retained.remove(cid_bytes);
         }
     }
 
@@ -390,6 +416,15 @@ impl BlockProvider for SqliteBlockStore {
     fn get_block(&self, cid: &Cid) -> CoreResult<Option<Block>> {
         self.get(cid)
             .map_err(|err| CoreError::Storage(err.to_string()))
+    }
+
+    fn retain_block(&self, cid: &Cid) -> CoreResult<()> {
+        self.retain_cid_bytes(cid.to_bytes());
+        Ok(())
+    }
+
+    fn release_block(&self, cid: &Cid) {
+        self.release_cid_bytes(&cid.to_bytes());
     }
 }
 
@@ -557,6 +592,52 @@ mod tests {
 
         assert!(store.total_bytes().unwrap() <= 20);
         assert_eq!(store.block_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn retained_blocks_are_not_evicted_until_released() {
+        let store = SqliteBlockStore::in_memory(20).unwrap();
+        let first = vec![1u8; 16];
+        let second = vec![2u8; 16];
+        let third = vec![3u8; 16];
+        let first_cid = cid_from_data(CODEC_RAW, &first);
+        let second_cid = cid_from_data(CODEC_RAW, &second);
+        let third_cid = cid_from_data(CODEC_RAW, &third);
+
+        store.put_block(&first_cid, &first).unwrap();
+        store.retain_block(&first_cid).unwrap();
+        store.put_block(&second_cid, &second).unwrap();
+
+        assert_eq!(store.get(&first_cid).unwrap().unwrap().data(), first);
+        assert!(store.get(&second_cid).unwrap().is_none());
+
+        store.release_block(&first_cid);
+        store.put_block(&third_cid, &third).unwrap();
+
+        assert!(store.get(&first_cid).unwrap().is_none());
+        assert_eq!(store.get(&third_cid).unwrap().unwrap().data(), third);
+    }
+
+    #[test]
+    fn trim_skips_retained_blocks() {
+        let store = SqliteBlockStore::in_memory(1024).unwrap();
+        let first = vec![1u8; 16];
+        let second = vec![2u8; 16];
+        let first_cid = cid_from_data(CODEC_RAW, &first);
+        let second_cid = cid_from_data(CODEC_RAW, &second);
+        store.put_block(&first_cid, &first).unwrap();
+        store.put_block(&second_cid, &second).unwrap();
+        store.retain_block(&first_cid).unwrap();
+
+        store.trim_blocks_to(0).unwrap();
+
+        assert_eq!(store.get(&first_cid).unwrap().unwrap().data(), first);
+        assert!(store.get(&second_cid).unwrap().is_none());
+
+        store.release_block(&first_cid);
+        store.trim_blocks_to(0).unwrap();
+
+        assert_eq!(store.block_count().unwrap(), 0);
     }
 
     #[test]

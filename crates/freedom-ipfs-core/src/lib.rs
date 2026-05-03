@@ -67,6 +67,12 @@ impl Block {
 
 pub trait BlockProvider: Send + Sync {
     fn get_block(&self, cid: &Cid) -> Result<Option<Block>>;
+
+    fn retain_block(&self, _cid: &Cid) -> Result<()> {
+        Ok(())
+    }
+
+    fn release_block(&self, _cid: &Cid) {}
 }
 
 pub fn parse_cid(input: &str) -> Result<Cid> {

@@ -420,6 +420,14 @@ impl BlockProvider for FetchingBlockProvider {
             Err(err) => Err(CoreError::Storage(err.to_string())),
         }
     }
+
+    fn retain_block(&self, cid: &Cid) -> CoreResult<()> {
+        self.store.retain_block(cid)
+    }
+
+    fn release_block(&self, cid: &Cid) {
+        self.store.release_block(cid);
+    }
 }
 
 #[derive(Clone)]

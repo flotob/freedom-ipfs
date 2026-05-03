@@ -1,7 +1,7 @@
 LIVE_ENS ?= vitalik.eth,daicowtf.eth
 KUBO_BIN ?= target/tools/kubo/kubo/ipfs
 
-.PHONY: test fmt clippy verify live-smoke live-corpus kubo-parity build-xcframework verify-xcframework clean
+.PHONY: test fmt clippy verify local-soak live-smoke live-corpus kubo-parity build-xcframework verify-xcframework clean
 
 test:
 	cargo test --workspace
@@ -13,6 +13,9 @@ clippy:
 	cargo clippy --workspace --all-targets -- -D warnings
 
 verify: test clippy
+
+local-soak:
+	cargo test -p freedom-ipfs-gateway --test local_soak -- --ignored --nocapture
 
 live-smoke:
 	FREEDOM_IPFS_LIVE_ENS="$(LIVE_ENS)" cargo test -p freedom-ipfs-gateway --test live_smoke -- --ignored --nocapture

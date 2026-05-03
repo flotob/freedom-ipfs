@@ -38,6 +38,12 @@ Public CID corpus smoke passed for the checked-in immutable paths:
 make live-corpus
 ```
 
+Local cached-gateway soak passed:
+
+```bash
+make local-soak
+```
+
 Observed live-smoke result:
 
 - `vitalik.eth` resolved at runtime to `/ipfs/bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u`
@@ -51,6 +57,11 @@ Observed live-corpus result:
 - `vitalik-home` fetched `/ipfs/bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u`
 - `daicowtf-home` fetched `/ipfs/bafybeidznfolm74c5cephzdycedx7hk76iawno45wemcvkflieotzo2lne`
 - retrieval stats were `cache_hits=25 http_provider_blocks=2 bitswap_blocks=3`
+
+Observed local-soak result:
+
+- 500 cached local-gateway requests completed against an in-memory raw block.
+- Linux RSS moved from `8704` KiB to `13440` KiB, within the 32 MiB maximum growth budget.
 
 iOS packaging command was exercised on Linux and correctly refused to run:
 
@@ -88,7 +99,7 @@ M8 mobile resource hardening: partially complete. Cache trim, gateway concurrenc
 
 M9 browser integration: partially complete. The local gateway path, mobile ABI, Swift wrapper source, lifecycle hooks, and preload/cancel controls exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. Swift wrapper compilation/linking and app integration are not verified in this Linux environment.
 
-M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, Kubo-generated UnixFS/HAMT parity smoke, live ENS smoke, and a small checked-in public CID corpus smoke exist, but a larger public CID corpus, broader Kubo parity matrix, and long soak tests remain follow-up work.
+M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, Kubo-generated UnixFS/HAMT parity smoke, live ENS smoke, a small checked-in public CID corpus smoke, and a local cached-gateway RSS soak exist, but a larger public CID corpus, broader Kubo parity matrix, and longer network/device soak tests remain follow-up work.
 
 M11 optional features: not started except CAR export/import support, which was promoted into the MVP diagnostics/cache path.
 
@@ -101,4 +112,5 @@ M11 optional features: not started except CAR export/import support, which was p
 - DHT-only retrieval of `daicowtf.eth` is not reliable on the public DHT; current auto mode succeeds because delegated routing returns usable providers.
 - DNSLink still defaults to Cloudflare DoH. Native/system TXT lookup should be evaluated for artifact size and iOS behavior.
 - The checked-in public CID corpus is intentionally small; it needs more IPNS, DNSLink, large/range-media, and documented pass/fail cases.
+- The local soak is host-side only; long network soaks and iOS device memory-growth soaks are still missing.
 - No broad Kubo parity matrix exists yet for deterministic cross-implementation gateway/routing regression coverage.

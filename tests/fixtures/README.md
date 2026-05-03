@@ -11,6 +11,8 @@ Offline tests currently generate minimal fixtures in Rust so they remain reprodu
   `make kubo-parity` when `KUBO_BIN` points at an `ipfs` binary.
 - Opt-in public CID corpus smoke via `make live-corpus`, using immutable
   paths listed in `public_corpus.txt` and the local Rust gateway/retrieval path.
+- Opt-in local gateway soak via `make local-soak`, using generated in-memory
+  blocks and checking bounded RSS growth on Linux.
 
 Follow-up fixture work:
 

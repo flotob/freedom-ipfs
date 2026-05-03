@@ -42,6 +42,7 @@ Early implementation. Current code supports:
 - full local-gateway responses streamed in bounded UnixFS chunks instead of one full-file buffer,
 - Kubo-generated CAR parity smoke for UnixFS files/directories and HAMT directories when `KUBO_BIN` is available,
 - opt-in public CID corpus smoke that fetches documented immutable paths through the local gateway,
+- opt-in local gateway soak that repeats cached reads and checks bounded RSS growth on Linux,
 - configurable local-gateway request concurrency limiting,
 - CAR import/export for tests, diagnostics, and cache warmup,
 - mobile lifecycle hooks for background/foreground, low-memory cache trimming, and network-change provider cache hygiene,
@@ -96,6 +97,12 @@ Public CID corpus smoke, also ignored by default:
 
 ```bash
 make live-corpus
+```
+
+Local cached gateway soak:
+
+```bash
+make local-soak
 ```
 
 Light-DHT provider discovery smoke:

@@ -95,7 +95,7 @@ Results:
 | Streaming responses | Gateway streams full responses in bounded chunks. | Done |
 | Stream eviction guard | Gateway stream scopes retain blocks they read; SQLite LRU eviction and explicit trim skip retained blocks until the stream scope releases them. | Done |
 | HTTP range support | Gateway range tests cover fixed, open-ended, suffix, malformed, and unsatisfiable ranges. | Done |
-| HEAD support for browser/cache probes | Gateway unit test and Kubo-generated UnixFS parity cover `HEAD` requests for full and ranged `/ipfs` reads, including `Content-Length`, `Accept-Ranges`, `Content-Range`, and empty response bodies. | Done |
+| HEAD support for browser/cache probes | Gateway unit tests and Kubo-generated UnixFS parity cover `HEAD` requests for full and ranged `/ipfs` reads, plus `/ipns` reads after name resolution, including `Content-Length`, `Accept-Ranges`, `Content-Range`, and empty response bodies. | Done |
 | Browser MIME behavior | Directory `index.html` fallback with path-based `text/html` test. | Done for MVP |
 | Useful gateway status codes and browser error pages | Tests cover invalid path/range, not found/name not found, timeout, busy, traversal cases, `text/html` browser-facing error pages, and escaped error details. | Done |
 | Bounded gateway concurrency | Gateway semaphore and concurrency-limit test. | Done |

@@ -49,7 +49,7 @@ Early implementation. Current code supports:
 - UnixFS range reads that avoid assembling entire multi-block files for byte-range responses,
 - gateway rejection of malformed and unsatisfiable byte-range requests,
 - fixed, open-ended, and suffix byte-range responses with `Content-Range`,
-- `HEAD` requests for full and ranged gateway reads with headers and no body,
+- `HEAD` requests for full and ranged `/ipfs` and `/ipns` gateway reads with headers and no body,
 - full local-gateway responses streamed in bounded UnixFS chunks instead of one full-file buffer,
 - gateway rejection of `.`/`..` path traversal segments before UnixFS lookup,
 - browser-facing HTML gateway error pages with escaped details and stable HTTP status codes,

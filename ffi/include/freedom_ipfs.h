@@ -58,6 +58,14 @@ bool freedom_ipfs_node_start_gateway_online_with_config_v2(
     size_t max_concurrent_requests,
     uint64_t dht_query_timeout_secs,
     size_t dht_max_providers);
+bool freedom_ipfs_node_restart_gateway_online_with_config_v2(
+    FreedomIpfsNode *ptr,
+    const char *addr,
+    const char *delegated_router,
+    uint32_t routing_mode,
+    size_t max_concurrent_requests,
+    uint64_t dht_query_timeout_secs,
+    size_t dht_max_providers);
 char *freedom_ipfs_node_gateway_url(FreedomIpfsNode *ptr);
 uint64_t freedom_ipfs_node_preload_path(FreedomIpfsNode *ptr, const char *path);
 bool freedom_ipfs_node_cancel_preload(FreedomIpfsNode *ptr, uint64_t task_id);

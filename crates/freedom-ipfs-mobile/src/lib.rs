@@ -427,21 +427,80 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config_v2(
         return false;
     }
     let node = &*ptr;
-    let addr = match CStr::from_ptr(addr)
+    let Some((addr, router)) = online_gateway_router(
+        node,
+        addr,
+        delegated_router,
+        routing_mode,
+        max_concurrent_requests,
+        dht_query_timeout_secs,
+        dht_max_providers,
+    ) else {
+        return false;
+    };
+
+    start_gateway_with_router(node, addr, router)
+}
+
+/// # Safety
+///
+/// `ptr` must be a valid node pointer. `addr` must point to a NUL-terminated
+/// UTF-8 socket address string for the duration of this call. `delegated_router`
+/// may be null to use the default delegated routing endpoint, otherwise it must
+/// point to a NUL-terminated UTF-8 URL string or comma-separated URL list.
+/// `routing_mode` must be one of the `FREEDOM_IPFS_ROUTING_MODE_*` constants
+/// from the C header. `dht_*` values may be 0 to use the built-in mobile
+/// defaults. On success this cancels active preloads, stops the current gateway,
+/// and starts a new online gateway with the supplied routing configuration. On
+/// validation failure the currently running gateway is left untouched.
+#[no_mangle]
+pub unsafe extern "C" fn freedom_ipfs_node_restart_gateway_online_with_config_v2(
+    ptr: *mut FreedomIpfsNode,
+    addr: *const c_char,
+    delegated_router: *const c_char,
+    routing_mode: u32,
+    max_concurrent_requests: usize,
+    dht_query_timeout_secs: u64,
+    dht_max_providers: usize,
+) -> bool {
+    if ptr.is_null() || addr.is_null() {
+        return false;
+    }
+    let node = &*ptr;
+    let Some((addr, router)) = online_gateway_router(
+        node,
+        addr,
+        delegated_router,
+        routing_mode,
+        max_concurrent_requests,
+        dht_query_timeout_secs,
+        dht_max_providers,
+    ) else {
+        return false;
+    };
+
+    stop_preloads(node);
+    stop_gateway(node);
+    start_gateway_with_router(node, addr, router)
+}
+
+unsafe fn online_gateway_router(
+    node: &FreedomIpfsNode,
+    addr: *const c_char,
+    delegated_router: *const c_char,
+    routing_mode: u32,
+    max_concurrent_requests: usize,
+    dht_query_timeout_secs: u64,
+    dht_max_providers: usize,
+) -> Option<(SocketAddr, axum::Router)> {
+    let addr = CStr::from_ptr(addr)
         .to_str()
         .ok()
-        .and_then(|s| s.parse::<SocketAddr>().ok())
-    {
-        Some(addr) => addr,
-        None => return false,
-    };
+        .and_then(|s| s.parse::<SocketAddr>().ok())?;
     let delegated_routers = if delegated_router.is_null() {
         DEFAULT_DELEGATED_ROUTER.to_string()
     } else {
-        match CStr::from_ptr(delegated_router).to_str() {
-            Ok(router) => router.to_string(),
-            Err(_) => return false,
-        }
+        CStr::from_ptr(delegated_router).to_str().ok()?.to_string()
     };
 
     let delegated = delegated_routing_client(&delegated_routers);
@@ -452,7 +511,7 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config_v2(
         }
         ROUTING_MODE_DELEGATED => ProviderRoutingClient::from(delegated),
         ROUTING_MODE_LIGHT_DHT => ProviderRoutingClient::from(dht.clone()),
-        _ => return false,
+        _ => return None,
     };
     let provider = FetchingBlockProvider::new(node.store.clone(), routing);
     let gateway_config = if max_concurrent_requests == 0 {
@@ -468,15 +527,14 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config_v2(
             dht,
         ),
     ));
-    start_gateway_with_router(
-        node,
+    Some((
         addr,
         freedom_ipfs_gateway::router_with_provider_and_name_resolver_config(
             Arc::new(provider),
             Arc::new(name_resolver),
             gateway_config,
         ),
-    )
+    ))
 }
 
 fn light_dht_client(dht_query_timeout_secs: u64, dht_max_providers: usize) -> LightDhtClient {
@@ -807,6 +865,53 @@ mod tests {
     }
 
     #[test]
+    fn restarts_online_gateway_for_routing_mode_changes() {
+        unsafe {
+            let node = freedom_ipfs_node_new_in_memory();
+            assert!(!node.is_null());
+
+            let addr = CString::new("127.0.0.1:0").unwrap();
+            let router = CString::new("http://127.0.0.1:9/routing/v1").unwrap();
+            assert!(freedom_ipfs_node_start_gateway_online_with_config_v2(
+                node,
+                addr.as_ptr(),
+                router.as_ptr(),
+                ROUTING_MODE_DELEGATED,
+                1,
+                0,
+                0,
+            ));
+            let first_url = gateway_url_string(node);
+            assert_gateway_health(node);
+
+            assert!(!freedom_ipfs_node_restart_gateway_online_with_config_v2(
+                node,
+                addr.as_ptr(),
+                router.as_ptr(),
+                99,
+                1,
+                0,
+                0,
+            ));
+            assert_eq!(gateway_url_string(node), first_url);
+            assert_gateway_health(node);
+
+            assert!(freedom_ipfs_node_restart_gateway_online_with_config_v2(
+                node,
+                addr.as_ptr(),
+                router.as_ptr(),
+                ROUTING_MODE_LIGHT_DHT,
+                1,
+                5,
+                2,
+            ));
+            assert_gateway_health(node);
+
+            freedom_ipfs_node_free(node);
+        }
+    }
+
+    #[test]
     fn parses_comma_separated_delegated_router_endpoints() {
         assert_eq!(
             delegated_router_endpoints(" https://one.example/routing/v1, ,https://two.example "),
@@ -1050,10 +1155,7 @@ mod tests {
     }
 
     unsafe fn assert_gateway_health(node: *mut FreedomIpfsNode) {
-        let url_ptr = freedom_ipfs_node_gateway_url(node);
-        assert!(!url_ptr.is_null());
-        let url = CStr::from_ptr(url_ptr).to_str().unwrap().to_string();
-        freedom_ipfs_string_free(url_ptr);
+        let url = gateway_url_string(node);
         assert!(url.starts_with("http://127.0.0.1:"));
 
         let addr = url.strip_prefix("http://").unwrap();
@@ -1065,5 +1167,13 @@ mod tests {
         stream.read_to_string(&mut response).unwrap();
         assert!(response.contains("200 OK"));
         assert!(response.ends_with("ok\n"));
+    }
+
+    unsafe fn gateway_url_string(node: *mut FreedomIpfsNode) -> String {
+        let url_ptr = freedom_ipfs_node_gateway_url(node);
+        assert!(!url_ptr.is_null());
+        let url = CStr::from_ptr(url_ptr).to_str().unwrap().to_string();
+        freedom_ipfs_string_free(url_ptr);
+        url
     }
 }

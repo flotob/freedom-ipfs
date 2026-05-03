@@ -111,6 +111,7 @@ The first product-usable release should meet these targets on every target devic
 - Local gateway remains loopback-only.
 - No block serving, content providing, DHT server mode, or Kubo RPC surface is visible on device.
 - `vitalik.eth`, `daicowtf.eth`, and the three checked-in `/ipns` paths render through the local gateway.
+- Routing can be changed from `auto` to `delegated` or `light_dht` with `setRoutingMode(...)` or `restartOnlineGateway(...)`; active preloads are cancelled and a new loopback gateway URL is surfaced to the app.
 - Background, foreground, low-memory, and network-change hooks run without process death or stuck retrieval.
 - Repeated retrieval soak does not show unbounded RSS growth.
 

@@ -128,6 +128,84 @@ public final class FreedomIpfsReader {
         )
     }
 
+    public func restartOnlineGateway(
+        address: String = "127.0.0.1:0",
+        delegatedRouter: String? = nil,
+        routingMode: FreedomIpfsRoutingMode = .auto,
+        maxConcurrentRequests: Int = 0,
+        dhtQueryTimeoutSeconds: UInt64 = 0,
+        dhtMaxProviders: Int = 0
+    ) throws {
+        guard let handle else {
+            throw FreedomIpfsReaderError.invalidNode
+        }
+        let ok = address.withCString { addressPtr in
+            if let delegatedRouter {
+                return delegatedRouter.withCString { routerPtr in
+                    freedom_ipfs_node_restart_gateway_online_with_config_v2(
+                        handle,
+                        addressPtr,
+                        routerPtr,
+                        routingMode.rawValue,
+                        maxConcurrentRequests,
+                        dhtQueryTimeoutSeconds,
+                        dhtMaxProviders
+                    )
+                }
+            }
+            return freedom_ipfs_node_restart_gateway_online_with_config_v2(
+                handle,
+                addressPtr,
+                nil,
+                routingMode.rawValue,
+                maxConcurrentRequests,
+                dhtQueryTimeoutSeconds,
+                dhtMaxProviders
+            )
+        }
+        guard ok else {
+            throw FreedomIpfsReaderError.startGatewayFailed
+        }
+    }
+
+    public func restartOnlineGateway(
+        address: String = "127.0.0.1:0",
+        delegatedRouters: [String],
+        routingMode: FreedomIpfsRoutingMode = .auto,
+        maxConcurrentRequests: Int = 0,
+        dhtQueryTimeoutSeconds: UInt64 = 0,
+        dhtMaxProviders: Int = 0
+    ) throws {
+        let routerList = delegatedRouters
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: ",")
+        try restartOnlineGateway(
+            address: address,
+            delegatedRouter: routerList.isEmpty ? nil : routerList,
+            routingMode: routingMode,
+            maxConcurrentRequests: maxConcurrentRequests,
+            dhtQueryTimeoutSeconds: dhtQueryTimeoutSeconds,
+            dhtMaxProviders: dhtMaxProviders
+        )
+    }
+
+    public func setRoutingMode(
+        _ routingMode: FreedomIpfsRoutingMode,
+        delegatedRouters: [String] = [],
+        maxConcurrentRequests: Int = 0,
+        dhtQueryTimeoutSeconds: UInt64 = 0,
+        dhtMaxProviders: Int = 0
+    ) throws {
+        try restartOnlineGateway(
+            delegatedRouters: delegatedRouters,
+            routingMode: routingMode,
+            maxConcurrentRequests: maxConcurrentRequests,
+            dhtQueryTimeoutSeconds: dhtQueryTimeoutSeconds,
+            dhtMaxProviders: dhtMaxProviders
+        )
+    }
+
     public var gatewayURL: URL? {
         guard let handle, let ptr = freedom_ipfs_node_gateway_url(handle) else {
             return nil

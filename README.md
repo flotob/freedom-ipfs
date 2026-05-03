@@ -56,7 +56,7 @@ Early implementation. Current code supports:
 - bounded 16 MiB in-memory hot block cache in front of the SQLite cache,
 - CAR import/export for tests, diagnostics, and cache warmup,
 - mobile lifecycle hooks for background/foreground, low-memory cache trimming, and network-change provider cache hygiene,
-- an iOS staticlib/XCFramework build skeleton with staged C headers/module map, exported-symbol verification, a simulator Swift gateway smoke, a generated UIKit/WebKit app-rendering smoke in the verifier, and a Swift wrapper for persistent-cache node creation, cache import/export, cache trimming, routing-mode selection, multi-router configuration, local gateway URL mapping, lifecycle hooks, preload/cancel for `/ipfs`, `/ipns`, `ipfs://`, `ipns://`, and bare-CID inputs, and offline/online gateway start.
+- an iOS staticlib/XCFramework build skeleton with staged C headers/module map, exported-symbol verification, a simulator Swift gateway smoke, a generated UIKit/WebKit app-rendering smoke in the verifier, and a Swift wrapper for persistent-cache node creation, cache import/export, cache trimming, routing-mode selection and restart, multi-router configuration, local gateway URL mapping, lifecycle hooks, preload/cancel for `/ipfs`, `/ipns`, `ipfs://`, `ipns://`, and bare-CID inputs, and offline/online gateway start.
 
 Still incomplete: resource profiling on device, network path integration in the host app, and hardened DHT-only retrieval for sites whose DHT providers are slow or stale. See [docs/completion-audit.md](docs/completion-audit.md) for the current prompt-to-artifact checklist and [docs/ios-device-verification.md](docs/ios-device-verification.md) for the remaining iPhone/app verification gate.
 

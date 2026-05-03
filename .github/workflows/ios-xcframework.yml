@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Show Apple toolchain
         run: |
@@ -60,7 +60,7 @@ jobs:
         run: cargo run -p xtask -- verify-xcframework
 
       - name: Upload XCFramework artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: FreedomIpfs.xcframework
           path: target/ios-xcframework/FreedomIpfs.xcframework

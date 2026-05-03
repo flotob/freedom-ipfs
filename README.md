@@ -25,6 +25,7 @@ Early implementation. Current code supports:
 - offline gateway constructors keep name resolution cache-only/no-network by default,
 - short-lived in-memory DNSLink/IPNS name-resolution cache,
 - delegated routing provider lookup,
+- bounded delegated-routing response size and provider fanout,
 - client-mode light DHT provider/IPNS lookup fallback with configurable provider fanout,
 - deterministic in-process light-DHT provider lookup test coverage,
 - CLI/mobile knobs for DHT query timeout and provider fanout,

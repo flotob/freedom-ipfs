@@ -23,6 +23,8 @@ pub const DEFAULT_DELEGATED_ROUTER: &str = "https://delegated-ipfs.dev/routing/v
 pub const DEFAULT_DHT_QUERY_TIMEOUT: Duration = Duration::from_secs(25);
 pub const DEFAULT_MAX_DHT_PROVIDERS: usize = 32;
 const DEFAULT_DELEGATED_ROUTING_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_DELEGATED_ROUTING_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_DELEGATED_ROUTING_PROVIDERS: usize = 64;
 const DHT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 const DHT_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
 const DHT_MAX_PENDING_OUTGOING_CONNECTIONS: u32 = 8;
@@ -129,16 +131,15 @@ impl DelegatedRoutingClient {
 
     pub async fn providers(&self, cid: &Cid) -> Result<Vec<Provider>> {
         let url = format!("{}/providers/{}", self.endpoint, cid);
-        let body = self
+        let response = self
             .client
             .get(url)
             .header("accept", "application/x-ndjson, application/json")
             .send()
             .await?
-            .error_for_status()?
-            .text()
-            .await?;
-        parse_provider_response(&body)
+            .error_for_status()?;
+        let body = limited_response_text(response, MAX_DELEGATED_ROUTING_RESPONSE_BYTES).await?;
+        Ok(limit_delegated_providers(parse_provider_response(&body)?))
     }
 }
 
@@ -410,6 +411,26 @@ pub fn parse_provider_response(body: &str) -> Result<Vec<Provider>> {
         providers.extend(response.into_providers()?);
     }
     Ok(providers)
+}
+
+fn limit_delegated_providers(mut providers: Vec<Provider>) -> Vec<Provider> {
+    providers.truncate(MAX_DELEGATED_ROUTING_PROVIDERS);
+    providers
+}
+
+async fn limited_response_text(response: reqwest::Response, max_bytes: usize) -> Result<String> {
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(RoutingError::InvalidResponse(format!(
+                "delegated routing response exceeded {max_bytes} bytes"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).map_err(|err| RoutingError::InvalidResponse(err.to_string()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -710,6 +731,51 @@ mod tests {
             Some("12D3KooWNDpFqyse9kR7aZwgEzh4U1mL6Zz6jEuRNFXJxL5D2KPP")
         );
         assert_eq!(providers[0].addrs[0], "/ip4/164.92.225.198/tcp/4001");
+    }
+
+    #[test]
+    fn caps_delegated_provider_records() {
+        let providers = (0..(MAX_DELEGATED_ROUTING_PROVIDERS + 8))
+            .map(|index| {
+                Provider::from_parts(
+                    Some(format!("peer-{index}")),
+                    vec![format!("/ip4/127.0.0.1/tcp/{}", 4000 + index)],
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        let capped = limit_delegated_providers(providers);
+
+        assert_eq!(capped.len(), MAX_DELEGATED_ROUTING_PROVIDERS);
+        assert_eq!(capped[0].id.as_deref(), Some("peer-0"));
+        let last_expected = format!("peer-{}", MAX_DELEGATED_ROUTING_PROVIDERS - 1);
+        assert_eq!(
+            capped[MAX_DELEGATED_ROUTING_PROVIDERS - 1].id.as_deref(),
+            Some(last_expected.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_delegated_response_body() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let response =
+                b"HTTP/1.1 200 OK\r\ncontent-length: 8\r\nconnection: close\r\n\r\n12345678";
+            tokio::io::AsyncWriteExt::write_all(&mut stream, response)
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::get(format!("http://{addr}/routing/v1/providers/test"))
+            .await
+            .unwrap();
+        let err = limited_response_text(response, 4).await.unwrap_err();
+
+        assert!(matches!(err, RoutingError::InvalidResponse(_)));
+        task.await.unwrap();
     }
 
     #[test]

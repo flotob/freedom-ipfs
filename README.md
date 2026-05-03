@@ -49,6 +49,8 @@ Early implementation. Current code supports:
 - full local-gateway responses streamed in bounded UnixFS chunks instead of one full-file buffer,
 - gateway rejection of `.`/`..` path traversal segments before UnixFS lookup,
 - browser-facing HTML gateway error pages with escaped details and stable HTTP status codes,
+- explicit test coverage that Kubo RPC/WebUI paths such as `/api/v0/version`
+  and `/webui` are not exposed,
 - Kubo-generated CAR parity smoke for UnixFS files/directories and HAMT directories when `KUBO_BIN` is available,
 - opt-in public corpus smoke that fetches documented `/ipfs` and DNSLink-backed `/ipns` paths and byte ranges through the local gateway,
 - opt-in local gateway soak that repeats cached reads and checks bounded RSS growth on Linux,

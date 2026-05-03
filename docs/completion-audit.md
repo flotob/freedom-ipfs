@@ -103,6 +103,7 @@ Results:
 | Verified HTTP raw-block retrieval | Retrieval requests provider `/ipfs/{cid}?format=raw`, bounds response bodies, disables redirects, verifies CIDs. | Done |
 | Invalid provider blocks fail closed | Invalid, redirected, and oversized HTTP provider tests; bad-provider suppression. | Done |
 | No public trustless gateway fallback | No public gateway fallback path exists; live smoke goes through routing/providers and local gateway. | Done |
+| No Kubo RPC compatibility | Gateway tests assert `GET` and `POST` to `/api/v0/version`, `/api/v0/id`, `/api/v0/refs`, and `/webui` return `404 Not Found` and do not expose Kubo-style JSON RPC responses. | Done |
 | Minimal Bitswap client | Deterministic in-process libp2p Bitswap tests verify retrieval, cache insert, want-have before want-block for multi-peer sessions, DONT_HAVE handling, cancel behavior, and no-listener client swarm construction. | Done for MVP |
 | Bitswap transports | TCP/WebSocket/QUIC configured; supported address filtering tests. | Done |
 | No block serving to peers | Retrieval implements client-only Bitswap path, does not expose a serving strategy, and host tests assert Bitswap client swarms have no listen addresses. | Done for host; packet-level/device audit still needed for final confidence |

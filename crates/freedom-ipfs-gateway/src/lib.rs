@@ -879,6 +879,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn does_not_expose_kubo_rpc_or_webui_routes() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router(store);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        for path in ["/api/v0/version", "/api/v0/id", "/api/v0/refs", "/webui"] {
+            let get = client
+                .get(format!("http://{addr}{path}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(get.status(), StatusCode::NOT_FOUND, "GET {path}");
+            assert_ne!(
+                get.headers().get(CONTENT_TYPE),
+                Some(&HeaderValue::from_static("application/json")),
+                "GET {path}"
+            );
+
+            let post = client
+                .post(format!("http://{addr}{path}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(post.status(), StatusCode::NOT_FOUND, "POST {path}");
+            assert_ne!(
+                post.headers().get(CONTENT_TYPE),
+                Some(&HeaderValue::from_static("application/json")),
+                "POST {path}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn resolves_ipns_path_through_name_resolver() {
         let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
         let data = b"<html>ipns</html>";

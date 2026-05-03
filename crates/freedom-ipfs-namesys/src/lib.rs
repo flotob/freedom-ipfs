@@ -648,11 +648,35 @@ fn required_u64(map: &std::collections::BTreeMap<String, Ipld>, key: &str) -> Re
 
 fn unquote_txt(input: &str) -> String {
     let trimmed = input.trim();
-    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
-        trimmed[1..trimmed.len() - 1].replace("\\\"", "\"")
-    } else {
-        trimmed.to_string()
+    if !trimmed.starts_with('"') {
+        return trimmed.to_string();
     }
+
+    let mut output = String::new();
+    let mut chars = trimmed.chars().peekable();
+    let mut parsed_quoted_segment = false;
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                parsed_quoted_segment = true;
+                while let Some(ch) = chars.next() {
+                    match ch {
+                        '"' => break,
+                        '\\' => {
+                            if let Some(escaped) = chars.next() {
+                                output.push(escaped);
+                            }
+                        }
+                        other => output.push(other),
+                    }
+                }
+            }
+            other if other.is_whitespace() && parsed_quoted_segment => {}
+            _ => return trimmed.to_string(),
+        }
+    }
+
+    output
 }
 
 fn timeout_http_client(timeout: Duration) -> reqwest::Client {
@@ -756,6 +780,19 @@ mod tests {
         assert!(parse_dnslink_txt("dnslink=https://example.com").is_err());
     }
 
+    #[test]
+    fn unquotes_split_dns_txt_character_strings() {
+        assert_eq!(
+            unquote_txt(r#""dnslink=/ipfs/bafkq" "addwgevxmmraojswg33smq""#),
+            "dnslink=/ipfs/bafkqaddwgevxmmraojswg33smq"
+        );
+        assert_eq!(
+            unquote_txt(r#""value with \"quote\"""#),
+            "value with \"quote\""
+        );
+        assert_eq!(unquote_txt("not quoted"), "not quoted");
+    }
+
     #[tokio::test]
     async fn default_name_resolver_uses_pluggable_dnslink_resolver() {
         let resolver = DefaultNameResolver::new(
@@ -802,7 +839,7 @@ mod tests {
             let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut request)
                 .await
                 .unwrap();
-            let body = r#"{"Answer":[{"data":"\"dnslink=/ipfs/bafkqaddwgevxmmraojswg33smq\"","TTL":120}]}"#;
+            let body = r#"{"Answer":[{"data":"\"dnslink=/ipfs/bafkq\" \"addwgevxmmraojswg33smq\"","TTL":120}]}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/dns-json\r\ncontent-length: {}\r\n\r\n{}",
                 body.len(),

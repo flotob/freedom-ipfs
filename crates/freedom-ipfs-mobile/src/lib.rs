@@ -1,10 +1,11 @@
 use freedom_ipfs_namesys::{
     CachedNameResolver, CloudflareDohResolver, DefaultNameResolver, DelegatedIpnsResolver,
+    FallbackIpnsResolver, IpnsResolver,
 };
 use freedom_ipfs_retrieval::FetchingBlockProvider;
 use freedom_ipfs_routing::{
-    AutoRoutingClient, DelegatedRoutingClient, LightDhtClient, ProviderRoutingClient,
-    DEFAULT_DELEGATED_ROUTER,
+    AutoRoutingClient, DelegatedRoutingClient, DhtIpnsResolver, LightDhtClient,
+    ProviderRoutingClient, DEFAULT_DELEGATED_ROUTER,
 };
 use freedom_ipfs_store::SqliteBlockStore;
 use std::ffi::{c_char, CStr, CString};
@@ -340,7 +341,7 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config(
     };
     let name_resolver = CachedNameResolver::new(DefaultNameResolver::new(
         CloudflareDohResolver::default(),
-        DelegatedIpnsResolver::new(delegated_router),
+        ipns_resolver(routing_mode, delegated_router),
     ));
     start_gateway_with_router(
         node,
@@ -351,6 +352,18 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config(
             gateway_config,
         ),
     )
+}
+
+fn ipns_resolver(routing_mode: u32, delegated_router: String) -> Arc<dyn IpnsResolver> {
+    match routing_mode {
+        ROUTING_MODE_AUTO => Arc::new(FallbackIpnsResolver::new(
+            DelegatedIpnsResolver::new(delegated_router),
+            DhtIpnsResolver::default(),
+        )),
+        ROUTING_MODE_DELEGATED => Arc::new(DelegatedIpnsResolver::new(delegated_router)),
+        ROUTING_MODE_LIGHT_DHT => Arc::new(DhtIpnsResolver::default()),
+        _ => Arc::new(DelegatedIpnsResolver::new(delegated_router)),
+    }
 }
 
 fn start_gateway_with_router(

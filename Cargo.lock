@@ -990,7 +990,9 @@ dependencies = [
 name = "freedom-ipfs-routing"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "cid",
+ "freedom-ipfs-namesys",
  "futures",
  "libp2p",
  "reqwest",

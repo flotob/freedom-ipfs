@@ -52,6 +52,16 @@ pub trait IpnsResolver: Send + Sync {
 }
 
 #[async_trait]
+impl<T> IpnsResolver for Arc<T>
+where
+    T: IpnsResolver + ?Sized,
+{
+    async fn resolve_ipns(&self, name: &str) -> Result<IpnsRecord> {
+        self.as_ref().resolve_ipns(name).await
+    }
+}
+
+#[async_trait]
 pub trait NameResolver: Send + Sync {
     async fn resolve_name(&self, name: &str) -> Result<String>;
 }
@@ -230,19 +240,22 @@ impl IpnsResolver for DelegatedIpnsResolver {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct DefaultNameResolver {
+pub struct DefaultNameResolver<I = DelegatedIpnsResolver> {
     dnslink: CloudflareDohResolver,
-    ipns: DelegatedIpnsResolver,
+    ipns: I,
 }
 
-impl DefaultNameResolver {
-    pub fn new(dnslink: CloudflareDohResolver, ipns: DelegatedIpnsResolver) -> Self {
+impl<I> DefaultNameResolver<I> {
+    pub fn new(dnslink: CloudflareDohResolver, ipns: I) -> Self {
         Self { dnslink, ipns }
     }
 }
 
 #[async_trait]
-impl NameResolver for DefaultNameResolver {
+impl<I> NameResolver for DefaultNameResolver<I>
+where
+    I: IpnsResolver,
+{
     async fn resolve_name(&self, name: &str) -> Result<String> {
         match resolve_dnslink(&self.dnslink, name).await {
             Ok(path) => Ok(path),
@@ -252,6 +265,37 @@ impl NameResolver for DefaultNameResolver {
                 .await
                 .map(|record| record.value),
             Err(err) => Err(err),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FallbackIpnsResolver<P, F> {
+    primary: P,
+    fallback: F,
+}
+
+impl<P, F> FallbackIpnsResolver<P, F> {
+    pub fn new(primary: P, fallback: F) -> Self {
+        Self { primary, fallback }
+    }
+}
+
+#[async_trait]
+impl<P, F> IpnsResolver for FallbackIpnsResolver<P, F>
+where
+    P: IpnsResolver,
+    F: IpnsResolver,
+{
+    async fn resolve_ipns(&self, name: &str) -> Result<IpnsRecord> {
+        let primary_err = match self.primary.resolve_ipns(name).await {
+            Ok(record) => return Ok(record),
+            Err(err) => err,
+        };
+
+        match self.fallback.resolve_ipns(name).await {
+            Ok(record) => Ok(record),
+            Err(_) => Err(primary_err),
         }
     }
 }
@@ -359,6 +403,12 @@ fn verify_ipns_record_at(name: &str, bytes: &[u8], now: OffsetDateTime) -> Resul
 fn normalize_ipns_name_for_routing(name: &str) -> Result<String> {
     let cid = ipns_name_as_cid(name)?;
     Ok(cid.to_string())
+}
+
+pub fn ipns_dht_record_key(name: &str) -> Result<Vec<u8>> {
+    let mut key = b"/ipns/".to_vec();
+    key.extend_from_slice(&ipns_name_as_cid(name)?.hash().to_bytes());
+    Ok(key)
 }
 
 fn ipns_name_as_cid(name: &str) -> Result<Cid> {
@@ -615,6 +665,25 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
+    #[tokio::test]
+    async fn fallback_ipns_resolver_uses_fallback_after_primary_failure() {
+        let resolver = FallbackIpnsResolver::new(
+            StaticIpnsResolver { record: None },
+            StaticIpnsResolver {
+                record: Some(IpnsRecord {
+                    value: "/ipfs/bafkqaddwgevxmmraojswg33smq".to_string(),
+                    sequence: 42,
+                    validity: None,
+                    ttl: 0,
+                }),
+            },
+        );
+
+        let record = resolver.resolve_ipns("k51fallback").await.unwrap();
+
+        assert_eq!(record.sequence, 42);
+    }
+
     #[test]
     fn verifies_v2_ipns_record_with_inline_ed25519_key() {
         let (name, record) = signed_record("/ipfs/bafkqaddwgevxmmraojswg33smq", FUTURE, true);
@@ -662,6 +731,18 @@ mod tests {
         let (name, record) = signed_record("/ipfs/bafkqaddwgevxmmraojswg33smq", FUTURE, false);
         let verified = verify_ipns_record(&name, &record).unwrap();
         assert_eq!(verified.value, "/ipfs/bafkqaddwgevxmmraojswg33smq");
+    }
+
+    #[test]
+    fn builds_binary_ipns_dht_record_key() {
+        let (name, _record) = signed_record("/ipfs/bafkqaddwgevxmmraojswg33smq", FUTURE, false);
+        let key = ipns_dht_record_key(&name).unwrap();
+
+        assert!(key.starts_with(b"/ipns/"));
+        assert_eq!(
+            &key[6..],
+            ipns_name_as_cid(&name).unwrap().hash().to_bytes()
+        );
     }
 
     fn signed_record(value: &str, validity: &str, include_legacy: bool) -> (String, Vec<u8>) {
@@ -730,6 +811,19 @@ mod tests {
         async fn resolve_name(&self, _name: &str) -> Result<String> {
             let value = self.count.fetch_add(1, Ordering::SeqCst) + 1;
             Ok(format!("/ipfs/{value}"))
+        }
+    }
+
+    struct StaticIpnsResolver {
+        record: Option<IpnsRecord>,
+    }
+
+    #[async_trait]
+    impl IpnsResolver for StaticIpnsResolver {
+        async fn resolve_ipns(&self, _name: &str) -> Result<IpnsRecord> {
+            self.record
+                .clone()
+                .ok_or_else(|| NamesysError::NotFound("static".into()))
         }
     }
 }

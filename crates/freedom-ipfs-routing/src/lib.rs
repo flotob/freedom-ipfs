@@ -1,6 +1,12 @@
 use cid::Cid;
+use freedom_ipfs_namesys::{
+    ipns_dht_record_key, verify_ipns_record, IpnsRecord, IpnsResolver, NamesysError,
+};
 use futures::StreamExt;
-use libp2p::kad::{self, store::MemoryStore, store::RecordStore, GetProvidersOk, QueryResult};
+use libp2p::kad::{
+    self, store::MemoryStore, store::RecordStore, GetProvidersOk, GetRecordError, GetRecordOk,
+    QueryResult,
+};
 use libp2p::multiaddr::Protocol;
 use libp2p::swarm::SwarmEvent;
 use libp2p::{noise, tcp, tls, yamux, Multiaddr, PeerId, SwarmBuilder};
@@ -194,25 +200,7 @@ impl LightDhtClient {
     }
 
     pub async fn providers(&self, cid: &Cid) -> Result<Vec<Provider>> {
-        let mut swarm = build_dht_swarm(self.query_timeout).await?;
-        let mut bootstrap_count = 0usize;
-        for addr in &self.bootstrap_peers {
-            let Some((peer, addr)) = parse_p2p_multiaddr(addr) else {
-                tracing::debug!(addr, "ignoring invalid DHT bootstrap peer");
-                continue;
-            };
-            swarm.behaviour_mut().add_address(&peer, addr.clone());
-            swarm.add_peer_address(peer, addr.clone());
-            if let Ok(dial_addr) = addr.with_p2p(peer) {
-                if let Err(err) = swarm.dial(dial_addr) {
-                    tracing::debug!(peer = %peer, error = %err, "DHT bootstrap dial rejected");
-                }
-            }
-            bootstrap_count += 1;
-        }
-        if bootstrap_count == 0 {
-            return Err(RoutingError::Dht("no valid DHT bootstrap peers".into()));
-        }
+        let mut swarm = self.bootstrapped_swarm().await?;
 
         let key = kad::RecordKey::new(&cid.hash().to_bytes());
         let query_id = swarm.behaviour_mut().get_providers(key.clone());
@@ -256,6 +244,124 @@ impl LightDhtClient {
 
         let providers = providers_from_dht(&mut swarm, &key, provider_ids, self.max_providers)?;
         resolve_missing_provider_addresses(&mut swarm, providers, self.query_timeout).await
+    }
+
+    pub async fn records(&self, key: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let mut swarm = self.bootstrapped_swarm().await?;
+        let key = kad::RecordKey::new(&key.to_vec());
+        let query_id = swarm.behaviour_mut().get_record(key);
+        let deadline = tokio::time::sleep(self.query_timeout);
+        tokio::pin!(deadline);
+        let mut records = Vec::new();
+
+        loop {
+            tokio::select! {
+                _ = &mut deadline => {
+                    if records.is_empty() {
+                        return Err(RoutingError::Dht("DHT record lookup timed out".into()));
+                    }
+                    break;
+                }
+                event = swarm.select_next_some() => {
+                    let SwarmEvent::Behaviour(kad::Event::OutboundQueryProgressed { id, result, .. }) = event else {
+                        continue;
+                    };
+                    if id != query_id {
+                        continue;
+                    }
+                    match result {
+                        QueryResult::GetRecord(Ok(GetRecordOk::FoundRecord(record))) => {
+                            records.push(record.record.value);
+                        }
+                        QueryResult::GetRecord(Ok(GetRecordOk::FinishedWithNoAdditionalRecord { .. })) => {
+                            break;
+                        }
+                        QueryResult::GetRecord(Err(GetRecordError::QuorumFailed { records: found_records, .. })) => {
+                            records.extend(found_records.into_iter().map(|record| record.record.value));
+                            break;
+                        }
+                        QueryResult::GetRecord(Err(GetRecordError::NotFound { .. })) => {
+                            break;
+                        }
+                        QueryResult::GetRecord(Err(err)) => {
+                            if records.is_empty() {
+                                return Err(RoutingError::Dht(err.to_string()));
+                            }
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        Ok(records)
+    }
+
+    async fn bootstrapped_swarm(&self) -> Result<libp2p::Swarm<kad::Behaviour<MemoryStore>>> {
+        let mut swarm = build_dht_swarm(self.query_timeout).await?;
+        let mut bootstrap_count = 0usize;
+        for addr in &self.bootstrap_peers {
+            let Some((peer, addr)) = parse_p2p_multiaddr(addr) else {
+                tracing::debug!(addr, "ignoring invalid DHT bootstrap peer");
+                continue;
+            };
+            swarm.behaviour_mut().add_address(&peer, addr.clone());
+            swarm.add_peer_address(peer, addr.clone());
+            if let Ok(dial_addr) = addr.with_p2p(peer) {
+                if let Err(err) = swarm.dial(dial_addr) {
+                    tracing::debug!(peer = %peer, error = %err, "DHT bootstrap dial rejected");
+                }
+            }
+            bootstrap_count += 1;
+        }
+        if bootstrap_count == 0 {
+            return Err(RoutingError::Dht("no valid DHT bootstrap peers".into()));
+        }
+        Ok(swarm)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DhtIpnsResolver {
+    dht: LightDhtClient,
+}
+
+impl Default for DhtIpnsResolver {
+    fn default() -> Self {
+        Self::new(LightDhtClient::default())
+    }
+}
+
+impl DhtIpnsResolver {
+    pub fn new(dht: LightDhtClient) -> Self {
+        Self { dht }
+    }
+}
+
+#[async_trait::async_trait]
+impl IpnsResolver for DhtIpnsResolver {
+    async fn resolve_ipns(&self, name: &str) -> freedom_ipfs_namesys::Result<IpnsRecord> {
+        let key = ipns_dht_record_key(name)?;
+        let records =
+            self.dht.records(&key).await.map_err(|err| {
+                NamesysError::NotFound(format!("DHT IPNS record for {name}: {err}"))
+            })?;
+
+        let mut best = None;
+        for record in records {
+            let Ok(record) = verify_ipns_record(name, &record) else {
+                continue;
+            };
+            if best
+                .as_ref()
+                .is_none_or(|best: &IpnsRecord| record.sequence > best.sequence)
+            {
+                best = Some(record);
+            }
+        }
+
+        best.ok_or_else(|| NamesysError::NotFound(name.to_string()))
     }
 }
 

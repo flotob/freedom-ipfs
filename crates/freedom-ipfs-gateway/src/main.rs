@@ -7,11 +7,12 @@ use freedom_ipfs_gateway::{
 };
 use freedom_ipfs_namesys::{
     CachedNameResolver, CloudflareDohResolver, DefaultNameResolver, DelegatedIpnsResolver,
+    FallbackIpnsResolver, IpnsResolver,
 };
 use freedom_ipfs_retrieval::FetchingBlockProvider;
 use freedom_ipfs_routing::{
-    AutoRoutingClient, DelegatedRoutingClient, LightDhtClient, ProviderRoutingClient,
-    DEFAULT_DELEGATED_ROUTER,
+    AutoRoutingClient, DelegatedRoutingClient, DhtIpnsResolver, LightDhtClient,
+    ProviderRoutingClient, DEFAULT_DELEGATED_ROUTER,
 };
 use freedom_ipfs_store::SqliteBlockStore;
 use std::fs;
@@ -94,7 +95,7 @@ async fn main() -> Result<()> {
         let provider = FetchingBlockProvider::new(store, routing);
         let name_resolver = CachedNameResolver::new(DefaultNameResolver::new(
             CloudflareDohResolver::default(),
-            DelegatedIpnsResolver::new(delegated_router),
+            ipns_resolver(args.routing_mode, delegated_router),
         ));
         serve_with_provider_and_name_resolver_config(
             Arc::new(provider),
@@ -108,4 +109,15 @@ async fn main() -> Result<()> {
     };
     eprintln!("gateway listening on http://{bound}");
     Ok(())
+}
+
+fn ipns_resolver(routing_mode: RoutingMode, delegated_router: String) -> Arc<dyn IpnsResolver> {
+    match routing_mode {
+        RoutingMode::Auto => Arc::new(FallbackIpnsResolver::new(
+            DelegatedIpnsResolver::new(delegated_router),
+            DhtIpnsResolver::default(),
+        )),
+        RoutingMode::Delegated => Arc::new(DelegatedIpnsResolver::new(delegated_router)),
+        RoutingMode::LightDht => Arc::new(DhtIpnsResolver::default()),
+    }
 }

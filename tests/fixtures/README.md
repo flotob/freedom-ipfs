@@ -53,7 +53,8 @@ Rejected public-corpus candidates:
 - 2026-05-03: `/ipns/en.wikipedia-on-ipfs.org` resolved and fetched a
   `169` byte root page, but `/ipns/en.wikipedia-on-ipfs.org/wiki/Main_Page`
   returned `502 Bad Gateway` after retries with no HTTP-capable providers.
-  Keep the root out of the default corpus unless a larger stable path is found.
+  The small root remains in the default corpus; larger paths stay out until
+  stable providers are found.
 
 Rejected public-DHT smoke candidates:
 

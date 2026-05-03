@@ -366,6 +366,8 @@ enum FreedomIpfsSmoke {{
             .arg(slice_dir)
             .arg("-l")
             .arg("freedom_ipfs_mobile")
+            .arg("-framework")
+            .arg("SystemConfiguration")
             .arg("ffi/swift/FreedomIpfsReader.swift")
             .arg(&smoke)
             .arg("-o")

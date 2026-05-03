@@ -101,6 +101,8 @@ Verify an existing XCFramework artifact. This requires a booted iOS simulator be
 cargo run -p xtask -- verify-xcframework
 ```
 
+The generated XCFramework is a static library package. iOS apps linking it must also link `SystemConfiguration.framework`.
+
 Live smoke test, intentionally ignored by default because it uses the public IPFS network:
 
 ```bash

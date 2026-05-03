@@ -31,7 +31,7 @@ Early implementation. Current code supports:
 - short-lived multihash-keyed provider-result cache and bad-provider suppression,
 - explicit HTTP timeouts for delegated routing, DNSLink/IPNS, and provider block requests,
 - redirect-disabled HTTP provider block requests, matching the read-only verified retrieval model,
-- explicit libp2p connection timeout and connection-limit behaviours for DHT and Bitswap swarms,
+- explicit libp2p identify, ping, connection timeout, and connection-limit behaviours for DHT and Bitswap swarms,
 - verified HTTP raw-block retrieval from HTTP-capable providers,
 - client-only Bitswap retrieval over TCP, WebSocket, and QUIC libp2p streams for Bitswap-only providers,
 - bounded Bitswap peer/address fanout with one provider-refresh retry after stale-provider failures,

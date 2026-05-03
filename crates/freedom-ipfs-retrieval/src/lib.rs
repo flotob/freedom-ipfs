@@ -12,7 +12,9 @@ use futures::StreamExt;
 use libp2p::multiaddr::Protocol;
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::StreamProtocol;
-use libp2p::{connection_limits, noise, tcp, tls, yamux, Multiaddr, PeerId, SwarmBuilder};
+use libp2p::{
+    connection_limits, identify, noise, ping, tcp, tls, yamux, Multiaddr, PeerId, SwarmBuilder,
+};
 use libp2p_stream::{Control as StreamControl, IncomingStreams};
 use multihash::Multihash;
 use multihash_codetable::{Code, MultihashDigest};
@@ -293,8 +295,13 @@ impl HttpRetriever {
             )
             .await
             .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
-            .with_behaviour(|_| BitswapBehaviour {
+            .with_behaviour(|key| BitswapBehaviour {
                 stream: libp2p_stream::Behaviour::new(),
+                identify: identify::Behaviour::new(identify::Config::new(
+                    format!("freedom-ipfs/{}", env!("CARGO_PKG_VERSION")),
+                    key.public(),
+                )),
+                ping: ping::Behaviour::new(ping::Config::new()),
                 limits: connection_limits::Behaviour::new(bitswap_connection_limits()),
             })
             .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
@@ -437,6 +444,8 @@ struct ReceivedBitswapBlock {
 #[behaviour(prelude = "libp2p::swarm::derive_prelude")]
 struct BitswapBehaviour {
     stream: libp2p_stream::Behaviour,
+    identify: identify::Behaviour,
+    ping: ping::Behaviour,
     limits: connection_limits::Behaviour,
 }
 

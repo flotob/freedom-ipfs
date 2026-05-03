@@ -8,7 +8,10 @@ use freedom_ipfs_store::SqliteBlockStore;
 use serde::Deserialize;
 use std::env;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
+
+const REQUEST_ATTEMPTS: usize = 3;
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "network smoke test; set FREEDOM_IPFS_LIVE_PATHS=/ipfs/<cid>,/ipns/<name>"]
@@ -67,9 +70,9 @@ async fn live_gateway_fetches_real_paths_without_public_gateway_fallback() {
             "live path must be externally resolved into /ipfs or /ipns form: {path}"
         );
         let url = format!("http://{addr}{path}");
-        let response = client.get(&url).send().await.unwrap();
-        let status = response.status();
-        let body = response.bytes().await.unwrap();
+        let (status, body) = fetch_gateway_body_with_retries(&client, &url, REQUEST_ATTEMPTS)
+            .await
+            .unwrap_or_else(|err| panic!("live gateway request failed for {path}: {err}"));
         assert_eq!(
             status,
             StatusCode::OK,
@@ -92,6 +95,30 @@ async fn live_gateway_fetches_real_paths_without_public_gateway_fallback() {
         stats.cache_hits + stats.http_provider_blocks + stats.bitswap_blocks > 0,
         "live smoke did not record any retrieval transport"
     );
+}
+
+async fn fetch_gateway_body_with_retries(
+    client: &reqwest::Client,
+    url: &str,
+    attempts: usize,
+) -> Result<(StatusCode, Vec<u8>), String> {
+    let mut last_error = None;
+    for attempt in 1..=attempts.max(1) {
+        match client.get(url).send().await {
+            Ok(response) => {
+                let status = response.status();
+                match response.bytes().await {
+                    Ok(body) => return Ok((status, body.to_vec())),
+                    Err(err) => last_error = Some(format!("response body error: {err}")),
+                }
+            }
+            Err(err) => last_error = Some(format!("request error: {err}")),
+        }
+        if attempt < attempts {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "request was not attempted".to_string()))
 }
 
 async fn resolve_ens_contenthash(name: &str) -> String {

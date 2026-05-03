@@ -9,7 +9,9 @@ use libp2p::kad::{
 };
 use libp2p::multiaddr::Protocol;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
-use libp2p::{connection_limits, noise, tcp, tls, yamux, Multiaddr, PeerId, SwarmBuilder};
+use libp2p::{
+    connection_limits, identify, noise, ping, tcp, tls, yamux, Multiaddr, PeerId, SwarmBuilder,
+};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -444,6 +446,8 @@ impl ProviderRecord {
 #[behaviour(prelude = "libp2p::swarm::derive_prelude")]
 struct DhtBehaviour {
     kad: kad::Behaviour<MemoryStore>,
+    identify: identify::Behaviour,
+    ping: ping::Behaviour,
     limits: connection_limits::Behaviour,
 }
 
@@ -475,6 +479,11 @@ async fn build_dht_swarm(query_timeout: Duration) -> Result<libp2p::Swarm<DhtBeh
             behaviour.set_mode(Some(kad::Mode::Client));
             DhtBehaviour {
                 kad: behaviour,
+                identify: identify::Behaviour::new(identify::Config::new(
+                    format!("freedom-ipfs/{}", env!("CARGO_PKG_VERSION")),
+                    key.public(),
+                )),
+                ping: ping::Behaviour::new(ping::Config::new()),
                 limits: connection_limits::Behaviour::new(dht_connection_limits()),
             }
         })

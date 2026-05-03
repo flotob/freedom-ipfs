@@ -235,6 +235,9 @@ Failed experiments:
 
 - Global `WANT_HAVE` timeout reductions to 750ms and 2s made asset samples fast
   but caused repeated root failures when delegated providers were stale. Reverted.
+- One optimistic direct `WANT_BLOCK` attempt for an all-unknown peer set also
+  regressed reliability: `ipfs-tech-page-assets` fresh repeat=5 passed 4/5,
+  with one root 504 at 30.8s and run totals 14.3-30.8s. Reverted.
 - Failure-only light-DHT fallback after a stale delegated provider set added
   about 10s to failed roots and did not recover `ipfs.tech` during the test
   window. Reverted.

@@ -62,7 +62,7 @@ Results:
   - `ipfs-tech-developers-hero` returned `184141` bytes from `/ipns/ipfs.tech/_nuxt/developers-hero.BRuJDQyf.jpg`.
   - `ipfs-tech-ribbon-community-7` returned `100287` bytes from `/ipns/ipfs.tech/_nuxt/ribbon-community-7.BM6mrSZz.jpg`.
   - Each range response returned `128` bytes, matched the full response prefix, and included a valid `Content-Range` header.
-  - Retrieval stats: `cache_hits=90 http_provider_blocks=4 bitswap_blocks=5`.
+  - Retrieval stats: `cache_hits=77 http_provider_blocks=4 bitswap_blocks=5`.
 - The opt-in live harnesses retry transient local-gateway `408`, `502`, `503`, and `504` responses up to five times with backoff so temporary public-network provider timeouts do not fail the first attempt when later attempts succeed.
 - Kubo parity passed for generated CIDv1/raw-leaf UnixFS site files, CIDv0/DAG-PB UnixFS site files, empty files, percent-encoded browser paths, directory-index fallback, fixed/open-ended/suffix range reads, full/ranged `HEAD` requests, and HAMT directories.
 - Local cached-gateway soak passed: `500` requests, Linux RSS from `8960` KiB to `13312` KiB.
@@ -92,9 +92,9 @@ Results:
 | Percent-encoded browser paths | Gateway unit test and Kubo-generated parity cover files with spaces and reserved characters requested through encoded URL paths. | Done |
 | HAMT directories | UnixFS HAMT tests and Kubo-generated HAMT parity. | Done for basic real-world compatibility |
 | Local HTTP gateway data plane | Gateway crate and binary serve `/health`, `/ipfs`, `/ipns`; live smoke uses the local gateway; mobile FFI start/restart rejects non-loopback bind addresses. | Done |
-| Streaming responses | Gateway streams full responses in bounded chunks. | Done |
+| Streaming responses | Gateway streams full and ranged responses in bounded UnixFS chunks instead of one full-file or full-range buffer. | Done |
 | Stream eviction guard | Gateway stream scopes retain blocks they read; SQLite LRU eviction and explicit trim skip retained blocks until the stream scope releases them. | Done |
-| HTTP range support | Gateway range tests cover fixed, open-ended, suffix, malformed, and unsatisfiable ranges. | Done |
+| HTTP range support | Gateway range tests cover fixed, open-ended, suffix, malformed, unsatisfiable, and large multi-chunk ranges. | Done |
 | HEAD support for browser/cache probes | Gateway unit tests and Kubo-generated UnixFS parity cover `HEAD` requests for full and ranged `/ipfs` reads, plus `/ipns` reads after name resolution, including `Content-Length`, `Accept-Ranges`, `Content-Range`, and empty response bodies. | Done |
 | Browser MIME behavior | Directory `index.html` fallback with path-based `text/html` test. | Done for MVP |
 | Useful gateway status codes and browser error pages | Tests cover invalid path/range, not found/name not found, timeout, busy, traversal cases, `text/html` browser-facing error pages, and escaped error details. | Done |

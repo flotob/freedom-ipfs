@@ -240,7 +240,7 @@ async fn serve_ipfs_path(
         .to_string();
 
     let response = if let Some(range) = range {
-        ranged_response(provider.as_ref(), &cid, &served_path, range, &mime)?
+        ranged_response(provider, cid, served_path, len, range, &mime)?
     } else {
         streaming_response(provider, cid, served_path, len, &mime)?
     };
@@ -491,9 +491,10 @@ impl Drop for ScopedBlockProvider {
 }
 
 fn ranged_response(
-    provider: &dyn BlockProvider,
-    cid: &Cid,
-    path: &str,
+    provider: Arc<dyn BlockProvider>,
+    cid: Cid,
+    path: String,
+    total_len: u64,
     range: &HeaderValue,
     mime: &str,
 ) -> Result<Response, GatewayError> {
@@ -505,11 +506,36 @@ fn ranged_response(
             "only bytes ranges are supported".into(),
         ));
     };
-    let total_len = file_size(provider, cid, path).map_err(GatewayError::Unixfs)?;
     let (start, end) = parse_range_spec(spec, total_len)?;
-    let slice = read_file_range(provider, cid, path, start, end).map_err(GatewayError::Unixfs)?;
-    let mut response =
-        (StatusCode::PARTIAL_CONTENT, Body::from(Bytes::from(slice))).into_response();
+    let provider = Arc::new(ScopedBlockProvider::new(provider));
+    let stream = stream::unfold(Some(start), move |offset| {
+        let provider = provider.clone();
+        let path = path.clone();
+        async move {
+            let offset = offset?;
+            let chunk_end = offset
+                .saturating_add(GATEWAY_STREAM_CHUNK_SIZE - 1)
+                .min(end);
+            let next = if chunk_end == end {
+                None
+            } else {
+                Some(chunk_end + 1)
+            };
+            let chunk = read_file_range(
+                provider.as_ref() as &dyn BlockProvider,
+                &cid,
+                &path,
+                offset,
+                chunk_end,
+            )
+            .map(Bytes::from)
+            .map_err(|err| io::Error::other(err.to_string()));
+            Some((chunk, next))
+        }
+    });
+
+    let mut response = Body::from_stream(stream).into_response();
+    *response.status_mut() = StatusCode::PARTIAL_CONTENT;
     response.headers_mut().insert(
         CONTENT_TYPE,
         HeaderValue::from_str(mime).map_err(|err| GatewayError::Internal(err.to_string()))?,
@@ -666,7 +692,7 @@ mod tests {
     };
     use freedom_ipfs_namesys::{NamesysError, Result as NamesysResult};
     use prost::Message;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
     use tokio::net::TcpListener;
 
@@ -779,6 +805,51 @@ mod tests {
                 "{range}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn streams_large_byte_ranges_across_chunks() {
+        let len = (GATEWAY_STREAM_CHUNK_SIZE * 3) as usize;
+        let data = (0..len)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        let cid = cid_from_data(CODEC_RAW, &data);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(CountingProvider {
+            cid,
+            data: data.clone(),
+            calls: calls.clone(),
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router_with_provider(provider);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let range_end = GATEWAY_STREAM_CHUNK_SIZE * 2 + 9;
+        let url = format!("http://{addr}/ipfs/{cid}");
+        let response = reqwest::Client::new()
+            .get(url)
+            .header(RANGE, format!("bytes=0-{range_end}"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.headers().get(CONTENT_RANGE).unwrap(),
+            HeaderValue::from_str(&format!("bytes 0-{range_end}/{len}")).unwrap()
+        );
+        assert_eq!(
+            response.bytes().await.unwrap().as_ref(),
+            &data[..=range_end as usize]
+        );
+        assert!(
+            calls.load(Ordering::SeqCst) > 3,
+            "large range should be read in multiple chunks"
+        );
     }
 
     #[tokio::test]
@@ -1202,6 +1273,22 @@ mod tests {
             }
             self.entered.store(true, Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(300));
+            Ok(Some(Block::unchecked(*cid, self.data.clone())))
+        }
+    }
+
+    struct CountingProvider {
+        cid: Cid,
+        data: Vec<u8>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl BlockProvider for CountingProvider {
+        fn get_block(&self, cid: &Cid) -> CoreResult<Option<Block>> {
+            if cid != &self.cid {
+                return Ok(None);
+            }
+            self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(Some(Block::unchecked(*cid, self.data.clone())))
         }
     }

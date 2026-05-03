@@ -46,11 +46,11 @@ Early implementation. Current code supports:
 - basic HAMT-sharded UnixFS directory traversal,
 - directory `index.html` fallback with path-based MIME headers,
 - percent-encoded browser path segments for files with spaces and reserved characters,
-- UnixFS range reads that avoid assembling entire multi-block files for byte-range responses,
+- UnixFS range reads and gateway range responses that avoid assembling entire multi-block files in memory,
 - gateway rejection of malformed and unsatisfiable byte-range requests,
 - fixed, open-ended, and suffix byte-range responses with `Content-Range`,
 - `HEAD` requests for full and ranged `/ipfs` and `/ipns` gateway reads with headers and no body,
-- full local-gateway responses streamed in bounded UnixFS chunks instead of one full-file buffer,
+- full and ranged local-gateway responses streamed in bounded UnixFS chunks instead of one full-file/range buffer,
 - gateway rejection of `.`/`..` path traversal segments before UnixFS lookup,
 - browser-facing HTML gateway error pages with escaped details and stable HTTP status codes,
 - explicit test coverage that Kubo RPC/WebUI paths such as `/api/v0/version`

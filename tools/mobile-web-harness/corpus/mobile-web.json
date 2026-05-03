@@ -13,6 +13,24 @@
       "max_ttfb_ms": 30000
     },
     {
+      "id": "daicowtf-page-assets",
+      "description": "Fetch daicowtf.eth root HTML and same-origin browser subresources using app-style ipfs:// path semantics.",
+      "path": "/ipfs/QmWWbDw6kriAjRLyJNaeXjqqoyNn6kA18C42ubVzYKS4wS/",
+      "expect_status": 200,
+      "expect_content_type_prefix": "text/html",
+      "expect_body_contains": "<!DOCTYPE html",
+      "min_bytes": 100000,
+      "max_ttfb_ms": 30000,
+      "crawl": {
+        "max_assets": 32,
+        "min_assets": 0,
+        "max_failed_assets": 0,
+        "same_origin_only": true,
+        "include_css_assets": true,
+        "asset_max_bytes": 2000000
+      }
+    },
+    {
       "id": "ipfs-tech-root-html-range",
       "description": "DNSLink-backed IPNS website root. Exercises name resolution plus HTML gateway serving.",
       "path": "/ipns/ipfs.tech/",
@@ -23,6 +41,24 @@
       "expect_body_contains": "<title>IPFS",
       "min_bytes": 4096,
       "max_ttfb_ms": 45000
+    },
+    {
+      "id": "ipfs-tech-page-assets",
+      "description": "Fetch ipfs.tech root HTML and same-origin browser subresources using app-style ipns:// path semantics.",
+      "path": "/ipns/ipfs.tech/",
+      "expect_status": 200,
+      "expect_content_type_prefix": "text/html",
+      "expect_body_contains": "<title>IPFS",
+      "min_bytes": 100000,
+      "max_ttfb_ms": 45000,
+      "crawl": {
+        "max_assets": 32,
+        "min_assets": 8,
+        "max_failed_assets": 0,
+        "same_origin_only": true,
+        "include_css_assets": true,
+        "asset_max_bytes": 2000000
+      }
     },
     {
       "id": "daicowtf-dot-eth-is-not-ipns",

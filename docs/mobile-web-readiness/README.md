@@ -22,6 +22,12 @@ Use an already-running gateway:
 cargo run -p mobile-web-harness -- --gateway-url http://127.0.0.1:50017
 ```
 
+Run one or more focused cases:
+
+```sh
+cargo run -p mobile-web-harness -- --case ipfs-tech-page-assets
+```
+
 Or let it spawn the standalone gateway:
 
 ```sh
@@ -33,11 +39,20 @@ The default live corpus is `tools/mobile-web-harness/corpus/mobile-web.json`.
 It captures browser-facing checks such as status, MIME type, byte ranges,
 minimum body size, body snippets, TTFB, and total response time.
 
+Entries can also enable a page crawl. A crawl fetches the root HTML, extracts
+same-origin browser subresources from HTML and CSS, resolves root-relative paths
+as the iOS `ipfs://` / `ipns://` scheme handler would, and checks each asset's
+status, MIME type, byte count, and timing.
+
+## Findings
+
+- `RUST-WEB-001`: root UnixFS HTML could be served as `application/octet-stream`
+  when the path lacked an extension. Fixed in this branch with a regression test.
+- `RUST-WEB-002`: `ipfs.tech` page asset crawls intermittently lose JS chunks to
+  gateway `502` / `504` responses. Open.
+
 ## Next Scenario Targets
 
-- Full-page asset crawls: fetch the root HTML, extract same-origin CSS, JS,
-  image, font, and media URLs, then verify status/MIME/range behavior for each
-  subresource.
 - ENS-to-CID controls: resolve `.eth` names outside the gateway, then test the
   resulting `/ipfs/<cid>/` path directly so ENS bugs stay separate from IPFS
   retrieval bugs.

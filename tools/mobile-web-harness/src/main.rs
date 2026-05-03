@@ -1,12 +1,16 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use reqwest::header::{CONTENT_RANGE, CONTENT_TYPE, RANGE};
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 const DEFAULT_CORPUS: &str = "tools/mobile-web-harness/corpus/mobile-web.json";
@@ -27,6 +31,9 @@ struct Args {
     /// JSON corpus file.
     #[arg(long, default_value = DEFAULT_CORPUS)]
     corpus: PathBuf,
+    /// Optional case id filter; can be passed more than once.
+    #[arg(long = "case")]
+    cases: Vec<String>,
     /// Optional JSON report output path.
     #[arg(long)]
     output: Option<PathBuf>,
@@ -45,6 +52,9 @@ struct Args {
     /// Max DHT providers when spawning a gateway.
     #[arg(long, default_value_t = 4)]
     dht_max_providers: usize,
+    /// Concurrent subresource fetches for page crawls.
+    #[arg(long, default_value_t = 4)]
+    asset_concurrency: usize,
 }
 
 #[tokio::main]
@@ -65,6 +75,8 @@ async fn main() -> Result<()> {
         &gateway_url,
         &corpus,
         Duration::from_secs(args.timeout_secs),
+        args.asset_concurrency,
+        &args.cases,
     )
     .await;
     if let Some(mut gateway) = spawned {
@@ -85,14 +97,23 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_corpus(gateway_url: &str, corpus: &Corpus, timeout: Duration) -> Result<RunReport> {
+async fn run_corpus(
+    gateway_url: &str,
+    corpus: &Corpus,
+    timeout: Duration,
+    asset_concurrency: usize,
+    cases: &[String],
+) -> Result<RunReport> {
     let client = reqwest::Client::builder()
         .timeout(timeout)
         .build()
         .context("build reqwest client")?;
     let mut results = Vec::new();
     for entry in &corpus.entries {
-        results.push(run_case(&client, gateway_url, entry).await);
+        if !cases.is_empty() && !cases.iter().any(|case| case == &entry.id) {
+            continue;
+        }
+        results.push(run_case(&client, gateway_url, entry, asset_concurrency).await);
     }
     Ok(RunReport {
         gateway_url: gateway_url.to_string(),
@@ -101,66 +122,34 @@ async fn run_corpus(gateway_url: &str, corpus: &Corpus, timeout: Duration) -> Re
     })
 }
 
-async fn run_case(client: &reqwest::Client, gateway_url: &str, entry: &CorpusEntry) -> CaseResult {
+async fn run_case(
+    client: &reqwest::Client,
+    gateway_url: &str,
+    entry: &CorpusEntry,
+    asset_concurrency: usize,
+) -> CaseResult {
     let url = format!("{}{}", gateway_url.trim_end_matches('/'), entry.path);
     let method = entry.method.as_deref().unwrap_or("GET");
-    let started = Instant::now();
-    let response = match method {
-        "GET" => {
-            let mut request = client.get(&url);
-            if let Some(range) = &entry.range {
-                request = request.header(RANGE, range);
-            }
-            request.send().await
-        }
-        "HEAD" => client.head(&url).send().await,
-        other => {
-            return CaseResult::failed(
-                entry,
-                url,
-                vec![format!(
-                    "unsupported method {other}; only GET and HEAD are supported"
-                )],
-            );
-        }
-    };
-    let response = match response {
+    let response = match fetch_response(client, &url, method, entry.range.as_deref()).await {
         Ok(response) => response,
         Err(err) => {
             return CaseResult::failed(entry, url, vec![format!("request error: {err}")]);
         }
     };
 
-    let ttfb_ms = started.elapsed().as_millis();
-    let status = response.status().as_u16();
-    let content_type = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
-    let content_range = response
-        .headers()
-        .get(CONTENT_RANGE)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
-    let body = match response.bytes().await {
-        Ok(body) => body,
-        Err(err) => {
-            return CaseResult::failed(entry, url, vec![format!("body error: {err}")]);
-        }
-    };
-    let total_ms = started.elapsed().as_millis();
-    let body_preview = String::from_utf8_lossy(&body.iter().copied().take(180).collect::<Vec<_>>())
-        .replace('\n', "\\n");
+    let body_preview =
+        String::from_utf8_lossy(&response.body.iter().copied().take(180).collect::<Vec<_>>())
+            .replace('\n', "\\n");
     let mut failures = Vec::new();
 
     if let Some(expected) = entry.expect_status {
-        if status != expected {
-            failures.push(format!("status {status}, expected {expected}"));
+        if response.status != expected {
+            failures.push(format!("status {}, expected {expected}", response.status));
         }
     }
     if let Some(expected) = &entry.expect_content_type_prefix {
-        if !content_type
+        if !response
+            .content_type
             .as_deref()
             .unwrap_or("")
             .to_ascii_lowercase()
@@ -168,36 +157,54 @@ async fn run_case(client: &reqwest::Client, gateway_url: &str, entry: &CorpusEnt
         {
             failures.push(format!(
                 "content-type {:?}, expected prefix {expected:?}",
-                content_type
+                response.content_type
             ));
         }
     }
     if let Some(expected) = &entry.expect_content_range_prefix {
-        if !content_range.as_deref().unwrap_or("").starts_with(expected) {
+        if !response
+            .content_range
+            .as_deref()
+            .unwrap_or("")
+            .starts_with(expected)
+        {
             failures.push(format!(
                 "content-range {:?}, expected prefix {expected:?}",
-                content_range
+                response.content_range
             ));
         }
     }
     if let Some(expected) = &entry.expect_body_contains {
-        let text = String::from_utf8_lossy(&body);
+        let text = String::from_utf8_lossy(&response.body);
         if !text.contains(expected) {
             failures.push(format!("body did not contain {expected:?}"));
         }
     }
     if let Some(min_bytes) = entry.min_bytes {
-        if body.len() < min_bytes {
+        if response.body.len() < min_bytes {
             failures.push(format!(
                 "body {} bytes, expected at least {min_bytes}",
-                body.len()
+                response.body.len()
             ));
         }
     }
     if let Some(max_ttfb_ms) = entry.max_ttfb_ms {
-        if ttfb_ms > max_ttfb_ms as u128 {
-            failures.push(format!("TTFB {ttfb_ms}ms exceeded {max_ttfb_ms}ms"));
+        if response.ttfb_ms > max_ttfb_ms as u128 {
+            failures.push(format!(
+                "TTFB {}ms exceeded {max_ttfb_ms}ms",
+                response.ttfb_ms
+            ));
         }
+    }
+
+    let mut asset_summary = None;
+    let mut assets = Vec::new();
+    if let Some(crawl) = &entry.crawl {
+        let (summary, mut crawled_assets, crawl_failures) =
+            run_page_crawl(client, &url, &response.body, crawl, asset_concurrency).await;
+        failures.extend(crawl_failures);
+        asset_summary = Some(summary);
+        assets.append(&mut crawled_assets);
     }
 
     CaseResult {
@@ -205,13 +212,15 @@ async fn run_case(client: &reqwest::Client, gateway_url: &str, entry: &CorpusEnt
         description: entry.description.clone(),
         method: method.to_string(),
         url,
-        status: Some(status),
-        content_type,
-        content_range,
-        body_bytes: body.len(),
-        ttfb_ms,
-        total_ms,
+        status: Some(response.status),
+        content_type: response.content_type,
+        content_range: response.content_range,
+        body_bytes: response.body.len(),
+        ttfb_ms: response.ttfb_ms,
+        total_ms: response.total_ms,
         body_preview,
+        asset_summary,
+        assets,
         passed: failures.is_empty(),
         failures,
     }
@@ -236,7 +245,853 @@ fn print_summary(report: &RunReport) {
         for failure in &result.failures {
             println!("  - {failure}");
         }
+        if let Some(summary) = &result.asset_summary {
+            println!(
+                "  assets: discovered={} fetched={} passed={} failed={} skipped_external={} skipped_unsupported={} truncated={}",
+                summary.discovered,
+                summary.fetched,
+                summary.passed,
+                summary.failed,
+                summary.skipped_external,
+                summary.skipped_unsupported,
+                summary.truncated
+            );
+            for asset in result.assets.iter().filter(|asset| !asset.passed).take(8) {
+                println!(
+                    "    - {} {} status={} type={} bytes={} total={}ms",
+                    asset.kind,
+                    asset.url,
+                    asset
+                        .status
+                        .map(|status| status.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    asset.content_type.as_deref().unwrap_or("-"),
+                    asset.body_bytes,
+                    asset.total_ms
+                );
+                for failure in &asset.failures {
+                    println!("      - {failure}");
+                }
+            }
+        }
     }
+}
+
+async fn fetch_response(
+    client: &reqwest::Client,
+    url: &str,
+    method: &str,
+    range: Option<&str>,
+) -> std::result::Result<FetchResponse, String> {
+    let started = Instant::now();
+    let response = match method {
+        "GET" => {
+            let mut request = client.get(url);
+            if let Some(range) = range {
+                request = request.header(RANGE, range);
+            }
+            request.send().await
+        }
+        "HEAD" => client.head(url).send().await,
+        other => {
+            return Err(format!(
+                "unsupported method {other}; only GET and HEAD are supported"
+            ))
+        }
+    }
+    .map_err(|err| err.to_string())?;
+
+    let ttfb_ms = started.elapsed().as_millis();
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let content_range = response
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let body = response
+        .bytes()
+        .await
+        .map_err(|err| format!("body error: {err}"))?
+        .to_vec();
+    let total_ms = started.elapsed().as_millis();
+
+    Ok(FetchResponse {
+        status,
+        content_type,
+        content_range,
+        body,
+        ttfb_ms,
+        total_ms,
+    })
+}
+
+async fn run_page_crawl(
+    client: &reqwest::Client,
+    page_url: &str,
+    page_body: &[u8],
+    config: &CrawlConfig,
+    asset_concurrency: usize,
+) -> (AssetSummary, Vec<AssetResult>, Vec<String>) {
+    let max_assets = config.max_assets.unwrap_or(32);
+    let same_origin_only = config.same_origin_only.unwrap_or(true);
+    let mut failures = Vec::new();
+    let page_url = match Url::parse(page_url) {
+        Ok(url) => url,
+        Err(err) => {
+            failures.push(format!("crawl URL parse failed: {err}"));
+            return (AssetSummary::default(), Vec::new(), failures);
+        }
+    };
+    let page_html = String::from_utf8_lossy(page_body);
+    let mut discovery = discover_html_assets(&page_html, &page_url, max_assets, same_origin_only);
+    let mut seen = discovery
+        .assets
+        .iter()
+        .map(|asset| asset.url.as_str().to_string())
+        .collect::<HashSet<_>>();
+
+    let mut fetched = fetch_assets(
+        client,
+        discovery.assets.clone(),
+        asset_concurrency,
+        config.asset_max_bytes.unwrap_or(2_000_000),
+    )
+    .await;
+
+    if config.include_css_assets.unwrap_or(true) && !discovery.truncated {
+        let css_assets = discover_css_assets_from_fetches(
+            &fetched,
+            &mut seen,
+            max_assets.saturating_sub(fetched.len()),
+            same_origin_only,
+            &mut discovery,
+        );
+        if !css_assets.is_empty() {
+            let mut css_fetched = fetch_assets(
+                client,
+                css_assets,
+                asset_concurrency,
+                config.asset_max_bytes.unwrap_or(2_000_000),
+            )
+            .await;
+            fetched.append(&mut css_fetched);
+        }
+    }
+
+    let assets = fetched
+        .into_iter()
+        .map(|fetched| fetched.result)
+        .collect::<Vec<_>>();
+    let failed = assets.iter().filter(|asset| !asset.passed).count();
+    let passed = assets.len().saturating_sub(failed);
+    let summary = AssetSummary {
+        discovered: discovery.discovered,
+        fetched: assets.len(),
+        passed,
+        failed,
+        skipped_external: discovery.skipped_external,
+        skipped_unsupported: discovery.skipped_unsupported,
+        truncated: discovery.truncated,
+    };
+
+    if let Some(min_assets) = config.min_assets {
+        if summary.fetched < min_assets {
+            failures.push(format!(
+                "crawl fetched {} assets, expected at least {min_assets}",
+                summary.fetched
+            ));
+        }
+    }
+    let max_failed_assets = config.max_failed_assets.unwrap_or(0);
+    if summary.failed > max_failed_assets {
+        failures.push(format!(
+            "crawl had {} failed assets, allowed {max_failed_assets}",
+            summary.failed
+        ));
+    }
+
+    (summary, assets, failures)
+}
+
+async fn fetch_assets(
+    client: &reqwest::Client,
+    assets: Vec<DiscoveredAsset>,
+    concurrency: usize,
+    max_bytes: usize,
+) -> Vec<FetchedAsset> {
+    let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
+    let mut tasks = Vec::new();
+    for asset in assets {
+        let client = client.clone();
+        let semaphore = semaphore.clone();
+        tasks.push(tokio::spawn(async move {
+            let _permit = semaphore.acquire_owned().await.ok();
+            fetch_asset(&client, asset, max_bytes).await
+        }));
+    }
+
+    let mut fetched = Vec::new();
+    for task in tasks {
+        if let Ok(asset) = task.await {
+            fetched.push(asset);
+        }
+    }
+    fetched
+}
+
+async fn fetch_asset(
+    client: &reqwest::Client,
+    asset: DiscoveredAsset,
+    max_bytes: usize,
+) -> FetchedAsset {
+    let range = range_for_kind(asset.kind);
+    let started_url = asset.url.to_string();
+    let response = fetch_response(client, &started_url, "GET", range).await;
+    let mut failures = Vec::new();
+    let mut result = AssetResult {
+        kind: asset.kind,
+        source: asset.source,
+        url: started_url,
+        status: None,
+        content_type: None,
+        content_range: None,
+        body_bytes: 0,
+        ttfb_ms: 0,
+        total_ms: 0,
+        body_preview: String::new(),
+        passed: false,
+        failures: Vec::new(),
+    };
+
+    let response = match response {
+        Ok(response) => response,
+        Err(err) => {
+            result.failures.push(format!("request error: {err}"));
+            return FetchedAsset {
+                result,
+                body_text: None,
+            };
+        }
+    };
+
+    result.status = Some(response.status);
+    result.content_type = response.content_type.clone();
+    result.content_range = response.content_range.clone();
+    result.body_bytes = response.body.len();
+    result.ttfb_ms = response.ttfb_ms;
+    result.total_ms = response.total_ms;
+    result.body_preview =
+        String::from_utf8_lossy(&response.body.iter().copied().take(180).collect::<Vec<_>>())
+            .replace('\n', "\\n");
+
+    if !(200..=299).contains(&response.status) {
+        failures.push(format!("status {} was not 2xx", response.status));
+    }
+    if let Some(expected) = mime_expectation(asset.kind) {
+        let content_type = response.content_type.as_deref().unwrap_or("");
+        if !expected.matches(content_type) {
+            failures.push(format!(
+                "content-type {:?} did not match {}",
+                response.content_type,
+                expected.label()
+            ));
+        }
+    }
+    if matches!(asset.kind, AssetKind::Audio | AssetKind::Video)
+        && response.content_range.is_none()
+        && response.status == 206
+    {
+        failures.push("media range response omitted Content-Range".to_string());
+    }
+    if response.body.len() > max_bytes {
+        failures.push(format!(
+            "body {} bytes exceeded asset cap {max_bytes}",
+            response.body.len()
+        ));
+    }
+
+    let body_text = if asset.kind == AssetKind::Stylesheet
+        && failures.is_empty()
+        && response.body.len() <= max_bytes
+    {
+        String::from_utf8(response.body).ok()
+    } else {
+        None
+    };
+    result.passed = failures.is_empty();
+    result.failures = failures;
+
+    FetchedAsset { result, body_text }
+}
+
+fn range_for_kind(kind: AssetKind) -> Option<&'static str> {
+    match kind {
+        AssetKind::Image | AssetKind::Font | AssetKind::Audio | AssetKind::Video => {
+            Some("bytes=0-4095")
+        }
+        AssetKind::Stylesheet | AssetKind::Script | AssetKind::Manifest | AssetKind::Other => None,
+    }
+}
+
+fn mime_expectation(kind: AssetKind) -> Option<MimeExpectation> {
+    match kind {
+        AssetKind::Stylesheet => Some(MimeExpectation::AnyOf(&["text/css"])),
+        AssetKind::Script => Some(MimeExpectation::AnyOf(&[
+            "text/javascript",
+            "application/javascript",
+            "application/ecmascript",
+        ])),
+        AssetKind::Image => Some(MimeExpectation::Prefix("image/")),
+        AssetKind::Font => Some(MimeExpectation::AnyOf(&[
+            "font/",
+            "application/font",
+            "application/octet-stream",
+        ])),
+        AssetKind::Audio => Some(MimeExpectation::Prefix("audio/")),
+        AssetKind::Video => Some(MimeExpectation::Prefix("video/")),
+        AssetKind::Manifest => Some(MimeExpectation::AnyOf(&[
+            "application/manifest+json",
+            "application/json",
+        ])),
+        AssetKind::Other => None,
+    }
+}
+
+enum MimeExpectation {
+    Prefix(&'static str),
+    AnyOf(&'static [&'static str]),
+}
+
+impl MimeExpectation {
+    fn matches(&self, content_type: &str) -> bool {
+        let content_type = content_type.to_ascii_lowercase();
+        match self {
+            Self::Prefix(prefix) => content_type.starts_with(prefix),
+            Self::AnyOf(options) => options.iter().any(|option| {
+                if option.ends_with('/') {
+                    content_type.starts_with(option)
+                } else {
+                    content_type.starts_with(option)
+                }
+            }),
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::Prefix(prefix) => format!("prefix {prefix:?}"),
+            Self::AnyOf(options) => format!("one of {options:?}"),
+        }
+    }
+}
+
+fn discover_html_assets(
+    html: &str,
+    page_url: &Url,
+    max_assets: usize,
+    same_origin_only: bool,
+) -> AssetDiscovery {
+    let content_root = content_root_url(page_url);
+    let mut discovery = AssetDiscovery::default();
+    let mut seen = HashSet::new();
+    let mut base_url = page_url.clone();
+
+    for tag in parse_html_tags(html) {
+        if tag.name == "base" {
+            if let Some(href) = tag.attr("href") {
+                if let Some(url) = resolve_asset_url(href, page_url, &content_root, false) {
+                    base_url = url;
+                }
+            }
+            continue;
+        }
+
+        let candidates = html_asset_candidates(&tag);
+        for (kind, raw, source) in candidates {
+            push_discovered_asset(
+                &mut discovery,
+                &mut seen,
+                kind,
+                &raw,
+                &source,
+                &base_url,
+                &content_root,
+                same_origin_only,
+                max_assets,
+            );
+        }
+    }
+
+    discovery
+}
+
+fn discover_css_assets_from_fetches(
+    fetched: &[FetchedAsset],
+    seen: &mut HashSet<String>,
+    remaining_slots: usize,
+    same_origin_only: bool,
+    discovery: &mut AssetDiscovery,
+) -> Vec<DiscoveredAsset> {
+    let mut css_assets = Vec::new();
+    if remaining_slots == 0 {
+        return css_assets;
+    }
+
+    for fetched_asset in fetched {
+        let Some(css) = fetched_asset.body_text.as_deref() else {
+            continue;
+        };
+        let Ok(stylesheet_url) = Url::parse(&fetched_asset.result.url) else {
+            continue;
+        };
+        let content_root = content_root_url(&stylesheet_url);
+        for raw in extract_css_urls(css) {
+            if css_assets.len() >= remaining_slots {
+                discovery.truncated = true;
+                return css_assets;
+            }
+            let kind = kind_from_url_hint(&raw).unwrap_or(AssetKind::Other);
+            let before = discovery.assets.len();
+            push_discovered_asset(
+                discovery,
+                seen,
+                kind,
+                &raw,
+                "css:url",
+                &stylesheet_url,
+                &content_root,
+                same_origin_only,
+                usize::MAX,
+            );
+            if discovery.assets.len() > before {
+                if let Some(asset) = discovery.assets.last().cloned() {
+                    css_assets.push(asset);
+                }
+            }
+        }
+    }
+
+    css_assets
+}
+
+fn html_asset_candidates(tag: &ParsedTag) -> Vec<(AssetKind, String, String)> {
+    let mut candidates = Vec::new();
+    match tag.name.as_str() {
+        "script" => {
+            if let Some(src) = tag.attr("src") {
+                candidates.push((
+                    AssetKind::Script,
+                    src.to_string(),
+                    "script[src]".to_string(),
+                ));
+            }
+        }
+        "link" => {
+            if let Some(href) = tag.attr("href") {
+                let rel = tag.attr("rel").unwrap_or("").to_ascii_lowercase();
+                let as_attr = tag.attr("as").unwrap_or("").to_ascii_lowercase();
+                let kind = if rel.contains("stylesheet") {
+                    Some(AssetKind::Stylesheet)
+                } else if rel.contains("modulepreload") {
+                    Some(AssetKind::Script)
+                } else if rel.contains("preload") || rel.contains("prefetch") {
+                    match as_attr.as_str() {
+                        "style" => Some(AssetKind::Stylesheet),
+                        "script" => Some(AssetKind::Script),
+                        "image" => Some(AssetKind::Image),
+                        "font" => Some(AssetKind::Font),
+                        "audio" => Some(AssetKind::Audio),
+                        "video" => Some(AssetKind::Video),
+                        _ => kind_from_url_hint(href),
+                    }
+                } else if rel.contains("icon") || rel.contains("apple-touch-icon") {
+                    Some(AssetKind::Image)
+                } else if rel.contains("manifest") {
+                    Some(AssetKind::Manifest)
+                } else {
+                    None
+                };
+                if let Some(kind) = kind {
+                    candidates.push((kind, href.to_string(), "link[href]".to_string()));
+                }
+            }
+        }
+        "img" => {
+            if let Some(src) = tag.attr("src") {
+                candidates.push((AssetKind::Image, src.to_string(), "img[src]".to_string()));
+            }
+            if let Some(srcset) = tag.attr("srcset") {
+                for src in parse_srcset(srcset) {
+                    candidates.push((AssetKind::Image, src, "img[srcset]".to_string()));
+                }
+            }
+        }
+        "source" => {
+            let kind = match tag.attr("type").unwrap_or("") {
+                media_type if media_type.starts_with("video/") => AssetKind::Video,
+                media_type if media_type.starts_with("audio/") => AssetKind::Audio,
+                media_type if media_type.starts_with("image/") => AssetKind::Image,
+                _ => AssetKind::Other,
+            };
+            if let Some(src) = tag.attr("src") {
+                candidates.push((kind, src.to_string(), "source[src]".to_string()));
+            }
+            if let Some(srcset) = tag.attr("srcset") {
+                for src in parse_srcset(srcset) {
+                    candidates.push((kind, src, "source[srcset]".to_string()));
+                }
+            }
+        }
+        "video" => {
+            if let Some(src) = tag.attr("src") {
+                candidates.push((AssetKind::Video, src.to_string(), "video[src]".to_string()));
+            }
+        }
+        "audio" => {
+            if let Some(src) = tag.attr("src") {
+                candidates.push((AssetKind::Audio, src.to_string(), "audio[src]".to_string()));
+            }
+        }
+        "track" => {
+            if let Some(src) = tag.attr("src") {
+                candidates.push((AssetKind::Other, src.to_string(), "track[src]".to_string()));
+            }
+        }
+        "iframe" | "embed" => {
+            if let Some(src) = tag.attr("src") {
+                candidates.push((
+                    AssetKind::Other,
+                    src.to_string(),
+                    "embedded[src]".to_string(),
+                ));
+            }
+        }
+        "object" => {
+            if let Some(data) = tag.attr("data") {
+                candidates.push((
+                    AssetKind::Other,
+                    data.to_string(),
+                    "object[data]".to_string(),
+                ));
+            }
+        }
+        _ => {}
+    }
+    candidates
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_discovered_asset(
+    discovery: &mut AssetDiscovery,
+    seen: &mut HashSet<String>,
+    kind: AssetKind,
+    raw_url: &str,
+    source: &str,
+    base_url: &Url,
+    content_root: &Option<Url>,
+    same_origin_only: bool,
+    max_assets: usize,
+) {
+    if discovery.assets.len() >= max_assets {
+        discovery.truncated = true;
+        return;
+    }
+
+    let Some(url) = resolve_asset_url(raw_url, base_url, content_root, same_origin_only) else {
+        if is_external_url(raw_url) {
+            discovery.skipped_external += 1;
+        } else {
+            discovery.skipped_unsupported += 1;
+        }
+        return;
+    };
+    let key = url.as_str().to_string();
+    if !seen.insert(key) {
+        return;
+    }
+    discovery.discovered += 1;
+    discovery.assets.push(DiscoveredAsset {
+        kind,
+        source: source.to_string(),
+        url,
+    });
+}
+
+fn resolve_asset_url(
+    raw_url: &str,
+    base_url: &Url,
+    content_root: &Option<Url>,
+    same_origin_only: bool,
+) -> Option<Url> {
+    let raw_url = raw_url.trim();
+    if raw_url.is_empty()
+        || raw_url.starts_with('#')
+        || raw_url.contains("${")
+        || raw_url.contains("{{")
+        || starts_with_scheme(raw_url, "data")
+        || starts_with_scheme(raw_url, "blob")
+        || starts_with_scheme(raw_url, "javascript")
+        || starts_with_scheme(raw_url, "mailto")
+        || starts_with_scheme(raw_url, "tel")
+    {
+        return None;
+    }
+
+    let resolved = if raw_url.starts_with("//") {
+        base_url.join(raw_url).ok()?
+    } else if raw_url.starts_with("/ipfs/") || raw_url.starts_with("/ipns/") {
+        base_url.join(raw_url).ok()?
+    } else if raw_url.starts_with('/') {
+        if let Some(content_root) = content_root {
+            content_root.join(raw_url.trim_start_matches('/')).ok()?
+        } else {
+            base_url.join(raw_url).ok()?
+        }
+    } else {
+        base_url.join(raw_url).ok()?
+    };
+
+    if same_origin_only && !same_origin(base_url, &resolved) {
+        return None;
+    }
+    Some(resolved)
+}
+
+fn content_root_url(url: &Url) -> Option<Url> {
+    let mut segments = url.path().split('/').filter(|segment| !segment.is_empty());
+    let namespace = segments.next()?;
+    if namespace != "ipfs" && namespace != "ipns" {
+        return None;
+    }
+    let root = segments.next()?;
+    let mut content_root = url.clone();
+    content_root.set_path(&format!("/{namespace}/{root}/"));
+    content_root.set_query(None);
+    content_root.set_fragment(None);
+    Some(content_root)
+}
+
+fn same_origin(a: &Url, b: &Url) -> bool {
+    a.scheme() == b.scheme()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
+}
+
+fn is_external_url(raw_url: &str) -> bool {
+    raw_url.starts_with("//")
+        || raw_url.contains("://")
+        || starts_with_scheme(raw_url, "mailto")
+        || starts_with_scheme(raw_url, "tel")
+}
+
+fn starts_with_scheme(value: &str, scheme: &str) -> bool {
+    value
+        .get(..scheme.len() + 1)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&format!("{scheme}:")))
+}
+
+fn parse_srcset(srcset: &str) -> Vec<String> {
+    srcset
+        .split(',')
+        .filter_map(|candidate| candidate.split_whitespace().next())
+        .filter(|candidate| !candidate.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn extract_css_urls(css: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    let lower = css.to_ascii_lowercase();
+    let mut offset = 0;
+    while let Some(index) = lower[offset..].find("url(") {
+        let start = offset + index + 4;
+        let Some(end) = css[start..].find(')') else {
+            break;
+        };
+        let raw = css[start..start + end]
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
+        if !raw.is_empty() {
+            urls.push(raw);
+        }
+        offset = start + end + 1;
+    }
+
+    let mut imports = VecDeque::new();
+    let mut offset = 0;
+    while let Some(index) = lower[offset..].find("@import") {
+        let start = offset + index + "@import".len();
+        let remainder = css[start..].trim_start();
+        if let Some(quote) = remainder
+            .chars()
+            .next()
+            .filter(|quote| *quote == '"' || *quote == '\'')
+        {
+            if let Some(end) = remainder[1..].find(quote) {
+                imports.push_back(remainder[1..1 + end].to_string());
+            }
+        }
+        offset = start + remainder.len().min(1);
+    }
+    urls.extend(imports);
+    urls
+}
+
+fn kind_from_url_hint(raw_url: &str) -> Option<AssetKind> {
+    let path = raw_url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(raw_url)
+        .to_ascii_lowercase();
+    if path.ends_with(".css") {
+        Some(AssetKind::Stylesheet)
+    } else if path.ends_with(".js") || path.ends_with(".mjs") {
+        Some(AssetKind::Script)
+    } else if matches!(
+        path.rsplit('.').next(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" | "ico")
+    ) {
+        Some(AssetKind::Image)
+    } else if matches!(
+        path.rsplit('.').next(),
+        Some("woff" | "woff2" | "ttf" | "otf" | "eot")
+    ) {
+        Some(AssetKind::Font)
+    } else if matches!(path.rsplit('.').next(), Some("mp3" | "wav" | "ogg" | "m4a")) {
+        Some(AssetKind::Audio)
+    } else if matches!(
+        path.rsplit('.').next(),
+        Some("mp4" | "webm" | "mov" | "m4v")
+    ) {
+        Some(AssetKind::Video)
+    } else if path.ends_with(".webmanifest") || path.ends_with("manifest.json") {
+        Some(AssetKind::Manifest)
+    } else {
+        None
+    }
+}
+
+fn parse_html_tags(html: &str) -> Vec<ParsedTag> {
+    let mut tags = Vec::new();
+    let lower = html.to_ascii_lowercase();
+    let mut offset = 0;
+    while let Some(start) = html[offset..].find('<') {
+        let start = offset + start + 1;
+        let Some(end) = html[start..].find('>') else {
+            break;
+        };
+        let raw = &html[start..start + end];
+        if let Some(tag) = parse_html_tag(raw) {
+            let raw_name = tag.name.clone();
+            tags.push(tag);
+            if matches!(raw_name.as_str(), "script" | "style") {
+                let close_tag = format!("</{raw_name}");
+                if let Some(close_start) = lower[start + end + 1..].find(&close_tag) {
+                    let close_start = start + end + 1 + close_start;
+                    if let Some(close_end) = lower[close_start..].find('>') {
+                        offset = close_start + close_end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        offset = start + end + 1;
+    }
+    tags
+}
+
+fn parse_html_tag(raw: &str) -> Option<ParsedTag> {
+    let raw = raw.trim();
+    if raw.is_empty()
+        || raw.starts_with('/')
+        || raw.starts_with('!')
+        || raw.starts_with('?')
+        || raw.starts_with("--")
+    {
+        return None;
+    }
+
+    let bytes = raw.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() && !bytes[index].is_ascii_whitespace() && bytes[index] != b'/' {
+        index += 1;
+    }
+    if index == 0 {
+        return None;
+    }
+    let name = raw[..index].to_ascii_lowercase();
+    let mut attrs = Vec::new();
+
+    while index < bytes.len() {
+        while index < bytes.len() && (bytes[index].is_ascii_whitespace() || bytes[index] == b'/') {
+            index += 1;
+        }
+        if index >= bytes.len() {
+            break;
+        }
+        let name_start = index;
+        while index < bytes.len()
+            && !bytes[index].is_ascii_whitespace()
+            && bytes[index] != b'='
+            && bytes[index] != b'/'
+        {
+            index += 1;
+        }
+        if index == name_start {
+            break;
+        }
+        let attr_name = raw[name_start..index].to_ascii_lowercase();
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        let attr_value = if index < bytes.len() && bytes[index] == b'=' {
+            index += 1;
+            while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+                index += 1;
+            }
+            if index < bytes.len() && (bytes[index] == b'"' || bytes[index] == b'\'') {
+                let quote = bytes[index];
+                index += 1;
+                let value_start = index;
+                while index < bytes.len() && bytes[index] != quote {
+                    index += 1;
+                }
+                let value = raw[value_start..index].to_string();
+                if index < bytes.len() {
+                    index += 1;
+                }
+                value
+            } else {
+                let value_start = index;
+                while index < bytes.len() && !bytes[index].is_ascii_whitespace() {
+                    index += 1;
+                }
+                raw[value_start..index].to_string()
+            }
+        } else {
+            String::new()
+        };
+        attrs.push((attr_name, html_unescape_minimal(&attr_value)));
+    }
+
+    Some(ParsedTag { name, attrs })
+}
+
+fn html_unescape_minimal(value: &str) -> String {
+    value
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
 }
 
 fn normalize_gateway_url(url: &str) -> String {
@@ -337,12 +1192,23 @@ struct CorpusEntry {
     path: String,
     method: Option<String>,
     range: Option<String>,
+    crawl: Option<CrawlConfig>,
     expect_status: Option<u16>,
     expect_content_type_prefix: Option<String>,
     expect_content_range_prefix: Option<String>,
     expect_body_contains: Option<String>,
     min_bytes: Option<usize>,
     max_ttfb_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CrawlConfig {
+    max_assets: Option<usize>,
+    min_assets: Option<usize>,
+    max_failed_assets: Option<usize>,
+    same_origin_only: Option<bool>,
+    include_css_assets: Option<bool>,
+    asset_max_bytes: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -365,6 +1231,8 @@ struct CaseResult {
     ttfb_ms: u128,
     total_ms: u128,
     body_preview: String,
+    asset_summary: Option<AssetSummary>,
+    assets: Vec<AssetResult>,
     passed: bool,
     failures: Vec<String>,
 }
@@ -383,8 +1251,110 @@ impl CaseResult {
             ttfb_ms: 0,
             total_ms: 0,
             body_preview: String::new(),
+            asset_summary: None,
+            assets: Vec::new(),
             passed: false,
             failures,
         }
+    }
+}
+
+struct FetchResponse {
+    status: u16,
+    content_type: Option<String>,
+    content_range: Option<String>,
+    body: Vec<u8>,
+    ttfb_ms: u128,
+    total_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AssetKind {
+    Stylesheet,
+    Script,
+    Image,
+    Font,
+    Audio,
+    Video,
+    Manifest,
+    Other,
+}
+
+impl std::fmt::Display for AssetKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Stylesheet => "stylesheet",
+            Self::Script => "script",
+            Self::Image => "image",
+            Self::Font => "font",
+            Self::Audio => "audio",
+            Self::Video => "video",
+            Self::Manifest => "manifest",
+            Self::Other => "other",
+        };
+        formatter.write_str(value)
+    }
+}
+
+#[derive(Debug, Default, Serialize)]
+struct AssetSummary {
+    discovered: usize,
+    fetched: usize,
+    passed: usize,
+    failed: usize,
+    skipped_external: usize,
+    skipped_unsupported: usize,
+    truncated: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct AssetResult {
+    kind: AssetKind,
+    source: String,
+    url: String,
+    status: Option<u16>,
+    content_type: Option<String>,
+    content_range: Option<String>,
+    body_bytes: usize,
+    ttfb_ms: u128,
+    total_ms: u128,
+    body_preview: String,
+    passed: bool,
+    failures: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveredAsset {
+    kind: AssetKind,
+    source: String,
+    url: Url,
+}
+
+struct FetchedAsset {
+    result: AssetResult,
+    body_text: Option<String>,
+}
+
+#[derive(Default)]
+struct AssetDiscovery {
+    assets: Vec<DiscoveredAsset>,
+    discovered: usize,
+    skipped_external: usize,
+    skipped_unsupported: usize,
+    truncated: bool,
+}
+
+struct ParsedTag {
+    name: String,
+    attrs: Vec<(String, String)>,
+}
+
+impl ParsedTag {
+    fn attr(&self, name: &str) -> Option<&str> {
+        self.attrs
+            .iter()
+            .find(|(attr_name, _)| attr_name == name)
+            .map(|(_, value)| value.as_str())
     }
 }

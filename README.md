@@ -45,6 +45,7 @@ Early implementation. Current code supports:
 - Bitswap cancel messages after successful block receipt,
 - verified caching of extra CIDv0/CIDv1 blocks returned in Bitswap payload responses,
 - deterministic in-process libp2p Bitswap retrieval test coverage,
+- opt-in loopback Kubo daemon Bitswap interop smoke,
 - basic HAMT-sharded UnixFS directory traversal,
 - directory `index.html` fallback with path-based MIME headers,
 - escaped HTML directory listings for `/ipfs` and resolved `/ipns` directories, preserving `/ipns` link namespaces when a directory has no `index.html`,
@@ -162,6 +163,12 @@ Kubo fixture parity smoke, if a Kubo `ipfs` binary is available:
 
 ```bash
 KUBO_BIN=/path/to/ipfs make kubo-parity
+```
+
+Kubo Bitswap interop smoke, if a Kubo `ipfs` binary is available:
+
+```bash
+KUBO_BIN=/path/to/ipfs make kubo-bitswap
 ```
 
 ## License

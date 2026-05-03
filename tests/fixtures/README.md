@@ -14,6 +14,9 @@ Offline tests currently generate minimal fixtures in Rust so they remain reprodu
   ranged `HEAD` requests.
 - Kubo-generated CIDv0 DAG-PB UnixFS CAR parity smoke via `make kubo-parity`
   to cover non-raw-leaf legacy gateway content and no-index directory listings.
+- Controlled loopback Kubo daemon Bitswap interop smoke via
+  `make kubo-bitswap`, using an isolated Kubo repo, loopback-only swarm/API
+  listeners, and a raw block retrieved by the Rust Bitswap client.
 - Opt-in public corpus smoke via `make live-corpus`, using immutable `/ipfs`
   paths and DNSLink-backed `/ipns` paths listed in `public_corpus.txt` through
   the local Rust gateway/retrieval path. Entries may include an optional range

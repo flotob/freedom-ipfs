@@ -29,6 +29,12 @@ Kubo-generated UnixFS, no-index directory listing, empty-file, UnixFS range/`HEA
 KUBO_BIN=$PWD/target/tools/kubo/kubo/ipfs cargo test -p freedom-ipfs-gateway --test kubo_parity -- --ignored --nocapture
 ```
 
+Controlled loopback Kubo daemon Bitswap interop smoke passed with the same Kubo binary:
+
+```bash
+KUBO_BIN=$PWD/target/tools/kubo/kubo/ipfs make kubo-bitswap
+```
+
 Live public-network smoke passed:
 
 ```bash
@@ -129,7 +135,7 @@ M4 IPNS and DNSLink: implemented. DNSLink uses a pluggable TXT resolver trait an
 
 M5 delegated routing and verified HTTP retrieval: implemented. Delegated Routing V1 parsing, CIDv1/base32 lookup normalization, optional comma-separated multi-router race/failover for provider discovery and delegated IPNS lookup, malformed/oversized routing response rejection, bounded delegated response size/provider fanout, provider caching, bounded HTTP raw block retrieval, CID verification, invalid/redirected/oversized provider block rejection, bad-provider suppression, and HTTP timeouts are implemented.
 
-M6 minimal Bitswap client: implemented for read-only retrieval. It dials bounded provider candidates, supports TCP/WebSocket/QUIC transports, includes libp2p identify/ping behaviours, applies libp2p connection timeout/connection-limit guards, uses want-have before want-block in multi-peer Bitswap 1.2 sessions, handles DONT_HAVE responses, verifies returned blocks, caches extra payload blocks, and sends cancels. It does not serve blocks or open public listen addresses. The retrieval crate includes deterministic in-process libp2p Bitswap peer tests that validate stream negotiation, block response handling, want-have selection, cache insertion, cancel emission, and no-listener client swarm construction.
+M6 minimal Bitswap client: implemented for read-only retrieval. It dials bounded provider candidates, supports TCP/WebSocket/QUIC transports, includes libp2p identify/ping behaviours, applies libp2p connection timeout/connection-limit guards, uses want-have before want-block in multi-peer Bitswap 1.2 sessions, handles DONT_HAVE responses, verifies returned blocks, caches extra payload blocks, and sends cancels. It does not serve blocks or open public listen addresses. The retrieval crate includes deterministic in-process libp2p Bitswap peer tests that validate stream negotiation, block response handling, want-have selection, cache insertion, cancel emission, and no-listener client swarm construction, plus an ignored loopback Kubo daemon interop smoke that retrieves a raw block over Bitswap from Kubo v0.41.0.
 
 M7 light DHT fallback: implemented for provider lookup and IPNS record lookup. It uses Kademlia client mode, lazy per-lookup swarms, query timeout, provider fanout limits, libp2p identify/ping behaviours, and libp2p connection timeout/connection-limit guards. The routing crate includes deterministic local server-mode Kademlia peer tests for provider lookup and verified IPNS record lookup through the light-DHT client, plus a no-listener/client-mode swarm construction test. The ignored public Amino DHT smoke now requires `FREEDOM_IPFS_LIVE_DHT_CID` because the default live corpus CIDs repeatedly returned zero public DHT providers despite working through delegated routing.
 

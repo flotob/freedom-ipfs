@@ -1202,7 +1202,12 @@ struct BlockPresence {
 #[cfg(test)]
 mod bitswap_tests {
     use super::*;
+    use serde::Deserialize;
+    use std::ffi::OsStr;
+    use std::fs;
     use std::net::SocketAddr;
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, Stdio};
     use tokio::io::{AsyncReadExt as TokioAsyncReadExt, AsyncWriteExt as TokioAsyncWriteExt};
 
     #[test]
@@ -1373,6 +1378,105 @@ mod bitswap_tests {
             .unwrap()
             .unwrap();
         swarm_task.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires KUBO_BIN=/path/to/ipfs; starts a loopback Kubo daemon"]
+    async fn kubo_bitswap_retrieves_raw_block_from_loopback_daemon() {
+        let kubo = std::env::var("KUBO_BIN").expect("set KUBO_BIN=/path/to/ipfs");
+        let tempdir = tempfile::tempdir().unwrap();
+        let repo = tempdir.path().join("kubo-repo");
+        let file = tempdir.path().join("block.txt");
+        let data = b"kubo bitswap interop block\n";
+        fs::write(&file, data).unwrap();
+
+        kubo_ok(&kubo, &repo, ["init", "--empty-repo"]);
+        kubo_ok(
+            &kubo,
+            &repo,
+            [
+                "config",
+                "Addresses.Swarm",
+                "--json",
+                r#"["/ip4/127.0.0.1/tcp/0"]"#,
+            ],
+        );
+        kubo_ok(
+            &kubo,
+            &repo,
+            [
+                "config",
+                "Addresses.API",
+                "--json",
+                r#"["/ip4/127.0.0.1/tcp/0"]"#,
+            ],
+        );
+        kubo_ok(
+            &kubo,
+            &repo,
+            [
+                "config",
+                "Addresses.Gateway",
+                "--json",
+                r#"["/ip4/127.0.0.1/tcp/0"]"#,
+            ],
+        );
+
+        let cid = kubo_stdout(
+            &kubo,
+            &repo,
+            [
+                OsStr::new("add"),
+                OsStr::new("-Q"),
+                OsStr::new("--cid-version=1"),
+                OsStr::new("--raw-leaves=true"),
+                file.as_os_str(),
+            ],
+        );
+        let cid = String::from_utf8(cid)
+            .unwrap()
+            .trim()
+            .parse::<Cid>()
+            .unwrap();
+        let expected = kubo_stdout(
+            &kubo,
+            &repo,
+            [
+                OsStr::new("block"),
+                OsStr::new("get"),
+                OsStr::new(&cid.to_string()),
+            ],
+        );
+        assert_eq!(expected, data);
+
+        let mut daemon = KuboDaemon::spawn(&kubo, repo.clone()).await;
+        let id = daemon.id().await;
+        let addr = id
+            .addresses
+            .unwrap_or_default()
+            .into_iter()
+            .find(|addr| addr.starts_with("/ip4/127.0.0.1/") && addr.contains("/tcp/"))
+            .unwrap_or_else(|| panic!("Kubo did not advertise a loopback TCP address"));
+
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let retriever = HttpRetriever::new(
+            freedom_ipfs_routing::DelegatedRoutingClient::new("http://127.0.0.1:9/routing/v1"),
+            store.clone(),
+        );
+        let provider = Provider::from_parts(Some(id.id), vec![addr]).unwrap();
+
+        let (block, source) = retriever
+            .fetch_from_providers_with_source(&cid, &[provider])
+            .await
+            .unwrap();
+
+        assert_eq!(source, RetrievalSource::Bitswap);
+        assert_eq!(block.data(), expected.as_slice());
+        assert_eq!(
+            store.get(&cid).unwrap().unwrap().data(),
+            expected.as_slice()
+        );
+        daemon.stop();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1667,6 +1771,147 @@ mod bitswap_tests {
         });
 
         (peer_id, addr, swarm_task, stream_task)
+    }
+
+    struct KuboDaemon {
+        kubo: String,
+        repo: PathBuf,
+        log: PathBuf,
+        api: String,
+        child: Child,
+    }
+
+    impl KuboDaemon {
+        async fn spawn(kubo: &str, repo: PathBuf) -> Self {
+            let log = repo.with_file_name("kubo-daemon.log");
+            let log_file = fs::File::create(&log).unwrap();
+            let child = Command::new(kubo)
+                .env("IPFS_PATH", &repo)
+                .env("IPFS_TELEMETRY", "off")
+                .arg("daemon")
+                .arg("--migrate=false")
+                .stdout(Stdio::from(log_file.try_clone().unwrap()))
+                .stderr(Stdio::from(log_file))
+                .spawn()
+                .unwrap_or_else(|err| panic!("failed to start Kubo daemon: {err}"));
+            let mut daemon = Self {
+                kubo: kubo.to_string(),
+                repo,
+                log,
+                api: String::new(),
+                child,
+            };
+            daemon.wait_until_ready().await;
+            daemon
+        }
+
+        async fn wait_until_ready(&mut self) {
+            for _ in 0..120 {
+                if let Some(status) = self.child.try_wait().unwrap() {
+                    panic!(
+                        "Kubo daemon exited before readiness with {status}; log:\n{}",
+                        self.log_contents()
+                    );
+                }
+                if let Ok(api) = fs::read_to_string(self.repo.join("api")) {
+                    let api = api.trim().to_string();
+                    if !api.is_empty() && self.try_id(&api).is_some() {
+                        self.api = api;
+                        return;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            panic!(
+                "Kubo daemon did not become ready; log:\n{}",
+                self.log_contents()
+            );
+        }
+
+        async fn id(&mut self) -> KuboId {
+            for _ in 0..20 {
+                if let Some(id) = self.try_id(&self.api) {
+                    return id;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            panic!(
+                "Kubo id did not return successfully; log:\n{}",
+                self.log_contents()
+            );
+        }
+
+        fn try_id(&self, api: &str) -> Option<KuboId> {
+            let output = Command::new(&self.kubo)
+                .env("IPFS_TELEMETRY", "off")
+                .arg("--api")
+                .arg(api)
+                .arg("id")
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            serde_json::from_slice(&output.stdout).ok()
+        }
+
+        fn stop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+
+        fn log_contents(&self) -> String {
+            fs::read_to_string(&self.log).unwrap_or_default()
+        }
+    }
+
+    impl Drop for KuboDaemon {
+        fn drop(&mut self) {
+            self.stop();
+        }
+    }
+
+    #[derive(Deserialize)]
+    struct KuboId {
+        #[serde(rename = "ID")]
+        id: String,
+        #[serde(rename = "Addresses")]
+        addresses: Option<Vec<String>>,
+    }
+
+    fn kubo_command(kubo: &str, repo: &Path) -> Command {
+        let mut command = Command::new(kubo);
+        command.env("IPFS_PATH", repo).env("IPFS_TELEMETRY", "off");
+        command
+    }
+
+    fn kubo_ok<I, S>(kubo: &str, repo: &Path, args: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let output = kubo_command(kubo, repo).args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "Kubo command failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn kubo_stdout<I, S>(kubo: &str, repo: &Path, args: I) -> Vec<u8>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let output = kubo_command(kubo, repo).args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "Kubo command failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output.stdout
     }
 
     async fn spawn_want_have_bitswap_peer(

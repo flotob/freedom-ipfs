@@ -444,6 +444,11 @@ fn gateway_error(err: GatewayError) -> Response {
             "directory listing is not implemented yet",
         )
             .into_response(),
+        GatewayError::Unixfs(err) if is_timeout_error(&err) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            format!("retrieval timeout: {err}"),
+        )
+            .into_response(),
         GatewayError::Unixfs(err) => {
             (StatusCode::BAD_GATEWAY, format!("unixfs error: {err}")).into_response()
         }
@@ -454,6 +459,14 @@ fn gateway_error(err: GatewayError) -> Response {
         GatewayError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, msg).into_response(),
         GatewayError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response(),
     }
+}
+
+fn is_timeout_error(err: &UnixfsError) -> bool {
+    let UnixfsError::Provider(message) = err else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    message.contains("timed out") || message.contains("timeout")
 }
 
 #[cfg(test)]
@@ -540,6 +553,24 @@ mod tests {
             data.len().to_string()
         );
         assert_eq!(response.bytes().await.unwrap(), Bytes::from(data));
+    }
+
+    #[tokio::test]
+    async fn maps_provider_timeouts_to_gateway_timeout() {
+        let data = b"timeout target";
+        let cid = cid_from_data(CODEC_RAW, data);
+        let provider = Arc::new(TimeoutProvider);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router_with_provider(provider);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{addr}/ipfs/{cid}");
+        let response = reqwest::get(url).await.unwrap();
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
     }
 
     #[tokio::test]
@@ -631,6 +662,14 @@ mod tests {
             self.entered.store(true, Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(300));
             Ok(Some(Block::unchecked(*cid, self.data.clone())))
+        }
+    }
+
+    struct TimeoutProvider;
+
+    impl BlockProvider for TimeoutProvider {
+        fn get_block(&self, _cid: &Cid) -> CoreResult<Option<Block>> {
+            Err(CoreError::Storage("bitswap request timed out".into()))
         }
     }
 }

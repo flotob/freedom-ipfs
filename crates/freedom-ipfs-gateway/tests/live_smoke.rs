@@ -4,10 +4,10 @@ use freedom_ipfs_namesys::{
     CachedNameResolver, CloudflareDohResolver, DefaultNameResolver, DelegatedIpnsResolver,
     FallbackIpnsResolver,
 };
-use freedom_ipfs_retrieval::FetchingBlockProvider;
+use freedom_ipfs_retrieval::{FetchingBlockProvider, RetrievalStats};
 use freedom_ipfs_routing::{
     AutoRoutingClient, DelegatedRoutingClient, DhtIpnsResolver, LightDhtClient,
-    DEFAULT_DELEGATED_ROUTER,
+    ProviderRoutingClient, RoutingStats, RoutingStatsHandle, DEFAULT_DELEGATED_ROUTER,
 };
 use freedom_ipfs_store::SqliteBlockStore;
 use serde::Deserialize;
@@ -53,7 +53,12 @@ async fn live_gateway_fetches_real_paths_without_public_gateway_fallback() {
         .unwrap_or_else(|_| DEFAULT_DELEGATED_ROUTER.to_string());
     let store = SqliteBlockStore::in_memory(256 * 1024 * 1024).unwrap();
     let dht = LightDhtClient::default();
-    let routing = AutoRoutingClient::new(DelegatedRoutingClient::new(router.clone()), dht.clone());
+    let routing_stats = RoutingStatsHandle::default();
+    let routing = ProviderRoutingClient::from(AutoRoutingClient::new(
+        DelegatedRoutingClient::new(router.clone()),
+        dht.clone(),
+    ))
+    .with_stats(routing_stats.clone());
     let provider = Arc::new(FetchingBlockProvider::new(store, routing));
     let stats_provider = provider.clone();
     let name_resolver = Arc::new(CachedNameResolver::new(DefaultNameResolver::new(
@@ -83,9 +88,13 @@ async fn live_gateway_fetches_real_paths_without_public_gateway_fallback() {
             "live path must be externally resolved into /ipfs or /ipns form: {path}"
         );
         let url = format!("http://{addr}{path}");
+        let before_retrieval = stats_provider.stats();
+        let before_routing = routing_stats.snapshot();
         let (status, body) = fetch_gateway_body_with_retries(&client, &url, REQUEST_ATTEMPTS)
             .await
             .unwrap_or_else(|err| panic!("live gateway request failed for {path}: {err}"));
+        let retrieval_delta = retrieval_stats_delta(before_retrieval, stats_provider.stats());
+        let routing_delta = routing_stats_delta(before_routing, routing_stats.snapshot());
         assert_eq!(
             status,
             StatusCode::OK,
@@ -96,13 +105,28 @@ async fn live_gateway_fetches_real_paths_without_public_gateway_fallback() {
             !body.is_empty(),
             "live gateway returned empty body for {path}"
         );
-        eprintln!("fetched {path} through local gateway: {} bytes", body.len());
+        eprintln!(
+            "fetched {path} through {url}: {} bytes; retrieval_delta={}; routing_delta={}",
+            body.len(),
+            describe_retrieval_stats(retrieval_delta),
+            describe_routing_stats(routing_delta)
+        );
     }
 
     let stats = stats_provider.stats();
+    let routing = routing_stats.snapshot();
     eprintln!(
         "retrieval transport counts: cache_hits={} http_provider_blocks={} bitswap_blocks={}",
         stats.cache_hits, stats.http_provider_blocks, stats.bitswap_blocks
+    );
+    eprintln!(
+        "routing provider counts: delegated_lookups={} delegated_results={} delegated_errors={} dht_lookups={} dht_results={} dht_errors={}",
+        routing.delegated_provider_lookups,
+        routing.delegated_provider_results,
+        routing.delegated_provider_errors,
+        routing.dht_provider_lookups,
+        routing.dht_provider_results,
+        routing.dht_provider_errors,
     );
     assert!(
         stats.cache_hits + stats.http_provider_blocks + stats.bitswap_blocks > 0,
@@ -121,7 +145,16 @@ async fn fetch_gateway_body_with_retries(
             Ok(response) => {
                 let status = response.status();
                 match response.bytes().await {
-                    Ok(body) => return Ok((status, body.to_vec())),
+                    Ok(body) => {
+                        if is_transient_gateway_status(status) && attempt < attempts {
+                            last_error = Some(format!(
+                                "transient gateway status {status}: {}",
+                                String::from_utf8_lossy(&body)
+                            ));
+                        } else {
+                            return Ok((status, body.to_vec()));
+                        }
+                    }
                     Err(err) => last_error = Some(format!("response body error: {err}")),
                 }
             }
@@ -132,6 +165,68 @@ async fn fetch_gateway_body_with_retries(
         }
     }
     Err(last_error.unwrap_or_else(|| "request was not attempted".to_string()))
+}
+
+fn is_transient_gateway_status(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::REQUEST_TIMEOUT
+            | StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::GATEWAY_TIMEOUT
+    )
+}
+
+fn retrieval_stats_delta(before: RetrievalStats, after: RetrievalStats) -> RetrievalStats {
+    RetrievalStats {
+        cache_hits: after.cache_hits.saturating_sub(before.cache_hits),
+        http_provider_blocks: after
+            .http_provider_blocks
+            .saturating_sub(before.http_provider_blocks),
+        bitswap_blocks: after.bitswap_blocks.saturating_sub(before.bitswap_blocks),
+    }
+}
+
+fn routing_stats_delta(before: RoutingStats, after: RoutingStats) -> RoutingStats {
+    RoutingStats {
+        delegated_provider_lookups: after
+            .delegated_provider_lookups
+            .saturating_sub(before.delegated_provider_lookups),
+        delegated_provider_results: after
+            .delegated_provider_results
+            .saturating_sub(before.delegated_provider_results),
+        delegated_provider_errors: after
+            .delegated_provider_errors
+            .saturating_sub(before.delegated_provider_errors),
+        dht_provider_lookups: after
+            .dht_provider_lookups
+            .saturating_sub(before.dht_provider_lookups),
+        dht_provider_results: after
+            .dht_provider_results
+            .saturating_sub(before.dht_provider_results),
+        dht_provider_errors: after
+            .dht_provider_errors
+            .saturating_sub(before.dht_provider_errors),
+    }
+}
+
+fn describe_retrieval_stats(stats: RetrievalStats) -> String {
+    format!(
+        "cache_hits={},http_provider_blocks={},bitswap_blocks={}",
+        stats.cache_hits, stats.http_provider_blocks, stats.bitswap_blocks
+    )
+}
+
+fn describe_routing_stats(stats: RoutingStats) -> String {
+    format!(
+        "delegated_lookups={},delegated_results={},delegated_errors={},dht_lookups={},dht_results={},dht_errors={}",
+        stats.delegated_provider_lookups,
+        stats.delegated_provider_results,
+        stats.delegated_provider_errors,
+        stats.dht_provider_lookups,
+        stats.dht_provider_results,
+        stats.dht_provider_errors,
+    )
 }
 
 async fn resolve_ens_contenthash(name: &str) -> String {

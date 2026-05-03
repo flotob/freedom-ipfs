@@ -67,7 +67,10 @@ Observed live-smoke result:
 - `daicowtf.eth` resolved at runtime to `/ipfs/bafybeidznfolm74c5cephzdycedx7hk76iawno45wemcvkflieotzo2lne`
 - local gateway returned `38394` bytes for `vitalik.eth`
 - local gateway returned `403507` bytes for `daicowtf.eth`
+- `vitalik.eth` printed `retrieval_delta=cache_hits=5,http_provider_blocks=2,bitswap_blocks=0` and `routing_delta=delegated_lookups=2,delegated_results=46,delegated_errors=0,dht_lookups=0,dht_results=0,dht_errors=0`
+- `daicowtf.eth` printed `retrieval_delta=cache_hits=20,http_provider_blocks=0,bitswap_blocks=3` and `routing_delta=delegated_lookups=3,delegated_results=5,delegated_errors=0,dht_lookups=0,dht_results=0,dht_errors=0`
 - retrieval stats were `cache_hits=25 http_provider_blocks=2 bitswap_blocks=3`
+- routing provider stats were `delegated_lookups=5 delegated_results=51 delegated_errors=0 dht_lookups=0 dht_results=0 dht_errors=0`
 
 Observed live-corpus result:
 
@@ -79,6 +82,7 @@ Observed live-corpus result:
 - byte counts were `38394`, `403507`, `112239`, `38953`, and `24995`
 - each entry also passed a `bytes=0-127` request through the local gateway; each returned `128` bytes, matched the full response prefix, and included a valid `Content-Range` header
 - retrieval stats were `cache_hits=90 http_provider_blocks=2 bitswap_blocks=9`
+- transient local-gateway `408`, `502`, `503`, and `504` responses are retried in opt-in live harnesses before failing a corpus, smoke, or soak run.
 
 Observed local-soak result:
 
@@ -90,7 +94,7 @@ Observed live-soak result:
 - 2 cold gateway rounds completed against `vitalik-home` and `daicowtf-home`.
 - total bytes fetched through the local gateway: `883802`
 - retrieval stats were `cache_hits=50 http_provider_blocks=4 bitswap_blocks=6`
-- Linux RSS moved from `11264` KiB to `41856` KiB, within the 128 MiB maximum growth budget.
+- Linux RSS moved from `11264` KiB to `42240` KiB, within the 128 MiB maximum growth budget.
 
 iOS packaging command was exercised on Linux and correctly refused to run:
 
@@ -126,9 +130,9 @@ M7 light DHT fallback: implemented for provider lookup and IPNS record lookup. I
 
 M8 mobile resource hardening: partially complete. Bounded in-memory hot block cache, cache trim, gateway concurrency limit, mobile background/foreground hooks, low-memory trim hook, network-change provider-cache hygiene, DHT timeout/fanout knobs, provider/badness caches, bounded HTTP provider response bodies, HTTP timeouts, libp2p identify/ping behaviours, libp2p connection timeouts, and libp2p connection-limit guards exist. The iPhone verification runbook now defines the real-device matrix and acceptance targets, but real idle RSS, CPU, network, startup, Bee concurrency, and host-app lifecycle behavior are not measured yet.
 
-M9 browser integration: partially complete. The local gateway path, mobile ABI, Swift wrapper source, loopback bind enforcement for mobile gateway start/restart, gateway URL mapping helpers for `ipfs://`, `ipns://`, `/ipfs`, and `/ipns` addresses, browser-facing HTML error pages, preload normalization for path/URI/bare-CID inputs, routing-mode restart helpers, lifecycle hooks, and preload/cancel controls exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. The live smoke and corpus harnesses now mount the online IPNS/DNSLink resolver for `/ipns` paths. Swift wrapper compilation/linking and generated `WKWebView` app rendering are verified by the GitHub Actions simulator smoke; integration into the Freedom browser app is not verified yet.
+M9 browser integration: partially complete. The local gateway path, mobile ABI, Swift wrapper source, loopback bind enforcement for mobile gateway start/restart, gateway URL mapping helpers for `ipfs://`, `ipns://`, `/ipfs`, and `/ipns` addresses, browser-facing HTML error pages, preload normalization for path/URI/bare-CID inputs, routing-mode restart helpers, lifecycle hooks, and preload/cancel controls exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. The live smoke now prints per-target retrieval and routing deltas that distinguish cache hits, HTTP-provider blocks, Bitswap blocks, delegated provider lookup, and light-DHT fallback. The live smoke and corpus harnesses mount the online IPNS/DNSLink resolver for `/ipns` paths and retry transient local-gateway timeout/service-unavailable statuses. Swift wrapper compilation/linking and generated `WKWebView` app rendering are verified by the GitHub Actions simulator smoke; integration into the Freedom browser app is not verified yet.
 
-M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, no-listener libp2p client swarm tests, Kubo RPC/WebUI route absence tests, Kubo-generated UnixFS/HAMT/range parity smoke, live ENS smoke, a checked-in public corpus covering immutable `/ipfs` and DNSLink-backed `/ipns` paths with live byte-range checks, a local cached-gateway RSS soak, and a host live-retrieval RSS soak exist, but larger media public corpus cases, broader Kubo parity matrix, and device network soaks remain follow-up work.
+M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, no-listener libp2p client swarm tests, Kubo RPC/WebUI route absence tests, Kubo-generated UnixFS/HAMT/range parity smoke, live ENS smoke with per-target transport/routing diagnostics, a checked-in public corpus covering immutable `/ipfs` and DNSLink-backed `/ipns` paths with live byte-range checks and transient-status retries, a local cached-gateway RSS soak, and a host live-retrieval RSS soak exist, but larger media public corpus cases, broader Kubo parity matrix, and device network soaks remain follow-up work.
 
 M11 optional features: not started except CAR export/import support, which was promoted into the MVP diagnostics/cache path.
 

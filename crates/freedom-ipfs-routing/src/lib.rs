@@ -16,6 +16,8 @@ use libp2p::{
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use url::Url;
@@ -75,11 +77,95 @@ impl Provider {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RoutingStats {
+    pub delegated_provider_lookups: u64,
+    pub delegated_provider_results: u64,
+    pub delegated_provider_errors: u64,
+    pub dht_provider_lookups: u64,
+    pub dht_provider_results: u64,
+    pub dht_provider_errors: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RoutingStatsHandle {
+    inner: Arc<RoutingStatsInner>,
+}
+
+#[derive(Debug, Default)]
+struct RoutingStatsInner {
+    delegated_provider_lookups: AtomicU64,
+    delegated_provider_results: AtomicU64,
+    delegated_provider_errors: AtomicU64,
+    dht_provider_lookups: AtomicU64,
+    dht_provider_results: AtomicU64,
+    dht_provider_errors: AtomicU64,
+}
+
+impl RoutingStatsHandle {
+    pub fn snapshot(&self) -> RoutingStats {
+        RoutingStats {
+            delegated_provider_lookups: self
+                .inner
+                .delegated_provider_lookups
+                .load(Ordering::Relaxed),
+            delegated_provider_results: self
+                .inner
+                .delegated_provider_results
+                .load(Ordering::Relaxed),
+            delegated_provider_errors: self.inner.delegated_provider_errors.load(Ordering::Relaxed),
+            dht_provider_lookups: self.inner.dht_provider_lookups.load(Ordering::Relaxed),
+            dht_provider_results: self.inner.dht_provider_results.load(Ordering::Relaxed),
+            dht_provider_errors: self.inner.dht_provider_errors.load(Ordering::Relaxed),
+        }
+    }
+
+    fn record_delegated_lookup(&self) {
+        self.inner
+            .delegated_provider_lookups
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_delegated_result(&self, provider_count: usize) {
+        self.inner
+            .delegated_provider_results
+            .fetch_add(provider_count as u64, Ordering::Relaxed);
+    }
+
+    fn record_delegated_error(&self) {
+        self.inner
+            .delegated_provider_errors
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_dht_lookup(&self) {
+        self.inner
+            .dht_provider_lookups
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_dht_result(&self, provider_count: usize) {
+        self.inner
+            .dht_provider_results
+            .fetch_add(provider_count as u64, Ordering::Relaxed);
+    }
+
+    fn record_dht_error(&self) {
+        self.inner
+            .dht_provider_errors
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ProviderRoutingClient {
     Delegated(DelegatedRoutingClient),
     Auto(AutoRoutingClient),
     LightDht(LightDhtClient),
+    Observed {
+        inner: Box<ProviderRoutingClient>,
+        stats: RoutingStatsHandle,
+    },
 }
 
 impl ProviderRoutingClient {
@@ -88,6 +174,56 @@ impl ProviderRoutingClient {
             Self::Delegated(client) => client.providers(cid).await,
             Self::Auto(client) => client.providers(cid).await,
             Self::LightDht(client) => client.providers(cid).await,
+            Self::Observed { inner, stats } => inner.providers_with_stats(cid, stats).await,
+        }
+    }
+
+    pub fn with_stats(self, stats: RoutingStatsHandle) -> Self {
+        match self {
+            Self::Observed { inner, .. } => Self::Observed { inner, stats },
+            other => Self::Observed {
+                inner: Box::new(other),
+                stats,
+            },
+        }
+    }
+
+    async fn providers_with_stats(
+        &self,
+        cid: &Cid,
+        stats: &RoutingStatsHandle,
+    ) -> Result<Vec<Provider>> {
+        match self {
+            Self::Delegated(client) => {
+                stats.record_delegated_lookup();
+                match client.providers(cid).await {
+                    Ok(providers) => {
+                        stats.record_delegated_result(providers.len());
+                        Ok(providers)
+                    }
+                    Err(err) => {
+                        stats.record_delegated_error();
+                        Err(err)
+                    }
+                }
+            }
+            Self::Auto(client) => client.providers_with_stats(cid, Some(stats)).await,
+            Self::LightDht(client) => {
+                stats.record_dht_lookup();
+                match client.providers(cid).await {
+                    Ok(providers) => {
+                        stats.record_dht_result(providers.len());
+                        Ok(providers)
+                    }
+                    Err(err) => {
+                        stats.record_dht_error();
+                        Err(err)
+                    }
+                }
+            }
+            Self::Observed { .. } => Err(RoutingError::InvalidResponse(
+                "nested observed routing clients are unsupported".into(),
+            )),
         }
     }
 }
@@ -217,14 +353,63 @@ impl AutoRoutingClient {
     }
 
     pub async fn providers(&self, cid: &Cid) -> Result<Vec<Provider>> {
+        self.providers_with_stats(cid, None).await
+    }
+
+    async fn providers_with_stats(
+        &self,
+        cid: &Cid,
+        stats: Option<&RoutingStatsHandle>,
+    ) -> Result<Vec<Provider>> {
+        if let Some(stats) = stats {
+            stats.record_delegated_lookup();
+        }
         match self.delegated.providers(cid).await {
-            Ok(providers) if !providers.is_empty() => Ok(providers),
-            Ok(_) => self.dht.providers(cid).await,
+            Ok(providers) if !providers.is_empty() => {
+                if let Some(stats) = stats {
+                    stats.record_delegated_result(providers.len());
+                }
+                Ok(providers)
+            }
+            Ok(_) => {
+                if let Some(stats) = stats {
+                    stats.record_delegated_result(0);
+                    stats.record_dht_lookup();
+                }
+                match self.dht.providers(cid).await {
+                    Ok(providers) => {
+                        if let Some(stats) = stats {
+                            stats.record_dht_result(providers.len());
+                        }
+                        Ok(providers)
+                    }
+                    Err(err) => {
+                        if let Some(stats) = stats {
+                            stats.record_dht_error();
+                        }
+                        Err(err)
+                    }
+                }
+            }
             Err(delegated_err) => match self.dht.providers(cid).await {
-                Ok(providers) => Ok(providers),
-                Err(dht_err) => Err(RoutingError::Dht(format!(
-                    "delegated routing failed ({delegated_err}); light DHT failed ({dht_err})"
-                ))),
+                Ok(providers) => {
+                    if let Some(stats) = stats {
+                        stats.record_delegated_error();
+                        stats.record_dht_lookup();
+                        stats.record_dht_result(providers.len());
+                    }
+                    Ok(providers)
+                }
+                Err(dht_err) => {
+                    if let Some(stats) = stats {
+                        stats.record_delegated_error();
+                        stats.record_dht_lookup();
+                        stats.record_dht_error();
+                    }
+                    Err(RoutingError::Dht(format!(
+                        "delegated routing failed ({delegated_err}); light DHT failed ({dht_err})"
+                    )))
+                }
             },
         }
     }
@@ -828,6 +1013,64 @@ mod tests {
             task.abort();
             let _ = task.await;
         }
+    }
+
+    #[tokio::test]
+    async fn observed_delegated_routing_records_provider_lookup_stats() {
+        let cid = "bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u"
+            .parse::<Cid>()
+            .unwrap();
+        let (endpoint, task) = spawn_delegated_response(
+            r#"{"Providers":[{"ID":"peer","Addrs":["/dns4/example.com/tcp/443/tls/http"]}]}"#,
+        )
+        .await;
+        let stats = RoutingStatsHandle::default();
+        let client = ProviderRoutingClient::from(DelegatedRoutingClient::new(endpoint))
+            .with_stats(stats.clone());
+
+        let providers = client.providers(&cid).await.unwrap();
+
+        assert_eq!(providers.len(), 1);
+        assert_eq!(
+            stats.snapshot(),
+            RoutingStats {
+                delegated_provider_lookups: 1,
+                delegated_provider_results: 1,
+                delegated_provider_errors: 0,
+                dht_provider_lookups: 0,
+                dht_provider_results: 0,
+                dht_provider_errors: 0,
+            }
+        );
+        task.abort();
+        let _ = task.await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn observed_light_dht_records_provider_lookup_stats() {
+        let cid = "bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u"
+            .parse::<Cid>()
+            .unwrap();
+        let stats = RoutingStatsHandle::default();
+        let client = ProviderRoutingClient::from(
+            LightDhtClient::new(Vec::new()).with_query_timeout(Duration::from_millis(1)),
+        )
+        .with_stats(stats.clone());
+
+        let err = client.providers(&cid).await.unwrap_err();
+
+        assert!(matches!(err, RoutingError::Dht(_)));
+        assert_eq!(
+            stats.snapshot(),
+            RoutingStats {
+                delegated_provider_lookups: 0,
+                delegated_provider_results: 0,
+                delegated_provider_errors: 0,
+                dht_provider_lookups: 1,
+                dht_provider_results: 0,
+                dht_provider_errors: 1,
+            }
+        );
     }
 
     #[test]

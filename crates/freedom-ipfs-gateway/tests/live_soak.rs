@@ -164,7 +164,16 @@ async fn fetch_gateway_body_with_retries(
             Ok(response) => {
                 let status = response.status();
                 match response.bytes().await {
-                    Ok(body) => return Ok((status, body.to_vec())),
+                    Ok(body) => {
+                        if is_transient_gateway_status(status) && attempt < attempts {
+                            last_error = Some(format!(
+                                "transient gateway status {status}: {}",
+                                String::from_utf8_lossy(&body)
+                            ));
+                        } else {
+                            return Ok((status, body.to_vec()));
+                        }
+                    }
                     Err(err) => last_error = Some(format!("response body error: {err}")),
                 }
             }
@@ -175,6 +184,16 @@ async fn fetch_gateway_body_with_retries(
         }
     }
     Err(last_error.unwrap_or_else(|| "request was not attempted".to_string()))
+}
+
+fn is_transient_gateway_status(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::REQUEST_TIMEOUT
+            | StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::GATEWAY_TIMEOUT
+    )
 }
 
 fn parse_corpus(corpus: &str) -> Vec<CorpusEntry> {

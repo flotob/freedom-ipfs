@@ -271,7 +271,9 @@ fn split_ipfs_path(path: &str) -> Result<(Cid, &str), GatewayError> {
             GatewayError::BadRequest("expected /ipfs/{cid} or /ipfs/{cid}/{path}".into())
         })?;
     let cid = parse_cid(cid).map_err(|err| GatewayError::BadRequest(err.to_string()))?;
-    Ok((cid, parts.next().unwrap_or_default()))
+    let unixfs_path = parts.next().unwrap_or_default();
+    validate_relative_gateway_path(unixfs_path)?;
+    Ok((cid, unixfs_path))
 }
 
 async fn serve_ipns_path(
@@ -316,7 +318,63 @@ fn split_name_path(path: &str) -> Result<(&str, &str), GatewayError> {
         .ok_or_else(|| {
             GatewayError::BadRequest("expected /ipns/{name} or /ipns/{name}/{path}".into())
         })?;
-    Ok((name, parts.next().unwrap_or_default()))
+    reject_traversal_segment(name)?;
+    let rest = parts.next().unwrap_or_default();
+    validate_relative_gateway_path(rest)?;
+    Ok((name, rest))
+}
+
+fn validate_relative_gateway_path(path: &str) -> Result<(), GatewayError> {
+    for segment in path.split('/').filter(|segment| !segment.is_empty()) {
+        reject_traversal_segment(segment)?;
+    }
+    Ok(())
+}
+
+fn reject_traversal_segment(segment: &str) -> Result<(), GatewayError> {
+    if is_traversal_segment(segment) {
+        return Err(GatewayError::BadRequest(
+            "path traversal segments are not allowed".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn is_traversal_segment(segment: &str) -> bool {
+    matches!(segment, "." | "..")
+        || percent_decode_ascii(segment)
+            .as_deref()
+            .is_some_and(|decoded| matches!(decoded, "." | ".."))
+}
+
+fn percent_decode_ascii(segment: &str) -> Option<String> {
+    if !segment.as_bytes().contains(&b'%') {
+        return None;
+    }
+    let mut decoded = Vec::with_capacity(segment.len());
+    let bytes = segment.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = *bytes.get(index + 1)?;
+            let low = *bytes.get(index + 2)?;
+            decoded.push(hex_value(high)? << 4 | hex_value(low)?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn append_path(base: &str, rest: &str) -> String {
@@ -637,6 +695,40 @@ mod tests {
         let response = reqwest::get(url).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.bytes().await.unwrap(), Bytes::from_static(data));
+    }
+
+    #[tokio::test]
+    async fn rejects_path_traversal_segments() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let data = b"do not traverse";
+        let cid = cid_from_data(CODEC_RAW, data);
+        store.put_block(&cid, data).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router_with_provider_and_name_resolver(
+            Arc::new(store),
+            Arc::new(StaticNameResolver {
+                name: "example.com".to_string(),
+                target: format!("/ipfs/{cid}"),
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        assert!(split_ipfs_path(&format!("{cid}/../index.html")).is_err());
+        assert!(split_ipfs_path(&format!("{cid}/./index.html")).is_err());
+        assert!(split_ipfs_path(&format!("{cid}/%2e%2e/index.html")).is_err());
+        assert!(split_ipfs_path(&format!("{cid}/%2e/index.html")).is_err());
+        assert!(split_name_path("../index.html").is_err());
+        assert!(split_name_path("example.com/%2e%2e/index.html").is_err());
+
+        for path in [format!("/ipfs/{cid}/%2e%2e/index.html")] {
+            let url = format!("http://{addr}{path}");
+            let response = reqwest::get(url).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

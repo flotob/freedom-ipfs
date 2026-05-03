@@ -41,6 +41,7 @@ Early implementation. Current code supports:
 - basic HAMT-sharded UnixFS directory traversal,
 - UnixFS range reads that avoid assembling entire multi-block files for byte-range responses,
 - full local-gateway responses streamed in bounded UnixFS chunks instead of one full-file buffer,
+- gateway rejection of `.`/`..` path traversal segments before UnixFS lookup,
 - Kubo-generated CAR parity smoke for UnixFS files/directories and HAMT directories when `KUBO_BIN` is available,
 - opt-in public CID corpus smoke that fetches documented immutable paths through the local gateway,
 - opt-in local gateway soak that repeats cached reads and checks bounded RSS growth on Linux,

@@ -951,6 +951,14 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn light_dht_swarm_is_client_mode_and_has_no_listeners() {
+        let swarm = build_dht_swarm(Duration::from_secs(5)).await.unwrap();
+
+        assert!(matches!(swarm.behaviour().kad.mode(), kad::Mode::Client));
+        assert_eq!(swarm.listeners().count(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn light_dht_finds_provider_from_local_server_peer() {
         let cid = "bafybeiaql2jo3fu5b7c4lmpoi5drh5sam7yt652shwdgwbky4o7uw33u2u"
             .parse::<Cid>()

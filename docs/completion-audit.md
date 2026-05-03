@@ -103,11 +103,11 @@ Results:
 | Verified HTTP raw-block retrieval | Retrieval requests provider `/ipfs/{cid}?format=raw`, bounds response bodies, disables redirects, verifies CIDs. | Done |
 | Invalid provider blocks fail closed | Invalid, redirected, and oversized HTTP provider tests; bad-provider suppression. | Done |
 | No public trustless gateway fallback | No public gateway fallback path exists; live smoke goes through routing/providers and local gateway. | Done |
-| Minimal Bitswap client | Deterministic in-process libp2p Bitswap tests verify retrieval, cache insert, want-have before want-block for multi-peer sessions, DONT_HAVE handling, and cancel behavior. | Done for MVP |
+| Minimal Bitswap client | Deterministic in-process libp2p Bitswap tests verify retrieval, cache insert, want-have before want-block for multi-peer sessions, DONT_HAVE handling, cancel behavior, and no-listener client swarm construction. | Done for MVP |
 | Bitswap transports | TCP/WebSocket/QUIC configured; supported address filtering tests. | Done |
-| No block serving to peers | Retrieval implements client-only Bitswap path and does not expose a serving strategy. | Done by design, needs packet-level/device audit for final confidence |
-| Light DHT fallback | Kademlia client mode provider lookup and IPNS record lookup, deterministic local DHT tests. | Done |
-| Lazy/idle network behavior | DHT swarms are per lookup; Bitswap sessions are bounded; no background maintenance loops are apparent. | Partially verified; device/network inspection still needed |
+| No block serving to peers | Retrieval implements client-only Bitswap path, does not expose a serving strategy, and host tests assert Bitswap client swarms have no listen addresses. | Done for host; packet-level/device audit still needed for final confidence |
+| Light DHT fallback | Kademlia client mode provider lookup and IPNS record lookup, deterministic local DHT tests, and no-listener/client-mode swarm construction test. | Done |
+| Lazy/idle network behavior | DHT swarms are per lookup; Bitswap sessions are bounded; host tests assert DHT and Bitswap client swarms start without listeners; no background maintenance loops are apparent. | Partially verified; device/network inspection still needed |
 | Routing modes | `auto`, `delegated`, `light_dht`, `offline` paths exist across CLI/mobile/gateway constructors; C ABI and Swift wrapper expose explicit online-gateway restart for Settings-style routing changes. | Done |
 | iOS-first C ABI | `freedom-ipfs-mobile`, `ffi/include/freedom_ipfs.h`, and lifecycle/cache/gateway/preload APIs exist; mobile gateway start/restart accepts only loopback socket addresses. | Done |
 | Swift wrapper | `ffi/swift/FreedomIpfsReader.swift` exists with gateway start/stop/restart, routing-mode change, stats, cache, lifecycle, preload/cancel, multi-router, and local URL mapping helpers; GitHub Actions Swift simulator smoke compiled and linked it against the XCFramework, checked non-loopback bind rejection, and a generated UIKit/WebKit app rendered a local gateway fixture through `WKWebView`. | Done for simulator smoke; Freedom app integration unverified |

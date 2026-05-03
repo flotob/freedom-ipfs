@@ -279,38 +279,7 @@ impl HttpRetriever {
             return Err(RetrievalError::NoBitswapProviders);
         }
 
-        let mut swarm = SwarmBuilder::with_new_identity()
-            .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                (tls::Config::new, noise::Config::new),
-                yamux::Config::default,
-            )
-            .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
-            .with_quic()
-            .with_dns()
-            .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
-            .with_websocket(
-                (tls::Config::new, noise::Config::new),
-                yamux::Config::default,
-            )
-            .await
-            .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
-            .with_behaviour(|key| BitswapBehaviour {
-                stream: libp2p_stream::Behaviour::new(),
-                identify: identify::Behaviour::new(identify::Config::new(
-                    format!("freedom-ipfs/{}", env!("CARGO_PKG_VERSION")),
-                    key.public(),
-                )),
-                ping: ping::Behaviour::new(ping::Config::new()),
-                limits: connection_limits::Behaviour::new(bitswap_connection_limits()),
-            })
-            .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
-            .with_swarm_config(|cfg| {
-                cfg.with_idle_connection_timeout(BITSWAP_IDLE_CONNECTION_TIMEOUT)
-            })
-            .with_connection_timeout(BITSWAP_CONNECTION_TIMEOUT)
-            .build();
+        let mut swarm = build_bitswap_swarm().await?;
 
         let mut control = swarm.behaviour().stream.new_control();
         let incoming = accept_bitswap_streams(&mut control)?;
@@ -491,6 +460,40 @@ fn bitswap_connection_limits() -> connection_limits::ConnectionLimits {
         .with_max_pending_outgoing(Some(BITSWAP_MAX_PENDING_OUTGOING_CONNECTIONS))
         .with_max_established_outgoing(Some(BITSWAP_MAX_ESTABLISHED_CONNECTIONS))
         .with_max_established(Some(BITSWAP_MAX_ESTABLISHED_CONNECTIONS))
+}
+
+async fn build_bitswap_swarm() -> Result<libp2p::Swarm<BitswapBehaviour>> {
+    let swarm = SwarmBuilder::with_new_identity()
+        .with_tokio()
+        .with_tcp(
+            tcp::Config::default(),
+            (tls::Config::new, noise::Config::new),
+            yamux::Config::default,
+        )
+        .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
+        .with_quic()
+        .with_dns()
+        .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
+        .with_websocket(
+            (tls::Config::new, noise::Config::new),
+            yamux::Config::default,
+        )
+        .await
+        .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
+        .with_behaviour(|key| BitswapBehaviour {
+            stream: libp2p_stream::Behaviour::new(),
+            identify: identify::Behaviour::new(identify::Config::new(
+                format!("freedom-ipfs/{}", env!("CARGO_PKG_VERSION")),
+                key.public(),
+            )),
+            ping: ping::Behaviour::new(ping::Config::new()),
+            limits: connection_limits::Behaviour::new(bitswap_connection_limits()),
+        })
+        .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
+        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(BITSWAP_IDLE_CONNECTION_TIMEOUT))
+        .with_connection_timeout(BITSWAP_CONNECTION_TIMEOUT)
+        .build();
+    Ok(swarm)
 }
 
 async fn bitswap_peers(providers: &[Provider]) -> Vec<BitswapPeer> {
@@ -1257,6 +1260,13 @@ mod bitswap_tests {
             peers[0].addrs[1].to_string(),
             "/ip4/164.92.225.199/tcp/4001"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bitswap_client_swarm_does_not_listen_for_inbound_peers() {
+        let swarm = build_bitswap_swarm().await.unwrap();
+
+        assert_eq!(swarm.listeners().count(), 0);
     }
 
     #[test]

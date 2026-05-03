@@ -35,6 +35,7 @@ Early implementation. Current code supports:
 - redirect-disabled HTTP provider block requests, matching the read-only verified retrieval model,
 - bounded HTTP provider block response bodies before CID verification/cache insert,
 - explicit libp2p identify, ping, connection timeout, and connection-limit behaviours for DHT and Bitswap swarms,
+- host tests assert light-DHT and Bitswap client swarms start without listen addresses,
 - verified HTTP raw-block retrieval from HTTP-capable providers,
 - client-only Bitswap retrieval over TCP, WebSocket, and QUIC libp2p streams for Bitswap-only providers,
 - bounded Bitswap peer/address fanout with one provider-refresh retry after stale-provider failures,

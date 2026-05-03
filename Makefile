@@ -1,7 +1,7 @@
 LIVE_ENS ?= vitalik.eth,daicowtf.eth
 KUBO_BIN ?= target/tools/kubo/kubo/ipfs
 
-.PHONY: test fmt clippy verify live-smoke live-corpus kubo-parity build-xcframework clean
+.PHONY: test fmt clippy verify live-smoke live-corpus kubo-parity build-xcframework verify-xcframework clean
 
 test:
 	cargo test --workspace
@@ -25,6 +25,9 @@ kubo-parity:
 
 build-xcframework:
 	cargo run -p xtask -- build-xcframework
+
+verify-xcframework:
+	cargo run -p xtask -- verify-xcframework
 
 clean:
 	cargo clean

@@ -14,12 +14,14 @@ struct Args {
 #[derive(Debug, Subcommand)]
 enum XtaskCommand {
     BuildXcframework,
+    VerifyXcframework,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
     match args.command {
         XtaskCommand::BuildXcframework => build_xcframework(),
+        XtaskCommand::VerifyXcframework => verify_xcframework_command(),
     }
 }
 
@@ -65,7 +67,9 @@ fn build_xcframework() -> Result<()> {
 
     let out_dir = PathBuf::from("target/ios-xcframework");
     let sim_dir = out_dir.join("simulator");
+    let headers_dir = out_dir.join("headers");
     fs::create_dir_all(&sim_dir).context("create simulator output directory")?;
+    stage_headers(&headers_dir)?;
 
     let device_lib = staticlib("aarch64-apple-ios");
     let sim_arm64_lib = staticlib("aarch64-apple-ios-sim");
@@ -91,17 +95,134 @@ fn build_xcframework() -> Result<()> {
             .arg("-library")
             .arg(&device_lib)
             .arg("-headers")
-            .arg("ffi/include")
+            .arg(&headers_dir)
             .arg("-library")
             .arg(&sim_universal_lib)
             .arg("-headers")
-            .arg("ffi/include")
+            .arg(&headers_dir)
             .arg("-output")
             .arg(&framework),
         "xcodebuild -create-xcframework",
     )?;
 
+    verify_xcframework(&framework)?;
     println!("created {}", framework.display());
+    Ok(())
+}
+
+fn verify_xcframework_command() -> Result<()> {
+    if env::consts::OS != "macos" {
+        bail!(
+            "verify-xcframework requires macOS with Xcode command line tools; current host is {}",
+            env::consts::OS
+        );
+    }
+    verify_xcframework(&PathBuf::from(
+        "target/ios-xcframework/FreedomIpfs.xcframework",
+    ))
+}
+
+fn stage_headers(headers_dir: &Path) -> Result<()> {
+    if headers_dir.exists() {
+        fs::remove_dir_all(headers_dir).context("remove previous header staging directory")?;
+    }
+    fs::create_dir_all(headers_dir).context("create header staging directory")?;
+    fs::copy(
+        "ffi/include/freedom_ipfs.h",
+        headers_dir.join("freedom_ipfs.h"),
+    )
+    .context("stage freedom_ipfs.h")?;
+    fs::copy(
+        "ffi/modulemap/module.modulemap",
+        headers_dir.join("module.modulemap"),
+    )
+    .context("stage module.modulemap")?;
+    Ok(())
+}
+
+fn verify_xcframework(framework: &Path) -> Result<()> {
+    if !framework.exists() {
+        bail!("{} does not exist", framework.display());
+    }
+    let info_plist = framework.join("Info.plist");
+    if !info_plist.exists() {
+        bail!("{} is missing", info_plist.display());
+    }
+
+    let libraries = find_named_files(framework, "libfreedom_ipfs_mobile.a")?;
+    if libraries.len() < 2 {
+        bail!(
+            "expected device and simulator static libraries in {}, found {}",
+            framework.display(),
+            libraries.len()
+        );
+    }
+    let headers = find_named_files(framework, "freedom_ipfs.h")?;
+    if headers.len() < 2 {
+        bail!(
+            "expected headers in each XCFramework slice in {}, found {}",
+            framework.display(),
+            headers.len()
+        );
+    }
+    let modulemaps = find_named_files(framework, "module.modulemap")?;
+    if modulemaps.len() < 2 {
+        bail!(
+            "expected module maps in each XCFramework slice in {}, found {}",
+            framework.display(),
+            modulemaps.len()
+        );
+    }
+
+    for library in &libraries {
+        verify_exported_symbols(library)?;
+    }
+
+    println!("verified {}", framework.display());
+    Ok(())
+}
+
+fn find_named_files(root: &Path, name: &str) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    collect_named_files(root, name, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_named_files(path: &Path, name: &str, files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(path).with_context(|| format!("read {}", path.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_named_files(&path, name, files)?;
+        } else if path.file_name().and_then(|file_name| file_name.to_str()) == Some(name) {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn verify_exported_symbols(library: &Path) -> Result<()> {
+    let output = Command::new("xcrun")
+        .args(["nm", "-gU"])
+        .arg(library)
+        .output()
+        .with_context(|| format!("xcrun nm {}", library.display()))?;
+    if !output.status.success() {
+        bail!("xcrun nm {} failed", library.display());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for symbol in [
+        "freedom_ipfs_version",
+        "freedom_ipfs_node_new_with_data_dir",
+        "freedom_ipfs_node_start_gateway_online_with_config_v2",
+        "freedom_ipfs_node_enter_background",
+        "freedom_ipfs_node_handle_low_memory",
+    ] {
+        if !stdout.contains(symbol) {
+            bail!("{} does not export {symbol}", library.display());
+        }
+    }
     Ok(())
 }
 

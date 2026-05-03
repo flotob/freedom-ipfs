@@ -1,4 +1,4 @@
 module FreedomIpfs {
-  header "../include/freedom_ipfs.h"
+  header "freedom_ipfs.h"
   export *
 }

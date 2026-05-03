@@ -40,6 +40,7 @@ Early implementation. Current code supports:
 - basic HAMT-sharded UnixFS directory traversal,
 - UnixFS range reads that avoid assembling entire multi-block files for byte-range responses,
 - full local-gateway responses streamed in bounded UnixFS chunks instead of one full-file buffer,
+- Kubo-generated CAR parity smoke for UnixFS files/directories when `KUBO_BIN` is available,
 - configurable local-gateway request concurrency limiting,
 - CAR import/export for tests, diagnostics, and cache warmup,
 - an iOS staticlib/XCFramework build skeleton with C ABI headers and a Swift wrapper for persistent-cache node creation, cache import/export, cache trimming, routing-mode selection, preload/cancel, and offline/online gateway start.
@@ -87,6 +88,12 @@ Light-DHT provider discovery smoke:
 
 ```bash
 cargo test -p freedom-ipfs-routing live_light_dht_finds_public_providers -- --ignored --nocapture
+```
+
+Kubo fixture parity smoke, if a Kubo `ipfs` binary is available:
+
+```bash
+KUBO_BIN=/path/to/ipfs make kubo-parity
 ```
 
 ## License

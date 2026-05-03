@@ -20,6 +20,12 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+Kubo-generated UnixFS parity smoke passed with Kubo v0.41.0 downloaded locally to `target/tools/kubo/kubo/ipfs`:
+
+```bash
+KUBO_BIN=$PWD/target/tools/kubo/kubo/ipfs cargo test -p freedom-ipfs-gateway --test kubo_parity -- --ignored --nocapture
+```
+
 Live public-network smoke passed:
 
 ```bash
@@ -48,13 +54,13 @@ Error: build-xcframework requires macOS with Xcode command line tools; current h
 
 ## Roadmap Audit
 
-M0 decisions and fixtures: partially complete. The repo, license, and tests exist. Fixture coverage is embedded in unit tests, but a fuller reproducible Kubo fixture corpus is still useful.
+M0 decisions and fixtures: partially complete. The repo, license, generated unit-test fixtures, deterministic libp2p fixtures, and a Kubo-generated UnixFS CAR parity smoke exist. A larger checked-in public fixture corpus is still useful.
 
 M1 workspace and mobile skeleton: mostly complete. Workspace, mobile C ABI, Swift wrapper source, gateway start/stop, stats, cache import/export, routing mode selection, preload/cancel, and XCFramework build skeleton exist. macOS/Xcode artifact production and simulator link/start remain unverified here.
 
 M2 CID, block verification, and store: complete for MVP. CID parse/format, verified block insertion, CAR import/export, SQLite cache, eviction, provider cache, bad-provider cache, clear, and trim are covered by tests.
 
-M3 UnixFS reader and offline gateway: complete for MVP. Raw, dag-pb, multi-block files, directories, basic HAMT traversal, range reads, and streaming gateway responses are implemented and tested.
+M3 UnixFS reader and offline gateway: complete for MVP. Raw, dag-pb, multi-block files, directories, basic HAMT traversal, range reads, streaming gateway responses, and Kubo-generated CAR import/gateway byte parity are implemented and tested.
 
 M4 IPNS and DNSLink: implemented. DNSLink uses Cloudflare DoH through a pluggable trait. IPNS delegated lookup, light-DHT fallback, v2 verification, expiry checks, and name caching are implemented and tested. Native/system TXT lookup remains a follow-up.
 
@@ -68,7 +74,7 @@ M8 mobile resource hardening: partially complete. Cache trim, gateway concurrenc
 
 M9 browser integration: partially complete. The local gateway path, mobile ABI, Swift wrapper source, and preload/cancel controls exist, and the live smoke proves ENS-backed contenthash flows when names are resolved outside the node. Swift wrapper compilation/linking and app integration are not verified in this Linux environment.
 
-M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, and live smoke exist, but public CID corpus tests, Kubo parity matrix, and long soak tests remain follow-up work.
+M10 interop hardening: partial. Unit tests, deterministic local Bitswap and light-DHT coverage, Kubo-generated UnixFS parity smoke, and live smoke exist, but a larger public CID corpus, Kubo parity matrix, and long soak tests remain follow-up work.
 
 M11 optional features: not started except CAR export/import support, which was promoted into the MVP diagnostics/cache path.
 
@@ -79,4 +85,4 @@ M11 optional features: not started except CAR export/import support, which was p
 - Real iPhone resource targets are unverified, including the provisional under-60-MiB idle RSS target beside Bee.
 - DHT-only retrieval of `daicowtf.eth` is not reliable on the public DHT; current auto mode succeeds because delegated routing returns usable providers.
 - DNSLink still defaults to Cloudflare DoH. Native/system TXT lookup should be evaluated for artifact size and iOS behavior.
-- No controlled local Kubo parity harness exists yet for deterministic cross-implementation gateway/routing regression coverage; the `ipfs` command is not installed in this Linux environment.
+- No broad Kubo parity matrix exists yet for deterministic cross-implementation gateway/routing regression coverage.

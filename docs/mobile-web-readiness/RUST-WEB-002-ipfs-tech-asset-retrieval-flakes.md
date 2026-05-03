@@ -254,7 +254,9 @@ hot shared CIDs are fetched once per fresh gateway run
 Resource impact:
 The changes keep existing caps: gateway request concurrency remains 8, asset
 concurrency remains harness-side, Bitswap connection limits are unchanged, and
-in-flight block coalescing is capped at 256 CIDs with hedged waiters.
+in-flight block coalescing is capped at 256 CIDs with hedged waiters. The
+fresh-process persistent warm-store `ipfs.tech` run produced a 2.1 MiB SQLite
+cache DB for the warmed page.
 
 Failed experiments:
 

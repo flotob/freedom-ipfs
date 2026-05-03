@@ -718,7 +718,7 @@ fn gateway_error(err: GatewayError) -> Response {
         GatewayError::Unixfs(UnixfsError::IsDirectory) => (
             StatusCode::BAD_REQUEST,
             "Bad Request",
-            "directory listing is not implemented yet".into(),
+            "directory path could not be served".into(),
         ),
         GatewayError::Unixfs(err) if is_timeout_error(&err) => (
             StatusCode::GATEWAY_TIMEOUT,
@@ -1261,6 +1261,60 @@ mod tests {
         let response = reqwest::get(url).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.bytes().await.unwrap(), Bytes::from_static(data));
+    }
+
+    #[tokio::test]
+    async fn serves_directory_listing_through_ipns_resolution() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let data = b"ipns linked file";
+        let file_cid = cid_from_data(CODEC_RAW, data);
+        store.put_block(&file_cid, data).unwrap();
+
+        let dir_block = test_pb_directory(vec![test_link("plain.txt", &file_cid)]);
+        let dir_cid = cid_from_data(CODEC_DAG_PB, &dir_block);
+        store.put_block(&dir_cid, &dir_block).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router_with_provider_and_name_resolver(
+            Arc::new(store),
+            Arc::new(StaticNameResolver {
+                name: "example.com".to_string(),
+                target: format!("/ipfs/{dir_cid}"),
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{addr}/ipns/example.com");
+        let client = reqwest::Client::new();
+
+        let response = client.get(&url).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            HeaderValue::from_static("text/html; charset=utf-8")
+        );
+        let body = response.text().await.unwrap();
+        assert!(body.contains(&format!("Index of /ipfs/{dir_cid}")));
+        assert!(body.contains(&format!(r#"href="/ipfs/{dir_cid}/plain.txt""#)));
+
+        let response = client.head(&url).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            HeaderValue::from_static("text/html; charset=utf-8")
+        );
+        assert!(response.bytes().await.unwrap().is_empty());
+
+        let response = client
+            .get(&url)
+            .header(RANGE, "bytes=0-10")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

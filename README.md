@@ -46,7 +46,7 @@ Early implementation. Current code supports:
 - deterministic in-process libp2p Bitswap retrieval test coverage,
 - basic HAMT-sharded UnixFS directory traversal,
 - directory `index.html` fallback with path-based MIME headers,
-- escaped HTML directory listings when a directory has no `index.html`,
+- escaped HTML directory listings for `/ipfs` and resolved `/ipns` directories when a directory has no `index.html`,
 - percent-encoded browser path segments for files with spaces and reserved characters,
 - UnixFS range reads and gateway range responses that avoid assembling entire multi-block files in memory,
 - gateway rejection of malformed and unsatisfiable byte-range requests,

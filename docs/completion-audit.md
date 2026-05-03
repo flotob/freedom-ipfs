@@ -116,13 +116,13 @@ Results:
 | Browser MIME behavior | Directory `index.html` fallback with path-based `text/html` test. | Done for MVP |
 | Useful gateway status codes and browser error pages | Tests cover invalid path/range, not found/name not found, timeout, busy, traversal cases, `text/html` browser-facing error pages, and escaped error details. | Done |
 | Bounded gateway concurrency | Gateway semaphore and concurrency-limit test. | Done |
-| IPNS support in first product-usable release | Delegated IPNS, light-DHT IPNS fallback, v2 verification, expiry, tamper, recursion-limit tests. | Done |
+| IPNS support in first product-usable release | Delegated IPNS across all configured delegated routers, bounded delegated IPNS response bodies before verification, light-DHT IPNS fallback, v2 verification, expiry, tamper, recursion-limit tests. | Done |
 | DNSLink support | DNSLink parser, pluggable TXT resolver trait, generic default resolver wrapper, Cloudflare DoH backend, split quoted TXT character-string concatenation, TTL-aware records, tests. | Done |
 | DNSLink cache TTL | DNSLink resolution preserves DNS TXT TTLs where the resolver supplies them; `CachedNameResolver` caps dynamic TTLs with a conservative max. | Done |
 | Native/system TXT resolver | Explicit follow-up in spec/status. | Not required for MVP; open |
 | ENS excluded from node | Live smoke resolves ENS/contenthash outside the node, then feeds `/ipfs` paths to the local gateway. | Done |
 | Delegated Routing V1 | Routing parser/client, JSON/NDJSON tests, CIDv1/base32 lookup normalization, response byte cap, provider fanout cap. | Done |
-| Multiple delegated routers | `DelegatedRoutingClient::with_endpoints`, comma-separated CLI/mobile provider-routing config, race/failover test. | Done |
+| Multiple delegated routers | `DelegatedRoutingClient::with_endpoints`, `DelegatedIpnsResolver::with_endpoints`, comma-separated CLI/mobile provider-routing and delegated-IPNS config, provider-routing race/failover test, and delegated-IPNS endpoint fallback test. | Done |
 | Default delegated router | `https://delegated-ipfs.dev/routing/v1`. | Done |
 | Verified HTTP raw-block retrieval | Retrieval requests provider `/ipfs/{cid}?format=raw`, bounds response bodies, disables redirects, verifies CIDs. | Done |
 | Invalid provider blocks fail closed | Invalid, redirected, and oversized HTTP provider tests; bad-provider suppression. | Done |

@@ -692,6 +692,7 @@ unsafe fn gateway_router_for_routing_mode(
     };
 
     let delegated = delegated_routing_client(&delegated_routers);
+    let delegated_router_endpoints = delegated_router_endpoints(&delegated_routers);
     let dht = light_dht_client(dht_query_timeout_secs, dht_max_providers);
     let routing = match routing_mode {
         ROUTING_MODE_AUTO => {
@@ -706,11 +707,7 @@ unsafe fn gateway_router_for_routing_mode(
     let provider = FetchingBlockProvider::new(node.store.clone(), routing);
     let name_resolver = CachedNameResolver::new(DefaultNameResolver::new(
         CloudflareDohResolver::default(),
-        ipns_resolver(
-            routing_mode,
-            first_delegated_router(&delegated_routers),
-            dht,
-        ),
+        ipns_resolver(routing_mode, delegated_router_endpoints, dht),
     ));
     let router = freedom_ipfs_gateway::router_with_provider_and_name_resolver_config(
         Arc::new(provider.clone()),
@@ -748,13 +745,6 @@ fn delegated_routing_client(delegated_routers: &str) -> DelegatedRoutingClient {
     DelegatedRoutingClient::with_endpoints(delegated_router_endpoints(delegated_routers))
 }
 
-fn first_delegated_router(delegated_routers: &str) -> String {
-    delegated_router_endpoints(delegated_routers)
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| DEFAULT_DELEGATED_ROUTER.to_string())
-}
-
 fn delegated_router_endpoints(delegated_routers: &str) -> Vec<String> {
     delegated_routers
         .split(',')
@@ -766,17 +756,19 @@ fn delegated_router_endpoints(delegated_routers: &str) -> Vec<String> {
 
 fn ipns_resolver(
     routing_mode: u32,
-    delegated_router: String,
+    delegated_routers: Vec<String>,
     dht: LightDhtClient,
 ) -> Arc<dyn IpnsResolver> {
     match routing_mode {
         ROUTING_MODE_AUTO => Arc::new(FallbackIpnsResolver::new(
-            DelegatedIpnsResolver::new(delegated_router),
+            DelegatedIpnsResolver::with_endpoints(delegated_routers),
             DhtIpnsResolver::new(dht),
         )),
-        ROUTING_MODE_DELEGATED => Arc::new(DelegatedIpnsResolver::new(delegated_router)),
+        ROUTING_MODE_DELEGATED => {
+            Arc::new(DelegatedIpnsResolver::with_endpoints(delegated_routers))
+        }
         ROUTING_MODE_LIGHT_DHT => Arc::new(DhtIpnsResolver::new(dht)),
-        _ => Arc::new(DelegatedIpnsResolver::new(delegated_router)),
+        _ => Arc::new(DelegatedIpnsResolver::with_endpoints(delegated_routers)),
     }
 }
 
@@ -1375,7 +1367,7 @@ mod tests {
                 "https://two.example".to_string()
             ]
         );
-        assert_eq!(first_delegated_router(" , "), DEFAULT_DELEGATED_ROUTER);
+        assert!(delegated_router_endpoints(" , ").is_empty());
     }
 
     #[test]

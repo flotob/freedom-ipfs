@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use cid::Cid;
+use futures::stream::{FuturesUnordered, StreamExt};
 use ipld_core::ipld::Ipld;
 use libp2p_identity::{PeerId, PublicKey};
 use multihash::Multihash;
@@ -263,7 +264,7 @@ impl DnsTxtResolver for CloudflareDohResolver {
 
 #[derive(Debug, Clone)]
 pub struct DelegatedIpnsResolver {
-    endpoint: String,
+    endpoints: Vec<String>,
     client: reqwest::Client,
 }
 
@@ -275,18 +276,31 @@ impl Default for DelegatedIpnsResolver {
 
 impl DelegatedIpnsResolver {
     pub fn new(endpoint: impl Into<String>) -> Self {
+        Self::with_endpoints([endpoint])
+    }
+
+    pub fn with_endpoints<I, S>(endpoints: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut endpoints = endpoints
+            .into_iter()
+            .map(|endpoint| endpoint.into().trim_end_matches('/').to_string())
+            .filter(|endpoint| !endpoint.is_empty())
+            .collect::<Vec<_>>();
+        if endpoints.is_empty() {
+            endpoints.push(DEFAULT_DELEGATED_ROUTER.to_string());
+        }
         Self {
-            endpoint: endpoint.into().trim_end_matches('/').to_string(),
+            endpoints,
             client: timeout_http_client(DEFAULT_NAMESYS_HTTP_TIMEOUT),
         }
     }
-}
 
-#[async_trait]
-impl IpnsResolver for DelegatedIpnsResolver {
-    async fn resolve_ipns(&self, name: &str) -> Result<IpnsRecord> {
+    async fn resolve_ipns_from_endpoint(&self, endpoint: &str, name: &str) -> Result<IpnsRecord> {
         let lookup = normalize_ipns_name_for_routing(name)?;
-        let url = format!("{}/ipns/{lookup}", self.endpoint);
+        let url = format!("{endpoint}/ipns/{lookup}");
         let response = self
             .client
             .get(url)
@@ -312,9 +326,64 @@ impl IpnsResolver for DelegatedIpnsResolver {
             return Err(NamesysError::NotFound(name.to_string()));
         }
 
-        let bytes = response.bytes().await?;
+        let bytes = limited_response_bytes(response, IPNS_RECORD_MAX_SIZE).await?;
         verify_ipns_record(name, &bytes)
     }
+}
+
+#[async_trait]
+impl IpnsResolver for DelegatedIpnsResolver {
+    async fn resolve_ipns(&self, name: &str) -> Result<IpnsRecord> {
+        if self.endpoints.len() == 1 {
+            return self
+                .resolve_ipns_from_endpoint(&self.endpoints[0], name)
+                .await;
+        }
+
+        let mut queries = self
+            .endpoints
+            .iter()
+            .map(|endpoint| self.resolve_ipns_from_endpoint(endpoint, name))
+            .collect::<FuturesUnordered<_>>();
+        let mut saw_not_found = false;
+        let mut first_error = None;
+
+        while let Some(result) = queries.next().await {
+            match result {
+                Ok(record) => return Ok(record),
+                Err(NamesysError::NotFound(_)) => saw_not_found = true,
+                Err(err) => {
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
+                }
+            }
+        }
+
+        if saw_not_found {
+            Err(NamesysError::NotFound(name.to_string()))
+        } else {
+            Err(first_error.unwrap_or_else(|| {
+                NamesysError::NotFound("no delegated IPNS endpoints configured".into())
+            }))
+        }
+    }
+}
+
+async fn limited_response_bytes(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(NamesysError::InvalidIpnsRecord(format!(
+                "record exceeds {max_bytes} byte limit"
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -765,6 +834,8 @@ mod tests {
     use ipld_core::ipld::Ipld;
     use libp2p_identity::Keypair;
     use std::collections::BTreeMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener as StdTcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const FUTURE: &str = "2126-01-01T00:00:00.000000000Z";
@@ -951,6 +1022,47 @@ mod tests {
         assert_eq!(record.sequence, 42);
     }
 
+    #[tokio::test]
+    async fn delegated_ipns_resolver_tries_configured_endpoint_fallbacks() {
+        let (name, record_bytes) = signed_record("/ipfs/bafkqaddwgevxmmraojswg33smq", FUTURE, true);
+        let first_hits = Arc::new(AtomicUsize::new(0));
+        let second_hits = Arc::new(AtomicUsize::new(0));
+        let first =
+            start_delegated_ipns_server("404 Not Found", None, Vec::new(), first_hits.clone());
+        let second = start_delegated_ipns_server(
+            "200 OK",
+            Some(IPNS_RECORD_CONTENT_TYPE),
+            record_bytes,
+            second_hits.clone(),
+        );
+        let resolver = DelegatedIpnsResolver::with_endpoints([first, second]);
+
+        let record = resolver.resolve_ipns(&name).await.unwrap();
+
+        assert_eq!(record.value, "/ipfs/bafkqaddwgevxmmraojswg33smq");
+        assert_eq!(first_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(second_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn delegated_ipns_resolver_rejects_oversized_records_before_verification() {
+        let (name, _record_bytes) =
+            signed_record("/ipfs/bafkqaddwgevxmmraojswg33smq", FUTURE, true);
+        let hits = Arc::new(AtomicUsize::new(0));
+        let endpoint = start_delegated_ipns_server(
+            "200 OK",
+            Some(IPNS_RECORD_CONTENT_TYPE),
+            vec![0u8; IPNS_RECORD_MAX_SIZE + 1],
+            hits,
+        );
+        let resolver = DelegatedIpnsResolver::with_endpoints([endpoint]);
+
+        assert!(matches!(
+            resolver.resolve_ipns(&name).await,
+            Err(NamesysError::InvalidIpnsRecord(_))
+        ));
+    }
+
     #[test]
     fn verifies_v2_ipns_record_with_inline_ed25519_key() {
         let (name, record) = signed_record("/ipfs/bafkqaddwgevxmmraojswg33smq", FUTURE, true);
@@ -1067,6 +1179,32 @@ mod tests {
         map.insert("ValidityType".to_string(), Ipld::Integer(0));
         map.insert("Value".to_string(), Ipld::Bytes(value.as_bytes().to_vec()));
         serde_ipld_dagcbor::to_vec(&Ipld::Map(map)).unwrap()
+    }
+
+    fn start_delegated_ipns_server(
+        status: &'static str,
+        content_type: Option<&'static str>,
+        body: Vec<u8>,
+        hits: Arc<AtomicUsize>,
+    ) -> String {
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            hits.fetch_add(1, Ordering::SeqCst);
+            let content_type_header = content_type
+                .map(|content_type| format!("Content-Type: {content_type}\r\n"))
+                .unwrap_or_default();
+            let header = format!(
+                "HTTP/1.1 {status}\r\n{content_type_header}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        format!("http://{addr}/routing/v1")
     }
 
     struct CountingNameResolver {

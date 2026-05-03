@@ -954,6 +954,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "cid",
+ "futures",
  "ipld-core",
  "libp2p-identity",
  "multihash",

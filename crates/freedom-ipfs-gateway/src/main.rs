@@ -93,7 +93,8 @@ async fn main() -> Result<()> {
     let gateway_config = GatewayConfig::new(args.max_concurrent_requests);
     let router = if start_online_gateway {
         let delegated_routers = args.delegated_router.clone();
-        let delegated = delegated_routing_client(&delegated_routers);
+        let delegated_router_endpoints = delegated_router_endpoints(&delegated_routers);
+        let delegated = delegated_routing_client(delegated_router_endpoints.clone());
         let dht = light_dht_client(args.dht_query_timeout_secs, args.dht_max_providers);
         let routing = match args.routing_mode {
             RoutingMode::Auto => {
@@ -106,11 +107,7 @@ async fn main() -> Result<()> {
         let provider = FetchingBlockProvider::new(store, routing);
         let name_resolver = CachedNameResolver::new(DefaultNameResolver::new(
             CloudflareDohResolver::default(),
-            ipns_resolver(
-                args.routing_mode,
-                first_delegated_router(&delegated_routers),
-                dht,
-            ),
+            ipns_resolver(args.routing_mode, delegated_router_endpoints, dht),
         ));
         router_with_provider_and_name_resolver_config(
             Arc::new(provider),
@@ -141,15 +138,8 @@ fn light_dht_client(dht_query_timeout_secs: u64, dht_max_providers: usize) -> Li
         .with_max_providers(dht_max_providers)
 }
 
-fn delegated_routing_client(delegated_routers: &str) -> DelegatedRoutingClient {
-    DelegatedRoutingClient::with_endpoints(delegated_router_endpoints(delegated_routers))
-}
-
-fn first_delegated_router(delegated_routers: &str) -> String {
-    delegated_router_endpoints(delegated_routers)
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| DEFAULT_DELEGATED_ROUTER.to_string())
+fn delegated_routing_client(delegated_routers: Vec<String>) -> DelegatedRoutingClient {
+    DelegatedRoutingClient::with_endpoints(delegated_routers)
 }
 
 fn delegated_router_endpoints(delegated_routers: &str) -> Vec<String> {
@@ -163,15 +153,17 @@ fn delegated_router_endpoints(delegated_routers: &str) -> Vec<String> {
 
 fn ipns_resolver(
     routing_mode: RoutingMode,
-    delegated_router: String,
+    delegated_routers: Vec<String>,
     dht: LightDhtClient,
 ) -> Arc<dyn IpnsResolver> {
     match routing_mode {
         RoutingMode::Auto => Arc::new(FallbackIpnsResolver::new(
-            DelegatedIpnsResolver::new(delegated_router),
+            DelegatedIpnsResolver::with_endpoints(delegated_routers),
             DhtIpnsResolver::new(dht),
         )),
-        RoutingMode::Delegated => Arc::new(DelegatedIpnsResolver::new(delegated_router)),
+        RoutingMode::Delegated => {
+            Arc::new(DelegatedIpnsResolver::with_endpoints(delegated_routers))
+        }
         RoutingMode::LightDht => Arc::new(DhtIpnsResolver::new(dht)),
         RoutingMode::Offline => Arc::new(OfflineIpnsResolver),
     }
@@ -200,11 +192,6 @@ mod tests {
                 "https://two.example".to_string()
             ]
         );
-    }
-
-    #[test]
-    fn first_delegated_router_falls_back_to_default() {
-        assert_eq!(first_delegated_router(" , "), DEFAULT_DELEGATED_ROUTER);
     }
 
     #[test]

@@ -1,13 +1,14 @@
 use anyhow::{Context, Result};
+use axum::Router;
 use clap::{Parser, ValueEnum};
 use freedom_ipfs_core::parse_cid;
 use freedom_ipfs_gateway::{
-    serve_config, serve_with_provider_and_name_resolver_config, GatewayConfig,
+    router_with_provider_and_name_resolver_config, router_with_provider_config, GatewayConfig,
     DEFAULT_GATEWAY_MAX_CONCURRENT_REQUESTS,
 };
 use freedom_ipfs_namesys::{
     CachedNameResolver, CloudflareDohResolver, DefaultNameResolver, DelegatedIpnsResolver,
-    FallbackIpnsResolver, IpnsResolver,
+    FallbackIpnsResolver, IpnsRecord, IpnsResolver, NamesysError,
 };
 use freedom_ipfs_retrieval::FetchingBlockProvider;
 use freedom_ipfs_routing::{
@@ -21,6 +22,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::net::TcpListener;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about = "Local Freedom IPFS gateway")]
@@ -49,11 +51,12 @@ struct Args {
     dht_max_providers: usize,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum RoutingMode {
     Auto,
     Delegated,
     LightDht,
+    Offline,
 }
 
 #[tokio::main]
@@ -63,6 +66,7 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+    let start_online_gateway = should_start_online_gateway(&args);
     let store = if let Some(path) = args.db {
         SqliteBlockStore::open(path, 256 * 1024 * 1024)?
     } else {
@@ -87,7 +91,7 @@ async fn main() -> Result<()> {
     }
 
     let gateway_config = GatewayConfig::new(args.max_concurrent_requests);
-    let bound = if args.online {
+    let router = if start_online_gateway {
         let delegated_routers = args.delegated_router.clone();
         let delegated = delegated_routing_client(&delegated_routers);
         let dht = light_dht_client(args.dht_query_timeout_secs, args.dht_max_providers);
@@ -97,6 +101,7 @@ async fn main() -> Result<()> {
             }
             RoutingMode::Delegated => ProviderRoutingClient::from(delegated),
             RoutingMode::LightDht => ProviderRoutingClient::from(dht.clone()),
+            RoutingMode::Offline => ProviderRoutingClient::Offline,
         };
         let provider = FetchingBlockProvider::new(store, routing);
         let name_resolver = CachedNameResolver::new(DefaultNameResolver::new(
@@ -107,18 +112,27 @@ async fn main() -> Result<()> {
                 dht,
             ),
         ));
-        serve_with_provider_and_name_resolver_config(
+        router_with_provider_and_name_resolver_config(
             Arc::new(provider),
             Arc::new(name_resolver),
-            args.addr,
             gateway_config,
         )
-        .await?
     } else {
-        serve_config(store, args.addr, gateway_config).await?
+        router_with_provider_config(Arc::new(store), gateway_config)
     };
-    eprintln!("gateway listening on http://{bound}");
+    serve_router(router, args.addr).await?;
     Ok(())
+}
+
+async fn serve_router(router: Router, addr: SocketAddr) -> std::io::Result<()> {
+    let listener = TcpListener::bind(addr).await?;
+    let bound = listener.local_addr()?;
+    eprintln!("gateway listening on http://{bound}");
+    axum::serve(listener, router).await
+}
+
+fn should_start_online_gateway(args: &Args) -> bool {
+    args.online && args.routing_mode != RoutingMode::Offline
 }
 
 fn light_dht_client(dht_query_timeout_secs: u64, dht_max_providers: usize) -> LightDhtClient {
@@ -159,6 +173,17 @@ fn ipns_resolver(
         )),
         RoutingMode::Delegated => Arc::new(DelegatedIpnsResolver::new(delegated_router)),
         RoutingMode::LightDht => Arc::new(DhtIpnsResolver::new(dht)),
+        RoutingMode::Offline => Arc::new(OfflineIpnsResolver),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct OfflineIpnsResolver;
+
+#[async_trait::async_trait]
+impl IpnsResolver for OfflineIpnsResolver {
+    async fn resolve_ipns(&self, name: &str) -> freedom_ipfs_namesys::Result<IpnsRecord> {
+        Err(NamesysError::NotFound(name.to_string()))
     }
 }
 
@@ -180,5 +205,35 @@ mod tests {
     #[test]
     fn first_delegated_router_falls_back_to_default() {
         assert_eq!(first_delegated_router(" , "), DEFAULT_DELEGATED_ROUTER);
+    }
+
+    #[test]
+    fn offline_routing_mode_disables_online_gateway() {
+        let args = Args::try_parse_from([
+            "freedom-ipfs-gateway",
+            "--online",
+            "--routing-mode",
+            "offline",
+        ])
+        .expect("parse offline routing mode");
+
+        assert!(!should_start_online_gateway(&args));
+    }
+
+    #[test]
+    fn online_gateway_requires_online_flag() {
+        let args = Args::try_parse_from(["freedom-ipfs-gateway", "--routing-mode", "auto"])
+            .expect("parse auto routing mode");
+
+        assert!(!should_start_online_gateway(&args));
+    }
+
+    #[test]
+    fn auto_routing_mode_starts_online_gateway_when_enabled() {
+        let args =
+            Args::try_parse_from(["freedom-ipfs-gateway", "--online", "--routing-mode", "auto"])
+                .expect("parse online auto routing mode");
+
+        assert!(should_start_online_gateway(&args));
     }
 }

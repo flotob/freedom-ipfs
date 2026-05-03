@@ -84,6 +84,12 @@ Run the gateway online with the mobile default `auto` routing mode:
 cargo run -p freedom-ipfs-gateway -- --online --routing-mode auto
 ```
 
+Run cache-only with explicit offline routing:
+
+```bash
+cargo run -p freedom-ipfs-gateway -- --routing-mode offline
+```
+
 Use multiple delegated routers for provider discovery by passing a comma-separated endpoint list:
 
 ```bash

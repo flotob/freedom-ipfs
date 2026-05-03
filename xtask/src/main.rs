@@ -230,6 +230,7 @@ fn verify_exported_symbols(library: &Path) -> Result<()> {
         "freedom_ipfs_version",
         "freedom_ipfs_node_new_with_data_dir",
         "freedom_ipfs_node_start_gateway_online_with_config_v2",
+        "freedom_ipfs_node_restart_gateway_online_with_config_v2",
         "freedom_ipfs_node_enter_background",
         "freedom_ipfs_node_handle_low_memory",
     ] {

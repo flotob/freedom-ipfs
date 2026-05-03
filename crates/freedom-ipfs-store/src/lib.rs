@@ -200,13 +200,13 @@ impl SqliteBlockStore {
                 providers_json = excluded.providers_json,
                 expires_at = excluded.expires_at
             "#,
-            params![cid.to_bytes(), providers_json, expires_at as i64],
+            params![provider_cache_key(cid), providers_json, expires_at as i64],
         )?;
         Ok(())
     }
 
     pub fn get_provider_records(&self, cid: &Cid) -> Result<Option<Vec<CachedProviderRecord>>> {
-        let cid_bytes = cid.to_bytes();
+        let cid_bytes = provider_cache_key(cid);
         let row = self
             .conn
             .lock()
@@ -223,7 +223,7 @@ impl SqliteBlockStore {
         if expires_at <= now_secs() as i64 {
             self.conn.lock().execute(
                 "DELETE FROM provider_cache WHERE cid = ?1",
-                params![cid.to_bytes()],
+                params![provider_cache_key(cid)],
             )?;
             return Ok(None);
         }
@@ -349,6 +349,10 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+fn provider_cache_key(cid: &Cid) -> Vec<u8> {
+    cid.hash().to_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,6 +441,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(store.get_provider_records(&cid).unwrap(), None);
+    }
+
+    #[test]
+    fn provider_cache_key_is_cid_representation_independent() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let cidv1 = cid_from_data(freedom_ipfs_core::CODEC_DAG_PB, b"provider multihash key");
+        let cidv0 = Cid::new_v0(*cidv1.hash()).unwrap();
+        let providers = vec![CachedProviderRecord {
+            id: Some("peer".to_string()),
+            addrs: vec!["/ip4/127.0.0.1/tcp/4001".to_string()],
+        }];
+
+        store
+            .put_provider_records(&cidv1, &providers, Duration::from_secs(60))
+            .unwrap();
+
+        assert_eq!(store.get_provider_records(&cidv0).unwrap(), Some(providers));
     }
 
     #[test]

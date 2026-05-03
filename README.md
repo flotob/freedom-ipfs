@@ -22,7 +22,7 @@ Early implementation. Current code supports:
 - short-lived in-memory DNSLink/IPNS name-resolution cache,
 - delegated routing provider lookup,
 - client-mode light DHT provider lookup fallback,
-- short-lived provider-result cache and bad-provider suppression,
+- short-lived multihash-keyed provider-result cache and bad-provider suppression,
 - verified HTTP raw-block retrieval from HTTP-capable providers,
 - client-only Bitswap retrieval over TCP, WebSocket, and QUIC libp2p streams for Bitswap-only providers,
 - bounded Bitswap peer/address fanout with one provider-refresh retry after stale-provider failures,

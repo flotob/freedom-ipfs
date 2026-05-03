@@ -167,6 +167,22 @@ pub async fn serve_with_provider_config(
     Ok(bound)
 }
 
+pub async fn serve_with_provider_and_name_resolver_config(
+    provider: Arc<dyn BlockProvider>,
+    name_resolver: Arc<dyn NameResolver>,
+    addr: SocketAddr,
+    config: GatewayConfig,
+) -> std::io::Result<SocketAddr> {
+    let listener = TcpListener::bind(addr).await?;
+    let bound = listener.local_addr()?;
+    axum::serve(
+        listener,
+        router_with_provider_and_name_resolver_config(provider, name_resolver, config),
+    )
+    .await?;
+    Ok(bound)
+}
+
 async fn health() -> &'static str {
     "ok\n"
 }

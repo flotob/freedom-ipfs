@@ -2,8 +2,11 @@ use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use freedom_ipfs_core::parse_cid;
 use freedom_ipfs_gateway::{
-    serve_config, serve_with_provider_config, GatewayConfig,
+    serve_config, serve_with_provider_and_name_resolver_config, GatewayConfig,
     DEFAULT_GATEWAY_MAX_CONCURRENT_REQUESTS,
+};
+use freedom_ipfs_namesys::{
+    CachedNameResolver, CloudflareDohResolver, DefaultNameResolver, DelegatedIpnsResolver,
 };
 use freedom_ipfs_retrieval::FetchingBlockProvider;
 use freedom_ipfs_routing::{
@@ -78,7 +81,8 @@ async fn main() -> Result<()> {
 
     let gateway_config = GatewayConfig::new(args.max_concurrent_requests);
     let bound = if args.online {
-        let delegated = DelegatedRoutingClient::new(args.delegated_router);
+        let delegated_router = args.delegated_router.clone();
+        let delegated = DelegatedRoutingClient::new(delegated_router.clone());
         let routing = match args.routing_mode {
             RoutingMode::Auto => ProviderRoutingClient::from(AutoRoutingClient::new(
                 delegated,
@@ -88,7 +92,17 @@ async fn main() -> Result<()> {
             RoutingMode::LightDht => ProviderRoutingClient::from(LightDhtClient::default()),
         };
         let provider = FetchingBlockProvider::new(store, routing);
-        serve_with_provider_config(Arc::new(provider), args.addr, gateway_config).await?
+        let name_resolver = CachedNameResolver::new(DefaultNameResolver::new(
+            CloudflareDohResolver::default(),
+            DelegatedIpnsResolver::new(delegated_router),
+        ));
+        serve_with_provider_and_name_resolver_config(
+            Arc::new(provider),
+            Arc::new(name_resolver),
+            args.addr,
+            gateway_config,
+        )
+        .await?
     } else {
         serve_config(store, args.addr, gateway_config).await?
     };

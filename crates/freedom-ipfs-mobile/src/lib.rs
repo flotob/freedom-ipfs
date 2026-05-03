@@ -1,3 +1,6 @@
+use freedom_ipfs_namesys::{
+    CachedNameResolver, CloudflareDohResolver, DefaultNameResolver, DelegatedIpnsResolver,
+};
 use freedom_ipfs_retrieval::FetchingBlockProvider;
 use freedom_ipfs_routing::{
     AutoRoutingClient, DelegatedRoutingClient, LightDhtClient, ProviderRoutingClient,
@@ -264,7 +267,7 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config(
         }
     };
 
-    let delegated = DelegatedRoutingClient::new(delegated_router);
+    let delegated = DelegatedRoutingClient::new(delegated_router.clone());
     let routing = match routing_mode {
         ROUTING_MODE_AUTO => ProviderRoutingClient::from(AutoRoutingClient::new(
             delegated,
@@ -280,10 +283,18 @@ pub unsafe extern "C" fn freedom_ipfs_node_start_gateway_online_with_config(
     } else {
         freedom_ipfs_gateway::GatewayConfig::new(max_concurrent_requests)
     };
+    let name_resolver = CachedNameResolver::new(DefaultNameResolver::new(
+        CloudflareDohResolver::default(),
+        DelegatedIpnsResolver::new(delegated_router),
+    ));
     start_gateway_with_router(
         node,
         addr,
-        freedom_ipfs_gateway::router_with_provider_config(Arc::new(provider), gateway_config),
+        freedom_ipfs_gateway::router_with_provider_and_name_resolver_config(
+            Arc::new(provider),
+            Arc::new(name_resolver),
+            gateway_config,
+        ),
     )
 }
 

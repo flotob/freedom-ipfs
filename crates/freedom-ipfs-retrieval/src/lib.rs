@@ -1,7 +1,7 @@
 use cid::Cid;
 use freedom_ipfs_core::{
     verify_block, Block, BlockProvider, CoreError, Result as CoreResult, CODEC_DAG_PB,
-    HASH_IDENTITY, HASH_SHA2_256,
+    DEFAULT_MAX_BLOCK_SIZE, HASH_IDENTITY, HASH_SHA2_256,
 };
 use freedom_ipfs_namesys::{CloudflareDohResolver, DnsTxtResolver};
 use freedom_ipfs_routing::{Provider, ProviderRoutingClient};
@@ -239,18 +239,17 @@ impl HttpRetriever {
         let url = base
             .join(&format!("/ipfs/{cid}?format=raw"))
             .map_err(RetrievalError::Url)?;
-        let bytes = self
+        let response = self
             .client
             .get(url)
             .header("accept", "application/vnd.ipld.raw")
             .send()
             .await?
-            .error_for_status()?
-            .bytes()
-            .await?;
+            .error_for_status()?;
+        let bytes = limited_response_bytes(response, DEFAULT_MAX_BLOCK_SIZE).await?;
         verify_block(cid, &bytes)?;
         self.store.put_block(cid, &bytes)?;
-        Ok(Block::unchecked(*cid, bytes.to_vec()))
+        Ok(Block::unchecked(*cid, bytes))
     }
 
     async fn fetch_from_bitswap_providers(
@@ -630,6 +629,22 @@ fn normalized_provider_set(providers: &[Provider]) -> BTreeSet<(Option<String>, 
             (provider.id.clone(), addrs)
         })
         .collect()
+}
+
+async fn limited_response_bytes(response: reqwest::Response, max_size: usize) -> Result<Vec<u8>> {
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if body.len().saturating_add(chunk.len()) > max_size {
+            return Err(RetrievalError::Core(CoreError::BlockTooLarge {
+                actual: body.len().saturating_add(chunk.len()),
+                max: max_size,
+            }));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 fn accept_bitswap_streams(control: &mut StreamControl) -> Result<Vec<IncomingStreams>> {
@@ -1204,6 +1219,35 @@ mod bitswap_tests {
         let invalid = b"wrong block bytes";
         let cid = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, expected);
         let (addr, server_task) = spawn_static_http_provider(invalid.to_vec()).await;
+        let provider_url = format!("http://{}:{}/", addr.ip(), addr.port());
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let retriever = HttpRetriever::new(
+            freedom_ipfs_routing::DelegatedRoutingClient::new("http://127.0.0.1:9/routing/v1"),
+            store.clone(),
+        );
+        let provider = Provider::from_parts(
+            None,
+            vec![format!("/ip4/{}/tcp/{}/http", addr.ip(), addr.port())],
+        )
+        .unwrap_or_else(|_| panic!("failed to build HTTP provider for {addr}"));
+
+        let err = retriever
+            .fetch_from_providers_with_source(&cid, &[provider])
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, RetrievalError::NoHttpProviders));
+        assert!(store.get(&cid).unwrap().is_none());
+        assert!(store.is_bad_provider(&provider_url).unwrap());
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_http_provider_blocks() {
+        let expected = b"expected small block";
+        let oversized = vec![0u8; DEFAULT_MAX_BLOCK_SIZE + 1];
+        let cid = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, expected);
+        let (addr, server_task) = spawn_static_http_provider(oversized).await;
         let provider_url = format!("http://{}:{}/", addr.ip(), addr.port());
         let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
         let retriever = HttpRetriever::new(

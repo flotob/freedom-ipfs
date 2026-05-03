@@ -75,8 +75,8 @@ Results:
 | Delegated Routing V1 | Routing parser/client, JSON/NDJSON tests, response byte cap, provider fanout cap. | Done |
 | Multiple delegated routers | `DelegatedRoutingClient::with_endpoints`, comma-separated CLI/mobile provider-routing config, race/failover test. | Done |
 | Default delegated router | `https://delegated-ipfs.dev/routing/v1`. | Done |
-| Verified HTTP raw-block retrieval | Retrieval requests provider `/ipfs/{cid}?format=raw`, disables redirects, verifies CIDs. | Done |
-| Invalid provider blocks fail closed | Invalid and redirected HTTP provider tests; bad-provider suppression. | Done |
+| Verified HTTP raw-block retrieval | Retrieval requests provider `/ipfs/{cid}?format=raw`, bounds response bodies, disables redirects, verifies CIDs. | Done |
+| Invalid provider blocks fail closed | Invalid, redirected, and oversized HTTP provider tests; bad-provider suppression. | Done |
 | No public trustless gateway fallback | No public gateway fallback path exists; live smoke goes through routing/providers and local gateway. | Done |
 | Minimal Bitswap client | Deterministic in-process libp2p Bitswap peer test verifies retrieval, cache insert, and cancel behavior. | Done for MVP |
 | Bitswap transports | TCP/WebSocket/QUIC configured; supported address filtering tests. | Done |

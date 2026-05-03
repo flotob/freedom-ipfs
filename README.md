@@ -76,8 +76,7 @@ cargo run -p xtask -- build-xcframework
 Live smoke test, intentionally ignored by default because it uses the public IPFS network:
 
 ```bash
-FREEDOM_IPFS_LIVE_ENS=vitalik.eth,daicowtf.eth \
-  cargo test -p freedom-ipfs-gateway --test live_smoke -- --ignored --nocapture
+make live-smoke
 ```
 
 Light-DHT provider discovery smoke:

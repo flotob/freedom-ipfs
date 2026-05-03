@@ -786,6 +786,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_comma_separated_delegated_router_endpoints() {
+        assert_eq!(
+            delegated_router_endpoints(" https://one.example/routing/v1, ,https://two.example "),
+            vec![
+                "https://one.example/routing/v1".to_string(),
+                "https://two.example".to_string()
+            ]
+        );
+        assert_eq!(first_delegated_router(" , "), DEFAULT_DELEGATED_ROUTER);
+    }
+
+    #[test]
     fn rejects_invalid_routing_mode() {
         unsafe {
             let node = freedom_ipfs_node_new_in_memory();

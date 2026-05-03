@@ -161,3 +161,24 @@ fn ipns_resolver(
         RoutingMode::LightDht => Arc::new(DhtIpnsResolver::new(dht)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_comma_separated_delegated_router_endpoints() {
+        assert_eq!(
+            delegated_router_endpoints(" https://one.example/routing/v1, ,https://two.example "),
+            vec![
+                "https://one.example/routing/v1".to_string(),
+                "https://two.example".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn first_delegated_router_falls_back_to_default() {
+        assert_eq!(first_delegated_router(" , "), DEFAULT_DELEGATED_ROUTER);
+    }
+}

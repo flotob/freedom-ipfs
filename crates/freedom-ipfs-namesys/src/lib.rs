@@ -5,7 +5,10 @@ use libp2p_identity::{PeerId, PublicKey};
 use multihash::Multihash;
 use prost::Message;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -16,6 +19,7 @@ const IPNS_SIGNATURE_PREFIX: &[u8] = b"ipns-signature:";
 const IPNS_RECORD_MAX_SIZE: usize = 10 * 1024;
 const LIBP2P_KEY_CODEC: u64 = 0x72;
 const IDENTITY_HASH: u64 = 0x00;
+const DEFAULT_NAME_CACHE_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Error)]
 pub enum NamesysError {
@@ -50,6 +54,76 @@ pub trait IpnsResolver: Send + Sync {
 #[async_trait]
 pub trait NameResolver: Send + Sync {
     async fn resolve_name(&self, name: &str) -> Result<String>;
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedNameResolver<R> {
+    inner: R,
+    ttl: Duration,
+    cache: Arc<Mutex<HashMap<String, CachedName>>>,
+}
+
+impl<R> CachedNameResolver<R> {
+    pub fn new(inner: R) -> Self {
+        Self::with_ttl(inner, DEFAULT_NAME_CACHE_TTL)
+    }
+
+    pub fn with_ttl(inner: R, ttl: Duration) -> Self {
+        Self {
+            inner,
+            ttl,
+            cache: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+#[async_trait]
+impl<R> NameResolver for CachedNameResolver<R>
+where
+    R: NameResolver,
+{
+    async fn resolve_name(&self, name: &str) -> Result<String> {
+        if let Some(value) = self.cached(name) {
+            return Ok(value);
+        }
+
+        let value = self.inner.resolve_name(name).await?;
+        self.store(name, &value);
+        Ok(value)
+    }
+}
+
+impl<R> CachedNameResolver<R> {
+    fn cached(&self, name: &str) -> Option<String> {
+        let mut cache = self.cache.lock().ok()?;
+        let entry = cache.get(name)?;
+        if entry.expires_at > Instant::now() {
+            return Some(entry.value.clone());
+        }
+        cache.remove(name);
+        None
+    }
+
+    fn store(&self, name: &str, value: &str) {
+        if self.ttl.is_zero() {
+            return;
+        }
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.insert(
+                name.to_string(),
+                CachedName {
+                    value: value.to_string(),
+                    expires_at: Instant::now() + self.ttl,
+                },
+            );
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedName {
+    value: String,
+    expires_at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -505,6 +579,7 @@ mod tests {
     use ipld_core::ipld::Ipld;
     use libp2p_identity::Keypair;
     use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     const FUTURE: &str = "2126-01-01T00:00:00.000000000Z";
     const PAST: &str = "2020-01-01T00:00:00.000000000Z";
@@ -517,6 +592,27 @@ mod tests {
         );
         assert_eq!(parse_dnslink_txt("not-dnslink").unwrap(), None);
         assert!(parse_dnslink_txt("dnslink=https://example.com").is_err());
+    }
+
+    #[tokio::test]
+    async fn cached_name_resolver_reuses_successful_resolution() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let resolver = CachedNameResolver::with_ttl(
+            CountingNameResolver {
+                count: count.clone(),
+            },
+            Duration::from_secs(60),
+        );
+
+        assert_eq!(
+            resolver.resolve_name("example.test").await.unwrap(),
+            "/ipfs/1"
+        );
+        assert_eq!(
+            resolver.resolve_name("example.test").await.unwrap(),
+            "/ipfs/1"
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -623,5 +719,17 @@ mod tests {
         map.insert("ValidityType".to_string(), Ipld::Integer(0));
         map.insert("Value".to_string(), Ipld::Bytes(value.as_bytes().to_vec()));
         serde_ipld_dagcbor::to_vec(&Ipld::Map(map)).unwrap()
+    }
+
+    struct CountingNameResolver {
+        count: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl NameResolver for CountingNameResolver {
+        async fn resolve_name(&self, _name: &str) -> Result<String> {
+            let value = self.count.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(format!("/ipfs/{value}"))
+        }
     }
 }

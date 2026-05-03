@@ -8,7 +8,7 @@ use axum::Router;
 use bytes::Bytes;
 use cid::Cid;
 use freedom_ipfs_core::{parse_cid, BlockProvider};
-use freedom_ipfs_namesys::{DefaultNameResolver, NameResolver};
+use freedom_ipfs_namesys::{CachedNameResolver, DefaultNameResolver, NameResolver};
 use freedom_ipfs_store::SqliteBlockStore;
 use freedom_ipfs_unixfs::{file_size, read_file, read_file_range, UnixfsError};
 use std::net::SocketAddr;
@@ -60,7 +60,7 @@ impl GatewayState {
     pub fn with_provider_config(provider: Arc<dyn BlockProvider>, config: GatewayConfig) -> Self {
         Self::with_provider_and_name_resolver_config(
             provider,
-            Arc::new(DefaultNameResolver::default()),
+            Arc::new(CachedNameResolver::new(DefaultNameResolver::default())),
             config,
         )
     }
@@ -94,7 +94,10 @@ pub fn router(store: SqliteBlockStore) -> Router {
 }
 
 pub fn router_with_provider(provider: Arc<dyn BlockProvider>) -> Router {
-    router_with_provider_and_name_resolver(provider, Arc::new(DefaultNameResolver::default()))
+    router_with_provider_and_name_resolver(
+        provider,
+        Arc::new(CachedNameResolver::new(DefaultNameResolver::default())),
+    )
 }
 
 pub fn router_with_provider_config(
@@ -103,7 +106,7 @@ pub fn router_with_provider_config(
 ) -> Router {
     router_with_provider_and_name_resolver_config(
         provider,
-        Arc::new(DefaultNameResolver::default()),
+        Arc::new(CachedNameResolver::new(DefaultNameResolver::default())),
         config,
     )
 }

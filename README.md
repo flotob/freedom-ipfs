@@ -19,6 +19,7 @@ Early implementation. Current code supports:
 
 - cache-backed local gateway for `/ipfs` and DNSLink/IPNS-backed `/ipns`,
 - IPNS record retrieval and v2 signature/validity verification,
+- short-lived in-memory DNSLink/IPNS name-resolution cache,
 - delegated routing provider lookup,
 - client-mode light DHT provider lookup fallback,
 - short-lived provider-result cache and bad-provider suppression,

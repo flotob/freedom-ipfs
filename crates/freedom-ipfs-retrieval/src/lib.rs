@@ -358,6 +358,20 @@ impl HttpRetriever {
                     }
                 };
                 if same_provider_set(&providers, &refreshed) {
+                    if is_bitswap_connection_ready_failure(&err) {
+                        tracing::info!(
+                            phase = "provider_retry_after_connection_timeout",
+                            cid = %cid,
+                            provider_count = providers.len(),
+                            initial_error = %err
+                        );
+                        return match self.fetch_from_providers_with_source(cid, &providers).await {
+                            Ok((block, source)) => Ok((block, source)),
+                            Err(retry_err) => Err(RetrievalError::Bitswap(format!(
+                                "initial provider retrieval failed ({err}); same-provider retry failed ({retry_err})"
+                            ))),
+                        };
+                    }
                     return Err(err);
                 }
                 self.cache_providers(cid, &refreshed)?;
@@ -484,12 +498,16 @@ impl HttpRetriever {
     ) -> Result<Block> {
         let peer_started = Instant::now();
         let mut peers = bitswap_peers(providers).await;
+        let provider_peer_count = peers.len();
         self.apply_successful_bitswap_peer_scores(&mut peers).await;
+        let session_peer_count = self.insert_recent_bitswap_session_peers(&mut peers).await;
         tracing::info!(
             phase = "bitswap_peer_expand",
             cid = %cid,
             provider_count = providers.len(),
             peer_count = peers.len(),
+            provider_peer_count,
+            session_peer_count,
             trusted_peer_count = peers.iter().filter(|peer| peer.skip_want_have).count(),
             elapsed_ms = peer_started.elapsed().as_millis()
         );
@@ -578,6 +596,35 @@ impl HttpRetriever {
                 (None, None) => std::cmp::Ordering::Equal,
             },
         );
+    }
+
+    async fn insert_recent_bitswap_session_peers(&self, peers: &mut Vec<BitswapPeer>) -> usize {
+        let recent_peers = self.recent_bitswap_peers_for_fetch().await;
+        if recent_peers.is_empty() {
+            return 0;
+        }
+
+        let mut session_only_peers = Vec::new();
+        for mut recent in recent_peers {
+            if let Some(existing) = peers.iter_mut().find(|peer| peer.id == recent.id) {
+                existing.addrs.append(&mut recent.addrs);
+                existing.addrs.sort_by_key(bitswap_addr_score);
+                existing.addrs.dedup();
+                existing.addrs.truncate(MAX_BITSWAP_ADDRS_PER_PEER);
+            } else {
+                recent.skip_want_have = false;
+                session_only_peers.push(recent);
+            }
+        }
+
+        let inserted = session_only_peers.len();
+        let insert_at = peers
+            .iter()
+            .position(|peer| !peer.skip_want_have)
+            .unwrap_or(peers.len());
+        peers.splice(insert_at..insert_at, session_only_peers);
+        peers.truncate(MAX_BITSWAP_PEERS_PER_BLOCK);
+        inserted.min(peers.len().saturating_sub(insert_at))
     }
 
     async fn record_successful_bitswap_peer(&self, peer: PeerId, addrs: Vec<Multiaddr>) {
@@ -1242,6 +1289,14 @@ fn should_refresh_providers_after_failure(err: &RetrievalError) -> bool {
             | RetrievalError::BitswapTimeout
             | RetrievalError::NoHttpProviders
             | RetrievalError::NoBitswapProviders
+    )
+}
+
+fn is_bitswap_connection_ready_failure(err: &RetrievalError) -> bool {
+    matches!(
+        err,
+        RetrievalError::Bitswap(message)
+            if message.contains("bitswap connection was not established")
     )
 }
 
@@ -2352,6 +2407,18 @@ mod bitswap_tests {
         assert!(!peers[1].skip_want_have);
     }
 
+    #[test]
+    fn detects_bitswap_connection_ready_failures() {
+        let err = RetrievalError::Bitswap(
+            "all bitswap stream requests failed: peer: bitswap connection was not established within 10000ms"
+                .to_string(),
+        );
+        assert!(is_bitswap_connection_ready_failure(&err));
+
+        let err = RetrievalError::Bitswap("all bitswap stream requests failed".to_string());
+        assert!(!is_bitswap_connection_ready_failure(&err));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn recent_bitswap_peer_shortcut_fetches_when_provider_lookup_fails() {
         let first = b"session shortcut first block";
@@ -2392,6 +2459,49 @@ mod bitswap_tests {
             .unwrap()
             .unwrap();
         swarm_task.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recent_bitswap_session_peers_are_raced_with_provider_candidates() {
+        let data = b"session peer candidate block";
+        let cid = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, data);
+        let (missing_peer_id, missing_addr, missing_swarm, missing_stream) =
+            spawn_want_have_bitswap_peer(cid, data.to_vec(), false).await;
+        let (session_peer_id, session_addr, session_swarm, session_stream) =
+            spawn_want_have_bitswap_peer(cid, data.to_vec(), true).await;
+
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let retriever = HttpRetriever::new(
+            freedom_ipfs_routing::DelegatedRoutingClient::new("http://127.0.0.1:9/routing/v1"),
+            store.clone(),
+        );
+        retriever
+            .record_successful_bitswap_peer(session_peer_id, vec![session_addr])
+            .await;
+        let provider = Provider::from_parts(
+            Some(missing_peer_id.to_string()),
+            vec![missing_addr.to_string()],
+        )
+        .unwrap();
+
+        let (block, source) = retriever
+            .fetch_from_providers_with_source(&cid, &[provider])
+            .await
+            .unwrap();
+
+        assert_eq!(source, RetrievalSource::Bitswap);
+        assert_eq!(block.data(), data);
+        assert_eq!(store.get(&cid).unwrap().unwrap().data(), data);
+        tokio::time::timeout(Duration::from_secs(5), missing_stream)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), session_stream)
+            .await
+            .unwrap()
+            .unwrap();
+        missing_swarm.abort();
+        session_swarm.abort();
     }
 
     async fn spawn_static_http_provider(

@@ -90,7 +90,11 @@ status, MIME type, byte count, and timing.
   improved from roughly 35-38s to roughly 10.6-19.3s while preserving 5/5 pass
   rate. A later same-window comparison reproduced the 30s root 504 tail on the
   previous pushed commit, then a connection-ready stream fix passed 3/3 with root
-  max 10.9s and no `no addresses for peer` Bitswap errors.
+  max 10.9s and no `no addresses for peer` Bitswap errors. A follow-up now
+  retries an identical provider set once when every Bitswap connection wait
+  times out; in one fresh `ipfs.tech` repeat=3 sample this converted two root
+  connection-timeout failures into slow successes, yielding 3/3 pass rate with a
+  16.9s root max.
 
 ## Next Scenario Targets
 

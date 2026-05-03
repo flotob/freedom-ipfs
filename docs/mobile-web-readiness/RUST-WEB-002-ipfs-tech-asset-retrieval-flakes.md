@@ -306,6 +306,32 @@ The trace for this run had no `no addresses for peer` Bitswap errors and no
 failed `bitswap_fetch` events. This directly addresses the failure signature seen
 in the same-window baseline/race runs above.
 
+Connection-timeout same-provider retry:
+
+After the connection-ready change, one fresh `ipfs.tech` repeat=3 sample still
+hit a root `502` when all seven delegated Bitswap peers failed to establish a
+connection within 10s. The refreshed provider lookup returned the same provider
+set, so the node used to return the error immediately. The retrieval path now
+retries that identical provider set once only for this connection-ready timeout
+signature. In the validation run below, the retry fired twice and converted both
+would-be root failures into slow successes:
+
+```text
+connection-timeout-retry repeat=3:
+passed=3 failed=0 pass_rate=100.0%
+root_ttfb p50=15706ms p90=16930ms max=16930ms
+asset_ttfb p50=177ms p90=631ms p95=5287ms max=5602ms
+measured run totals: 9824ms, 18618ms, 22257ms
+bitswap_fetch count=65 total=80785ms p50=156ms p95=6506ms max=10014ms
+provider_lookup count=107 total=2513ms p50=20ms p95=48ms max=69ms
+unixfs_index_lookup count=3 total=2065ms p50=253ms max=1622ms
+```
+
+This is intentionally a reliability tradeoff, not a latency win: the retry keeps
+the gateway from returning a fast root `502`, but it can add another connection
+window to a cold root request. The paired `daicowtf-page-assets` repeat=3 check
+still passed 3/3 with root TTFB p50=5842ms and max=6071ms.
+
 Resource impact:
 The changes keep existing caps: gateway request concurrency remains 8, asset
 concurrency remains harness-side, Bitswap connection limits are unchanged, and

@@ -26,6 +26,8 @@ struct Args {
     #[arg(long)]
     import_car: Option<PathBuf>,
     #[arg(long)]
+    export_car: Option<PathBuf>,
+    #[arg(long)]
     root: Option<String>,
     #[arg(long)]
     online: bool,
@@ -61,6 +63,12 @@ async fn main() -> Result<()> {
         let bytes = fs::read(&car_path).with_context(|| format!("read {}", car_path.display()))?;
         let imported = store.import_car(&bytes)?;
         eprintln!("imported {} CAR blocks", imported.len());
+    }
+
+    if let Some(car_path) = args.export_car {
+        let bytes = store.export_car()?;
+        fs::write(&car_path, bytes).with_context(|| format!("write {}", car_path.display()))?;
+        eprintln!("exported cache CAR to {}", car_path.display());
     }
 
     if let Some(root) = args.root {

@@ -9,6 +9,10 @@ pub const CODEC_RAW: u64 = 0x55;
 pub const HASH_IDENTITY: u64 = 0x00;
 pub const HASH_SHA2_256: u64 = 0x12;
 pub const DEFAULT_MAX_BLOCK_SIZE: usize = 2 * 1024 * 1024;
+const EMPTY_ROOTS_CAR_V1_HEADER: &[u8] = &[
+    0xa2, 0x67, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01, 0x65, b'r', b'o', b'o', b't', b's',
+    0x80,
+];
 
 #[derive(Debug, Error)]
 pub enum CoreError {
@@ -155,6 +159,20 @@ pub fn parse_car_v1(bytes: &[u8]) -> Result<CarFile> {
     Ok(CarFile { header, blocks })
 }
 
+pub fn encode_car_v1(blocks: &[CarBlock]) -> Vec<u8> {
+    let mut car = encode_varint(EMPTY_ROOTS_CAR_V1_HEADER.len());
+    car.extend_from_slice(EMPTY_ROOTS_CAR_V1_HEADER);
+
+    for block in blocks {
+        let mut section = block.cid.to_bytes();
+        section.extend_from_slice(&block.data);
+        car.extend_from_slice(&encode_varint(section.len()));
+        car.extend_from_slice(&section);
+    }
+
+    car
+}
+
 fn read_varint(bytes: &[u8], offset: &mut usize) -> Result<usize> {
     let input = bytes
         .get(*offset..)
@@ -203,6 +221,21 @@ mod tests {
         car.extend_from_slice(&header);
         car.extend_from_slice(&encode_varint(section.len()));
         car.extend_from_slice(&section);
+
+        let parsed = parse_car_v1(&car).unwrap();
+        assert_eq!(parsed.blocks.len(), 1);
+        assert_eq!(parsed.blocks[0].cid, cid);
+        assert_eq!(parsed.blocks[0].data, data);
+    }
+
+    #[test]
+    fn encodes_car_round_trip() {
+        let data = b"export payload";
+        let cid = cid_from_data(CODEC_RAW, data);
+        let car = encode_car_v1(&[CarBlock {
+            cid,
+            data: data.to_vec(),
+        }]);
 
         let parsed = parse_car_v1(&car).unwrap();
         assert_eq!(parsed.blocks.len(), 1);

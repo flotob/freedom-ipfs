@@ -1,10 +1,12 @@
 use cid::Cid;
 use freedom_ipfs_core::{
-    parse_car_v1, verify_block, Block, BlockProvider, CoreError, Result as CoreResult,
+    encode_car_v1, parse_car_v1, verify_block, Block, BlockProvider, CarBlock, CoreError,
+    Result as CoreResult,
 };
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -158,6 +160,25 @@ impl SqliteBlockStore {
             imported.push(block.cid);
         }
         Ok(imported)
+    }
+
+    pub fn export_car(&self) -> Result<Vec<u8>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT cid, data FROM blocks ORDER BY inserted_at ASC")?;
+        let blocks = stmt
+            .query_map([], |row| {
+                let cid_bytes = row.get::<_, Vec<u8>>(0)?;
+                let data = row.get::<_, Vec<u8>>(1)?;
+                Ok((cid_bytes, data))
+            })?
+            .map(|row| {
+                let (cid_bytes, data) = row?;
+                let cid = Cid::read_bytes(&mut Cursor::new(cid_bytes))
+                    .map_err(|err| CoreError::InvalidCid(err.to_string()))?;
+                Ok(CarBlock { cid, data })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(encode_car_v1(&blocks))
     }
 
     pub fn put_provider_records(
@@ -374,6 +395,21 @@ mod tests {
 
         assert!(store.total_bytes().unwrap() <= 20);
         assert_eq!(store.block_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn exports_cache_as_importable_car() {
+        let source = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let data = b"car export block";
+        let cid = cid_from_data(CODEC_RAW, data);
+        source.put_block(&cid, data).unwrap();
+
+        let car = source.export_car().unwrap();
+        let target = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let imported = target.import_car(&car).unwrap();
+
+        assert_eq!(imported, vec![cid]);
+        assert_eq!(target.get(&cid).unwrap().unwrap().data(), data);
     }
 
     #[test]

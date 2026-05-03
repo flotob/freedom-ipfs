@@ -10,7 +10,7 @@ Detailed prompt-to-artifact audit: `docs/completion-audit.md`
 
 This is a running Rust IPFS reader, not just a scaffold. It starts a local gateway, resolves externally supplied `/ipfs` and `/ipns` paths, discovers providers through delegated routing with light-DHT fallback, retrieves verified blocks through HTTP providers and Bitswap, reads UnixFS data, and serves browser-facing responses and HTML error pages from the local gateway.
 
-The implementation remains iOS-first. Linux verification, live public-network retrieval, and macOS/Xcode XCFramework plus simulator command-line and app-rendering smoke verification have passed. Production browser-app integration and real-device resource profiling still require target iPhones; `docs/ios-device-verification.md` is the runbook for that final gate, `docs/ios-device-evidence-template.csv` is the structured measurement template, and `cargo run -p xtask -- validate-ios-device-evidence <results.csv> --filled` validates filled device evidence before the audit is closed.
+The implementation remains iOS-first. Linux verification, live public-network retrieval, and macOS/Xcode XCFramework plus simulator command-line and app-rendering smoke verification have passed. Production browser-app integration and real-device resource profiling still require target iPhones; `docs/ios-device-verification.md` is the runbook for that final gate, `docs/ios-device-evidence-template.csv` is the structured Bee-on/Bee-off measurement template, and `cargo run -p xtask -- validate-ios-device-evidence <results.csv> --filled` validates filled device evidence before the audit is closed.
 
 ## Verification
 

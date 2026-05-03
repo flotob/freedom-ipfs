@@ -66,7 +66,19 @@ const IOS_DEVICE_EVIDENCE_HEADER: [&str; 25] = [
     "notes",
 ];
 
-const IOS_DEVICE_CASES: [&str; 11] = [
+const IOS_DEVICE_IPFS_CASES: [&str; 9] = [
+    "cold_idle",
+    "vitalik_eth",
+    "daicowtf_eth",
+    "dnslink_ipns",
+    "byte_range",
+    "background_foreground",
+    "low_memory",
+    "network_change",
+    "retrieval_soak",
+];
+
+const IOS_DEVICE_CASES: [&str; 10] = [
     "cold_idle",
     "vitalik_eth",
     "daicowtf_eth",
@@ -77,7 +89,28 @@ const IOS_DEVICE_CASES: [&str; 11] = [
     "network_change",
     "retrieval_soak",
     "cold_idle_baseline_bee_only",
-    "cold_idle_ipfs_only",
+];
+
+const IOS_DEVICE_REQUIRED_ROWS: [(&str, &str); 19] = [
+    ("cold_idle", "on"),
+    ("cold_idle", "off"),
+    ("vitalik_eth", "on"),
+    ("vitalik_eth", "off"),
+    ("daicowtf_eth", "on"),
+    ("daicowtf_eth", "off"),
+    ("dnslink_ipns", "on"),
+    ("dnslink_ipns", "off"),
+    ("byte_range", "on"),
+    ("byte_range", "off"),
+    ("background_foreground", "on"),
+    ("background_foreground", "off"),
+    ("low_memory", "on"),
+    ("low_memory", "off"),
+    ("network_change", "on"),
+    ("network_change", "off"),
+    ("retrieval_soak", "on"),
+    ("retrieval_soak", "off"),
+    ("cold_idle_baseline_bee_only", "baseline_on_ipfs_off"),
 ];
 
 fn validate_ios_device_evidence(path: &Path, filled: bool) -> Result<()> {
@@ -125,7 +158,7 @@ fn validate_ios_device_evidence_contents(
         bail!("{label}: no evidence rows");
     }
 
-    let mut seen_cases = BTreeSet::new();
+    let mut seen_rows = BTreeSet::new();
     for (line_no, fields) in records.iter().skip(1) {
         if fields.len() != IOS_DEVICE_EVIDENCE_HEADER.len() {
             bail!(
@@ -135,12 +168,12 @@ fn validate_ios_device_evidence_contents(
             );
         }
         validate_ios_device_evidence_row(label, *line_no, fields, filled)?;
-        seen_cases.insert(fields[0].trim().to_string());
+        seen_rows.insert((fields[0].trim().to_string(), fields[7].trim().to_string()));
     }
 
-    for case_id in IOS_DEVICE_CASES {
-        if !seen_cases.contains(case_id) {
-            bail!("{label}: missing required case_id {case_id}");
+    for (case_id, bee_state) in IOS_DEVICE_REQUIRED_ROWS {
+        if !seen_rows.contains(&(case_id.to_string(), bee_state.to_string())) {
+            bail!("{label}: missing required case_id {case_id} with bee_state {bee_state}");
         }
     }
 
@@ -195,6 +228,8 @@ fn validate_ios_device_evidence_row(
         bail!("{label}:{line_no}: filled evidence row still has placeholder result {result}");
     }
 
+    validate_ios_device_case_matrix_row(label, line_no, fields)?;
+
     for index in [12, 13, 14, 15, 16, 17, 18, 19] {
         parse_optional_f64(
             label,
@@ -212,6 +247,37 @@ fn validate_ios_device_evidence_row(
         bail!("{label}:{line_no}: fail rows must include trace_links or notes");
     }
 
+    Ok(())
+}
+
+fn validate_ios_device_case_matrix_row(
+    label: &str,
+    line_no: usize,
+    fields: &[String],
+) -> Result<()> {
+    let case_id = fields[0].trim();
+    let bee_state = fields[7].trim();
+    let routing_mode = fields[9].trim();
+
+    if case_id == "cold_idle_baseline_bee_only" {
+        if bee_state != "baseline_on_ipfs_off" {
+            bail!("{label}:{line_no}: cold_idle_baseline_bee_only must use bee_state baseline_on_ipfs_off");
+        }
+        if routing_mode != "none" {
+            bail!("{label}:{line_no}: cold_idle_baseline_bee_only must use routing_mode none");
+        }
+        return Ok(());
+    }
+
+    if bee_state == "baseline_on_ipfs_off" {
+        bail!("{label}:{line_no}: bee_state baseline_on_ipfs_off is only valid for cold_idle_baseline_bee_only");
+    }
+    if !IOS_DEVICE_IPFS_CASES.contains(&case_id) {
+        bail!("{label}:{line_no}: unsupported IPFS-enabled case_id {case_id}");
+    }
+    if routing_mode == "none" {
+        bail!("{label}:{line_no}: IPFS-enabled rows must use an IPFS routing mode");
+    }
     Ok(())
 }
 
@@ -1137,13 +1203,31 @@ mod tests {
     fn validates_checked_in_ios_device_evidence_template() {
         let template = include_str!("../../docs/ios-device-evidence-template.csv");
         let rows = validate_ios_device_evidence_contents("template", template, false).unwrap();
-        assert_eq!(rows, IOS_DEVICE_CASES.len());
+        assert_eq!(rows, IOS_DEVICE_REQUIRED_ROWS.len());
+    }
+
+    #[test]
+    fn ios_device_evidence_requires_bee_comparison_rows() {
+        let template = include_str!("../../docs/ios-device-evidence-template.csv");
+        let reduced = template
+            .lines()
+            .filter(|line| !line.starts_with("vitalik_eth,,,,,,,off,"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let error = validate_ios_device_evidence_contents("template", &reduced, false).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("missing required case_id vitalik_eth with bee_state off"),
+            "{error:#}"
+        );
     }
 
     #[test]
     fn filled_pass_row_rejects_resource_target_miss() {
         let mut lines = vec![IOS_DEVICE_EVIDENCE_HEADER.join(",")];
-        for case_id in IOS_DEVICE_CASES {
+        for (case_id, bee_state) in IOS_DEVICE_REQUIRED_ROWS {
             let mut row = vec![""; IOS_DEVICE_EVIDENCE_HEADER.len()];
             row[0] = case_id;
             row[1] = "iPhone";
@@ -1152,9 +1236,13 @@ mod tests {
             row[4] = "freedom";
             row[5] = "bee";
             row[6] = "artifact";
-            row[7] = "on";
+            row[7] = bee_state;
             row[8] = "clean";
-            row[9] = "auto";
+            row[9] = if bee_state == "baseline_on_ipfs_off" {
+                "none"
+            } else {
+                "auto"
+            };
             row[10] = "wifi";
             row[11] = "pass";
             row[12] = "100";

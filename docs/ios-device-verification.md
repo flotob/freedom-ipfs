@@ -57,9 +57,9 @@ Run each case with:
 
 - Bee disabled, Freedom IPFS enabled.
 - Bee enabled, Freedom IPFS enabled.
-- Bee enabled, Freedom IPFS disabled as the baseline for app process deltas.
+- Bee enabled, Freedom IPFS disabled as the cold-idle baseline for app process deltas.
 
-Record device model, iOS version, app commit, Freedom IPFS commit, Bee commit, XCFramework artifact ID, routing mode, cache state, and network type in `docs/ios-device-evidence-template.csv` or an equivalent checked-in run result file.
+Record device model, iOS version, app commit, Freedom IPFS commit, Bee commit, XCFramework artifact ID, routing mode, cache state, and network type in `docs/ios-device-evidence-template.csv` or an equivalent checked-in run result file. The checked-in template and validator require Bee-on and Bee-off rows for every IPFS-enabled case, plus a Bee-only cold-idle baseline row.
 
 ## Test Cases
 
@@ -147,7 +147,7 @@ Use `docs/ios-device-evidence-template.csv` for the full structured record. The 
 
 When this table is filled with passing evidence and linked traces, update `docs/completion-audit.md` and only then mark the overall implementation goal complete.
 
-Before updating the audit, run the filled evidence through the stricter validator:
+Before updating the audit, run the filled evidence through the stricter validator. It rejects missing Bee-on/Bee-off comparison rows, passing rows above the `60 MiB` idle RSS delta or `1%` idle CPU targets, stuck active preloads, and passing rows without trace links:
 
 ```bash
 cargo run -p xtask -- validate-ios-device-evidence path/to/device-results.csv --filled

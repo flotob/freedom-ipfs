@@ -7,8 +7,8 @@ Offline tests currently generate minimal fixtures in Rust so they remain reprodu
 - dag-pb UnixFS file,
 - dag-pb UnixFS directory pointing at a file,
 - missing and malformed block cases through unit tests.
-- Kubo-generated UnixFS directory CAR parity smoke via `make kubo-parity`
-  when `KUBO_BIN` points at an `ipfs` binary.
+- Kubo-generated UnixFS directory and HAMT directory CAR parity smokes via
+  `make kubo-parity` when `KUBO_BIN` points at an `ipfs` binary.
 
 Follow-up fixture work:
 

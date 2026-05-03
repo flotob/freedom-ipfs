@@ -445,7 +445,6 @@ fn bitswap_connection_limits() -> connection_limits::ConnectionLimits {
         .with_max_pending_outgoing(Some(BITSWAP_MAX_PENDING_OUTGOING_CONNECTIONS))
         .with_max_established_outgoing(Some(BITSWAP_MAX_ESTABLISHED_CONNECTIONS))
         .with_max_established(Some(BITSWAP_MAX_ESTABLISHED_CONNECTIONS))
-        .with_max_established_per_peer(Some(1))
 }
 
 async fn bitswap_peers(providers: &[Provider]) -> Vec<BitswapPeer> {

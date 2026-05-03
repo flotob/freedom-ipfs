@@ -608,6 +608,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_invalid_and_unsatisfiable_byte_ranges() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let data = b"0123456789";
+        let cid = cid_from_data(CODEC_RAW, data);
+        store.put_block(&cid, data).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router(store);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{addr}/ipfs/{cid}");
+        let client = reqwest::Client::new();
+        for (range, status) in [
+            ("items=2-5", StatusCode::BAD_REQUEST),
+            ("bytes=abc-5", StatusCode::BAD_REQUEST),
+            ("bytes=8-2", StatusCode::RANGE_NOT_SATISFIABLE),
+            ("bytes=20-30", StatusCode::RANGE_NOT_SATISFIABLE),
+            ("bytes=-0", StatusCode::RANGE_NOT_SATISFIABLE),
+        ] {
+            let response = client.get(&url).header(RANGE, range).send().await.unwrap();
+            assert_eq!(response.status(), status, "{range}");
+        }
+    }
+
+    #[tokio::test]
     async fn streams_full_response_across_chunks() {
         let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
         let data = (0..(GATEWAY_STREAM_CHUNK_SIZE as usize + 17))

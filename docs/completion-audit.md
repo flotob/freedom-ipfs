@@ -7,7 +7,7 @@ Spec: `/root/codex/mobile-rust-ipfs-node-spec.md`
 
 ## Verdict
 
-The Linux-verifiable MVP implementation is substantially present and running, and the iOS XCFramework/simulator smoke gates now pass in GitHub Actions. The full thread goal is not complete yet because real-device integration and resource validation remain.
+The Linux-verifiable MVP implementation is substantially present and running, and the iOS XCFramework/simulator command-line plus app-rendering smoke gates now pass in GitHub Actions. The full thread goal is not complete yet because real-device integration and resource validation remain.
 
 The remaining required evidence depends on the Freedom iOS app and target iPhones:
 
@@ -28,9 +28,9 @@ make live-smoke && make live-corpus
 Apple-platform CI evidence:
 
 ```text
-GitHub Actions iOS XCFramework run 25269150599 passed on 2026-05-03
-Head SHA: 9b56d9a0ea89827d72202e7024b643624ae1ba91
-Job URL: https://github.com/flotob/freedom-ipfs/actions/runs/25269150599/job/74088582571
+GitHub Actions iOS XCFramework run 25269506173 passed on 2026-05-03
+Head SHA: 7d22145d58f0671887c43b8eb8a97c8eb4ef90bd
+Job URL: https://github.com/flotob/freedom-ipfs/actions/runs/25269506173/job/74089446675
 ```
 
 Earlier checks for unchanged areas:
@@ -50,7 +50,7 @@ Results:
 - Public corpus smoke passed for the checked-in `vitalik-home` and `daicowtf-home` entries with the same byte counts and retrieval stats.
 - Kubo parity passed for generated UnixFS site files, directory-index fallback, range reads, and HAMT directories.
 - Local cached-gateway soak passed: `500` requests, Linux RSS from `8960` KiB to `13312` KiB.
-- GitHub Actions `iOS XCFramework` passed on `macos-15` with Xcode 16.4. It built the real `FreedomIpfs.xcframework`, verified headers/module maps/exported C symbols, booted an iOS simulator, compiled and linked the Swift wrapper smoke, started the local gateway in the simulator via `simctl spawn booted`, fetched the CAR fixture through loopback, stopped the gateway, and uploaded `FreedomIpfs.xcframework` as artifact ID `6767876928` (`59993959` bytes).
+- GitHub Actions `iOS XCFramework` passed on `macos-15` with Xcode 16.4. It built the real `FreedomIpfs.xcframework`, verified headers/module maps/exported C symbols, booted an iOS simulator, compiled and linked the Swift wrapper smoke, started the local gateway in the simulator via `simctl spawn booted`, fetched the CAR fixture through loopback, stopped the gateway, built and installed a generated UIKit/WebKit simulator app, imported the same CAR fixture, started the gateway from app process, fetched `/ipfs/{cid}` through loopback with `URLSession`, rendered the HTML in `WKWebView`, verified the DOM marker with JavaScript, and uploaded `FreedomIpfs.xcframework` as artifact ID `6767974097` (`59993954` bytes).
 - `xtask build-xcframework` and `xtask verify-xcframework` still correctly refuse to run on Linux with the macOS/Xcode requirement message.
 
 ## Prompt-To-Artifact Checklist
@@ -97,13 +97,13 @@ Results:
 | Lazy/idle network behavior | DHT swarms are per lookup; Bitswap sessions are bounded; no background maintenance loops are apparent. | Partially verified; device/network inspection still needed |
 | Routing modes | `auto`, `delegated`, `light_dht`, `offline` paths exist across CLI/mobile/gateway constructors. | Done |
 | iOS-first C ABI | `freedom-ipfs-mobile`, `ffi/include/freedom_ipfs.h`, and lifecycle/cache/gateway/preload APIs exist. | Done |
-| Swift wrapper | `ffi/swift/FreedomIpfsReader.swift` exists with gateway start/stop, stats, cache, lifecycle, preload/cancel, multi-router, and local URL mapping helpers; GitHub Actions Swift simulator smoke compiled and linked it against the XCFramework. | Done for simulator smoke; app integration unverified |
+| Swift wrapper | `ffi/swift/FreedomIpfsReader.swift` exists with gateway start/stop, stats, cache, lifecycle, preload/cancel, multi-router, and local URL mapping helpers; GitHub Actions Swift simulator smoke compiled and linked it against the XCFramework, and a generated UIKit/WebKit app rendered a local gateway fixture through `WKWebView`. | Done for simulator smoke; Freedom app integration unverified |
 | XCFramework build skeleton | `xtask build-xcframework` builds iOS targets, packages headers/module map, checks artifact structure/exported symbols using Rust `llvm-nm`, and produced `FreedomIpfs.xcframework` in GitHub Actions. | Done in macOS CI |
-| XCFramework verifier | `xtask verify-xcframework` checks slices, headers, module maps, exported symbols, and a simulator Swift smoke on macOS; GitHub Actions run `25269150599` passed. | Done in macOS CI |
-| Simulator smoke link/start | `xtask verify-xcframework` builds a Swift simulator executable that imports a generated CAR fixture, starts the local gateway, fetches the fixture through loopback, and stops the gateway using `simctl spawn booted`; GitHub Actions run `25269150599` passed. | Done in macOS CI |
+| XCFramework verifier | `xtask verify-xcframework` checks slices, headers, module maps, exported symbols, a simulator Swift command-line gateway smoke, and a generated simulator app-rendering smoke on macOS; GitHub Actions run `25269506173` passed. | Done in macOS CI |
+| Simulator smoke link/start/render | `xtask verify-xcframework` builds a Swift simulator executable that imports a generated CAR fixture, starts the local gateway, fetches the fixture through loopback, and stops the gateway using `simctl spawn booted`; it also builds, installs, and launches a generated UIKit/WebKit app that imports the fixture, serves it through the local gateway, and verifies `WKWebView` DOM content; GitHub Actions run `25269506173` passed. | Done in macOS CI |
 | Real iPhone resource target under 60 MiB RSS beside Bee | Required by spec. | Missing, needs device |
 | Lifecycle hooks | ABI/Swift hooks for background, foreground, low memory, network change; unit tests cover behavior. | Implemented; host-app/device wiring unverified |
-| Browser integration helpers | Local gateway URL, `ipfs://`/`ipns://`/gateway-style URL mapping helpers, preload/cancel with path/URI/bare-CID normalization, cache stats/control. | Swift compile/link verified in simulator smoke; app integration unverified |
+| Browser integration helpers | Local gateway URL, `ipfs://`/`ipns://`/gateway-style URL mapping helpers, preload/cancel with path/URI/bare-CID normalization, cache stats/control. | Swift compile/link and generated `WKWebView` app smoke verified in simulator; Freedom app integration unverified |
 | Live ENS-backed smoke | `make live-smoke` resolves `vitalik.eth` and `daicowtf.eth` at runtime, mounts the online IPNS/DNSLink resolver, and fetches through the local gateway. | Done on Linux |
 | Public CID corpus | Small checked-in corpus and opt-in smoke. | Started; should grow |
 | Kubo parity | Deterministic Kubo-generated UnixFS/HAMT/range/directory-index parity tests. | Started; should grow |
@@ -112,11 +112,10 @@ Results:
 
 ## Remaining Work To Close The Goal
 
-1. Expand the simulator smoke into an app-rendering check if needed by the Freedom browser integration.
-2. Integrate the Swift wrapper into the Freedom iOS app and wire background/foreground, low-memory, and network-path events.
-3. Profile real devices with Bee running beside this node and record RSS, CPU, startup, active retrieval, and idle network behavior.
-4. Expand the public corpus with more stable IPFS/IPNS/DNSLink paths and larger/range-media cases.
-5. Add longer host and device soaks for live retrieval, not just cached local reads.
+1. Integrate the Swift wrapper into the Freedom iOS app and wire background/foreground, low-memory, and network-path events.
+2. Profile real devices with Bee running beside this node and record RSS, CPU, startup, active retrieval, and idle network behavior.
+3. Expand the public corpus with more stable IPFS/IPNS/DNSLink paths and larger/range-media cases.
+4. Add longer host and device soaks for live retrieval, not just cached local reads.
 
 ## Completion Rule
 

@@ -54,7 +54,7 @@ Early implementation. Current code supports:
 - bounded 16 MiB in-memory hot block cache in front of the SQLite cache,
 - CAR import/export for tests, diagnostics, and cache warmup,
 - mobile lifecycle hooks for background/foreground, low-memory cache trimming, and network-change provider cache hygiene,
-- an iOS staticlib/XCFramework build skeleton with staged C headers/module map, exported-symbol verification, a simulator Swift gateway smoke in the verifier, and a Swift wrapper for persistent-cache node creation, cache import/export, cache trimming, routing-mode selection, multi-router configuration, local gateway URL mapping, lifecycle hooks, preload/cancel for `/ipfs`, `/ipns`, `ipfs://`, `ipns://`, and bare-CID inputs, and offline/online gateway start.
+- an iOS staticlib/XCFramework build skeleton with staged C headers/module map, exported-symbol verification, a simulator Swift gateway smoke, a generated UIKit/WebKit app-rendering smoke in the verifier, and a Swift wrapper for persistent-cache node creation, cache import/export, cache trimming, routing-mode selection, multi-router configuration, local gateway URL mapping, lifecycle hooks, preload/cancel for `/ipfs`, `/ipns`, `ipfs://`, `ipns://`, and bare-CID inputs, and offline/online gateway start.
 
 Still incomplete: resource profiling on device, network path integration in the host app, and hardened DHT-only retrieval for sites whose DHT providers are slow or stale. See [docs/completion-audit.md](docs/completion-audit.md) for the current prompt-to-artifact checklist.
 
@@ -95,7 +95,7 @@ On macOS with Xcode command line tools installed, build the iOS static libraries
 cargo run -p xtask -- build-xcframework
 ```
 
-Verify an existing XCFramework artifact. This requires a booted iOS simulator because it also runs the Swift gateway smoke through `simctl spawn booted`:
+Verify an existing XCFramework artifact. This requires a booted iOS simulator because it runs the Swift gateway smoke through `simctl spawn booted`, then installs and launches a generated UIKit/WebKit app that renders a CAR-backed fixture through the local gateway:
 
 ```bash
 cargo run -p xtask -- verify-xcframework
@@ -103,7 +103,7 @@ cargo run -p xtask -- verify-xcframework
 
 The generated XCFramework is a static library package. iOS apps linking it must also link `SystemConfiguration.framework`.
 
-The `.github/workflows/ios-xcframework.yml` workflow runs the macOS build and simulator smoke in CI and uploads the generated XCFramework artifact.
+The `.github/workflows/ios-xcframework.yml` workflow runs the macOS build and simulator command-line/app-rendering smoke in CI and uploads the generated XCFramework artifact.
 
 Live smoke test, intentionally ignored by default because it uses the public IPFS network:
 

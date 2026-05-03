@@ -89,7 +89,7 @@ M3 UnixFS reader and offline gateway: complete for MVP. Raw, dag-pb, multi-block
 
 M4 IPNS and DNSLink: implemented. DNSLink uses Cloudflare DoH through a pluggable trait. IPNS delegated lookup, light-DHT fallback, v2 verification, expiry checks, recursion-limit failure, and name caching are implemented and tested. Native/system TXT lookup remains a follow-up.
 
-M5 delegated routing and verified HTTP retrieval: implemented. Delegated Routing V1 parsing, bounded delegated response size/provider fanout, provider caching, HTTP raw block retrieval, CID verification, redirect-disabled provider block fetches, bad-provider suppression, and HTTP timeouts are implemented.
+M5 delegated routing and verified HTTP retrieval: implemented. Delegated Routing V1 parsing, bounded delegated response size/provider fanout, provider caching, HTTP raw block retrieval, CID verification, invalid/redirected provider block rejection, bad-provider suppression, and HTTP timeouts are implemented.
 
 M6 minimal Bitswap client: implemented for read-only retrieval. It dials bounded provider candidates, supports TCP/WebSocket/QUIC transports, includes libp2p identify/ping behaviours, applies libp2p connection timeout/connection-limit guards, verifies returned blocks, caches extra payload blocks, and sends cancels. It does not serve blocks. The retrieval crate includes a deterministic in-process libp2p Bitswap peer test that validates stream negotiation, block response handling, cache insertion, and cancel emission.
 

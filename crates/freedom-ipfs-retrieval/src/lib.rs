@@ -1198,6 +1198,66 @@ mod bitswap_tests {
         server_task.abort();
     }
 
+    #[tokio::test]
+    async fn rejects_invalid_http_provider_blocks() {
+        let expected = b"expected block";
+        let invalid = b"wrong block bytes";
+        let cid = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, expected);
+        let (addr, server_task) = spawn_static_http_provider(invalid.to_vec()).await;
+        let provider_url = format!("http://{}:{}/", addr.ip(), addr.port());
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let retriever = HttpRetriever::new(
+            freedom_ipfs_routing::DelegatedRoutingClient::new("http://127.0.0.1:9/routing/v1"),
+            store.clone(),
+        );
+        let provider = Provider::from_parts(
+            None,
+            vec![format!("/ip4/{}/tcp/{}/http", addr.ip(), addr.port())],
+        )
+        .unwrap_or_else(|_| panic!("failed to build HTTP provider for {addr}"));
+
+        let err = retriever
+            .fetch_from_providers_with_source(&cid, &[provider])
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, RetrievalError::NoHttpProviders));
+        assert!(store.get(&cid).unwrap().is_none());
+        assert!(store.is_bad_provider(&provider_url).unwrap());
+        server_task.abort();
+    }
+
+    async fn spawn_static_http_provider(
+        data: Vec<u8>,
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let data = data.clone();
+                tokio::spawn(async move {
+                    let mut request = vec![0u8; 4096];
+                    if stream.read(&mut request).await.is_err() {
+                        return;
+                    }
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        data.len()
+                    )
+                    .into_bytes()
+                    .into_iter()
+                    .chain(data)
+                    .collect::<Vec<_>>();
+                    let _ = stream.write_all(&response).await;
+                });
+            }
+        });
+        (addr, task)
+    }
+
     async fn spawn_redirecting_http_provider(
         cid: Cid,
         data: Vec<u8>,

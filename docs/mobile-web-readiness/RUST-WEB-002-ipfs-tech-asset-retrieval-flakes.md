@@ -110,12 +110,14 @@ Warm-cache behavior against one reused gateway remained fast:
 ```text
 cargo run -p mobile-web-harness -- \
   --case ipfs-tech-page-assets \
+  --warmup-runs 1 \
   --repeat 5 \
-  --output /tmp/ipfs-tech-repeat-after-shared-default8.json
+  --output /tmp/ipfs-tech-warm-after-shared-default6.json
 
 passed=5 failed=0 pass_rate=100.0%
-first measured run total=43202ms
-subsequent measured run totals: 355ms, 254ms, 354ms, 427ms
+root_ttfb p50=25ms p90=40ms p95=40ms max=40ms
+asset_ttfb p50=32ms p90=104ms p95=134ms max=236ms
+measured run totals: 348ms, 330ms, 341ms, 354ms, 307ms
 ```
 
 ## Expected

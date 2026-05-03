@@ -332,6 +332,18 @@ import FreedomIpfs
 enum FreedomIpfsSmoke {{
     static func main() async throws {{
         _ = FreedomIpfsReader.version
+        let rejectedReader = try FreedomIpfsReader()
+        do {{
+            try rejectedReader.startGateway(address: "0.0.0.0:0")
+            fatalError("non-loopback gateway bind unexpectedly succeeded")
+        }} catch FreedomIpfsReaderError.startGatewayFailed {{
+        }} catch {{
+            fatalError("unexpected non-loopback gateway bind error: \(error)")
+        }}
+        guard rejectedReader.gatewayURL == nil else {{
+            fatalError("rejected gateway unexpectedly reported a URL")
+        }}
+
         let reader = try FreedomIpfsReader()
         try reader.importCar(Data([{fixture_car}]))
         try reader.startGateway()

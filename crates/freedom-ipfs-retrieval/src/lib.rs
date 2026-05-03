@@ -6,7 +6,7 @@ use freedom_ipfs_core::{
 use freedom_ipfs_namesys::{CloudflareDohResolver, DnsTxtResolver};
 use freedom_ipfs_routing::{Provider, ProviderRoutingClient};
 use freedom_ipfs_store::{CachedProviderRecord, SqliteBlockStore};
-use futures::future::BoxFuture;
+use futures::future::{BoxFuture, FutureExt, Shared};
 use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use futures::stream::{select_all, FuturesUnordered};
 use futures::StreamExt;
@@ -25,7 +25,7 @@ use std::io;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
@@ -35,11 +35,15 @@ const PROVIDER_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const BAD_HTTP_PROVIDER_TTL: Duration = Duration::from_secs(10 * 60);
 const HTTP_PROVIDER_TIMEOUT: Duration = Duration::from_secs(20);
 const BITSWAP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+const BITSWAP_WANT_HAVE_TIMEOUT: Duration = Duration::from_secs(5);
 const BITSWAP_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
+const BITSWAP_SUCCESSFUL_PEER_TTL: Duration = Duration::from_secs(10 * 60);
 const BITSWAP_MAX_PENDING_OUTGOING_CONNECTIONS: u32 = 16;
 const BITSWAP_MAX_ESTABLISHED_CONNECTIONS: u32 = 16;
 const MAX_BITSWAP_PEERS_PER_BLOCK: usize = 16;
 const MAX_BITSWAP_ADDRS_PER_PEER: usize = 4;
+const MAX_INFLIGHT_BLOCK_FETCHES: usize = 256;
+const BLOCK_FETCH_COALESCE_HEDGE_AFTER: Duration = Duration::from_secs(8);
 const CID_VERSION_0: u64 = 0;
 const CID_VERSION_1: u64 = 1;
 const BLOCK_PRESENCE_HAVE: i32 = 0;
@@ -115,7 +119,12 @@ pub struct HttpRetriever {
     routing: ProviderRoutingClient,
     store: SqliteBlockStore,
     bitswap: Arc<tokio::sync::Mutex<Option<SharedBitswapClient>>>,
+    inflight: Arc<tokio::sync::Mutex<HashMap<Cid, SharedBlockFetch>>>,
+    successful_bitswap_peers: Arc<tokio::sync::Mutex<HashMap<PeerId, Instant>>>,
 }
+
+type SharedBlockFetch = Shared<BoxFuture<'static, Arc<SharedBlockFetchResult>>>;
+type SharedBlockFetchResult = std::result::Result<(Block, RetrievalSource), String>;
 
 impl HttpRetriever {
     pub fn new(routing: impl Into<ProviderRoutingClient>, store: SqliteBlockStore) -> Self {
@@ -124,6 +133,8 @@ impl HttpRetriever {
             routing: routing.into(),
             store,
             bitswap: Arc::new(tokio::sync::Mutex::new(None)),
+            inflight: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            successful_bitswap_peers: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -134,24 +145,175 @@ impl HttpRetriever {
     }
 
     pub async fn fetch_block_with_source(&self, cid: &Cid) -> Result<(Block, RetrievalSource)> {
+        let fetch_started = Instant::now();
+        let cache_started = Instant::now();
         if let Some(block) = self.store.get(cid)? {
+            tracing::info!(
+                phase = "block_store_get",
+                cid = %cid,
+                cache_hit = true,
+                elapsed_ms = cache_started.elapsed().as_millis()
+            );
+            tracing::info!(
+                phase = "block_fetch_total",
+                cid = %cid,
+                source = "cache",
+                elapsed_ms = fetch_started.elapsed().as_millis()
+            );
             return Ok((block, RetrievalSource::Cache));
         }
+        tracing::info!(
+            phase = "block_store_get",
+            cid = %cid,
+            cache_hit = false,
+            elapsed_ms = cache_started.elapsed().as_millis()
+        );
 
+        let (block, source) = self.fetch_block_uncached_coalesced(*cid).await?;
+        tracing::info!(
+            phase = "block_fetch_total",
+            cid = %cid,
+            source = retrieval_source_label(source),
+            elapsed_ms = fetch_started.elapsed().as_millis()
+        );
+        Ok((block, source))
+    }
+
+    async fn fetch_block_uncached_coalesced(&self, cid: Cid) -> Result<(Block, RetrievalSource)> {
+        let wait_started = Instant::now();
+        let mut inflight = self.inflight.lock().await;
+        if let Some(fetch) = inflight.get(&cid).cloned() {
+            drop(inflight);
+            return tokio::select! {
+                result = fetch => {
+                    tracing::info!(
+                        phase = "block_fetch_coalesced",
+                        cid = %cid,
+                        leader = false,
+                        hedged = false,
+                        elapsed_ms = wait_started.elapsed().as_millis()
+                    );
+                    shared_block_fetch_result(result)
+                }
+                _ = tokio::time::sleep(BLOCK_FETCH_COALESCE_HEDGE_AFTER) => {
+                    tracing::info!(
+                        phase = "block_fetch_coalesced",
+                        cid = %cid,
+                        leader = false,
+                        hedged = true,
+                        elapsed_ms = wait_started.elapsed().as_millis()
+                    );
+                    self.fetch_block_uncached_with_source(&cid).await
+                }
+            };
+        }
+
+        if inflight.len() >= MAX_INFLIGHT_BLOCK_FETCHES {
+            drop(inflight);
+            tracing::info!(
+                phase = "block_fetch_coalesced",
+                cid = %cid,
+                leader = true,
+                bypassed = true,
+                inflight_count = MAX_INFLIGHT_BLOCK_FETCHES,
+                elapsed_ms = wait_started.elapsed().as_millis()
+            );
+            return self.fetch_block_uncached_with_source(&cid).await;
+        }
+
+        let retriever = self.clone();
+        let fetch = async move {
+            Arc::new(
+                retriever
+                    .fetch_block_uncached_with_source(&cid)
+                    .await
+                    .map_err(|err| err.to_string()),
+            )
+        }
+        .boxed()
+        .shared();
+        inflight.insert(cid, fetch.clone());
+        let inflight_count = inflight.len();
+        drop(inflight);
+
+        let result = fetch.await;
+        let mut inflight = self.inflight.lock().await;
+        inflight.remove(&cid);
+        drop(inflight);
+        tracing::info!(
+            phase = "block_fetch_coalesced",
+            cid = %cid,
+            leader = true,
+            bypassed = false,
+            inflight_count,
+            elapsed_ms = wait_started.elapsed().as_millis()
+        );
+        shared_block_fetch_result(result)
+    }
+
+    async fn fetch_block_uncached_with_source(
+        &self,
+        cid: &Cid,
+    ) -> Result<(Block, RetrievalSource)> {
+        let provider_cache_started = Instant::now();
         let providers = match self.cached_providers(cid)? {
-            Some(providers) => providers,
+            Some(providers) => {
+                tracing::info!(
+                    phase = "provider_cache",
+                    cid = %cid,
+                    cache_hit = true,
+                    provider_count = providers.len(),
+                    elapsed_ms = provider_cache_started.elapsed().as_millis()
+                );
+                providers
+            }
             None => {
+                tracing::info!(
+                    phase = "provider_cache",
+                    cid = %cid,
+                    cache_hit = false,
+                    elapsed_ms = provider_cache_started.elapsed().as_millis()
+                );
+                let routing_started = Instant::now();
                 let providers = self.routing.providers(cid).await?;
+                tracing::info!(
+                    phase = "provider_lookup",
+                    cid = %cid,
+                    provider_count = providers.len(),
+                    elapsed_ms = routing_started.elapsed().as_millis()
+                );
                 self.cache_providers(cid, &providers)?;
                 providers
             }
         };
         match self.fetch_from_providers_with_source(cid, &providers).await {
-            Ok(block) => Ok(block),
+            Ok((block, source)) => Ok((block, source)),
             Err(err) if should_refresh_providers_after_failure(&err) => {
+                tracing::info!(
+                    phase = "provider_refresh_after_failure",
+                    cid = %cid,
+                    initial_error = %err
+                );
+                let routing_started = Instant::now();
                 let refreshed = match self.routing.providers(cid).await {
-                    Ok(providers) => providers,
+                    Ok(providers) => {
+                        tracing::info!(
+                            phase = "provider_lookup",
+                            cid = %cid,
+                            provider_count = providers.len(),
+                            refreshed = true,
+                            elapsed_ms = routing_started.elapsed().as_millis()
+                        );
+                        providers
+                    }
                     Err(refresh_err) => {
+                        tracing::info!(
+                            phase = "provider_lookup",
+                            cid = %cid,
+                            refreshed = true,
+                            error = %refresh_err,
+                            elapsed_ms = routing_started.elapsed().as_millis()
+                        );
                         tracing::debug!(
                             cid = %cid,
                             error = %refresh_err,
@@ -165,7 +327,7 @@ impl HttpRetriever {
                 }
                 self.cache_providers(cid, &refreshed)?;
                 match self.fetch_from_providers_with_source(cid, &refreshed).await {
-                    Ok(block) => Ok(block),
+                    Ok((block, source)) => Ok((block, source)),
                     Err(refresh_err) => Err(RetrievalError::Bitswap(format!(
                         "initial provider retrieval failed ({err}); refreshed provider retrieval failed ({refresh_err})"
                     ))),
@@ -186,15 +348,38 @@ impl HttpRetriever {
         cid: &Cid,
         providers: &[Provider],
     ) -> Result<(Block, RetrievalSource)> {
+        tracing::info!(
+            phase = "provider_fetch_start",
+            cid = %cid,
+            provider_count = providers.len()
+        );
         for provider in providers {
             for base in &provider.http_urls {
                 if self.store.is_bad_provider(base.as_str())? {
                     tracing::debug!(provider = %base, "skipping temporarily bad HTTP provider");
                     continue;
                 }
+                let started = Instant::now();
                 match self.fetch_from_http_provider(cid, base).await {
-                    Ok(block) => return Ok((block, RetrievalSource::HttpProvider)),
+                    Ok(block) => {
+                        tracing::info!(
+                            phase = "http_provider_fetch",
+                            cid = %cid,
+                            provider = %base,
+                            ok = true,
+                            elapsed_ms = started.elapsed().as_millis()
+                        );
+                        return Ok((block, RetrievalSource::HttpProvider));
+                    }
                     Err(err) => {
+                        tracing::info!(
+                            phase = "http_provider_fetch",
+                            cid = %cid,
+                            provider = %base,
+                            ok = false,
+                            error = %err,
+                            elapsed_ms = started.elapsed().as_millis()
+                        );
                         let _ = self.store.mark_bad_provider(
                             base.as_str(),
                             &err.to_string(),
@@ -262,7 +447,17 @@ impl HttpRetriever {
         cid: &Cid,
         providers: &[Provider],
     ) -> Result<Block> {
+        let peer_started = Instant::now();
         let mut peers = bitswap_peers(providers).await;
+        self.apply_successful_bitswap_peer_scores(&mut peers).await;
+        tracing::info!(
+            phase = "bitswap_peer_expand",
+            cid = %cid,
+            provider_count = providers.len(),
+            peer_count = peers.len(),
+            trusted_peer_count = peers.iter().filter(|peer| peer.skip_want_have).count(),
+            elapsed_ms = peer_started.elapsed().as_millis()
+        );
         peers.retain(
             |peer| match self.store.is_bad_provider(&peer.id.to_string()) {
                 Ok(false) => true,
@@ -282,6 +477,8 @@ impl HttpRetriever {
             return Err(RetrievalError::NoBitswapProviders);
         }
 
+        let bitswap_started = Instant::now();
+        let peer_count = peers.len();
         let result = self
             .shared_bitswap_client()
             .await?
@@ -289,8 +486,31 @@ impl HttpRetriever {
             .await?;
         let result = match result {
             Ok(result) => result,
-            Err(err) => return Err(err),
+            Err(err) => {
+                tracing::info!(
+                    phase = "bitswap_fetch",
+                    cid = %cid,
+                    peer_count,
+                    ok = false,
+                    error = %err,
+                    elapsed_ms = bitswap_started.elapsed().as_millis()
+                );
+                return Err(err);
+            }
         };
+        tracing::info!(
+            phase = "bitswap_fetch",
+            cid = %cid,
+            peer_count,
+            ok = true,
+            source_peer = result.source_peer.map(|peer| peer.to_string()).unwrap_or_default(),
+            extra_blocks = result.extra_blocks.len(),
+            bytes = result.requested_block.len(),
+            elapsed_ms = bitswap_started.elapsed().as_millis()
+        );
+        if let Some(peer) = result.source_peer {
+            self.record_successful_bitswap_peer(peer).await;
+        }
         for (extra_cid, extra_data) in &result.extra_blocks {
             if extra_cid != cid {
                 let _ = self.store.put_block(extra_cid, extra_data);
@@ -308,6 +528,40 @@ impl HttpRetriever {
         let spawned = SharedBitswapClient::spawn().await?;
         *client = Some(spawned.clone());
         Ok(spawned)
+    }
+
+    async fn apply_successful_bitswap_peer_scores(&self, peers: &mut [BitswapPeer]) {
+        let now = Instant::now();
+        let mut successes = self.successful_bitswap_peers.lock().await;
+        successes.retain(|_, seen_at| now.duration_since(*seen_at) <= BITSWAP_SUCCESSFUL_PEER_TTL);
+        for peer in peers.iter_mut() {
+            peer.skip_want_have = successes.contains_key(&peer.id);
+        }
+        peers.sort_by_key(|peer| !peer.skip_want_have);
+    }
+
+    async fn record_successful_bitswap_peer(&self, peer: PeerId) {
+        let mut successes = self.successful_bitswap_peers.lock().await;
+        successes.insert(peer, Instant::now());
+    }
+}
+
+fn retrieval_source_label(source: RetrievalSource) -> &'static str {
+    match source {
+        RetrievalSource::Cache => "cache",
+        RetrievalSource::HttpProvider => "http_provider",
+        RetrievalSource::Bitswap => "bitswap",
+    }
+}
+
+fn shared_block_fetch_result(
+    result: Arc<SharedBlockFetchResult>,
+) -> Result<(Block, RetrievalSource)> {
+    match result.as_ref() {
+        Ok((block, source)) => Ok((block.clone(), *source)),
+        Err(err) => Err(RetrievalError::Bitswap(format!(
+            "coalesced block fetch failed: {err}"
+        ))),
     }
 }
 
@@ -379,12 +633,20 @@ impl BlockProvider for FetchingBlockProvider {
 struct BitswapPeer {
     id: PeerId,
     addrs: Vec<Multiaddr>,
+    skip_want_have: bool,
+}
+
+#[derive(Clone)]
+struct BitswapPeerTarget {
+    id: PeerId,
+    skip_want_have: bool,
 }
 
 #[derive(Clone)]
 struct BitswapFetchResult {
     requested_block: Vec<u8>,
     extra_blocks: Vec<(Cid, Vec<u8>)>,
+    source_peer: Option<PeerId>,
 }
 
 #[derive(Clone)]
@@ -452,10 +714,13 @@ async fn run_shared_bitswap_swarm(
                 pending_incoming.entry(command.cid).or_default().push(incoming_result);
                 *pending_counts.entry(command.cid).or_default() += 1;
 
-                let mut peer_ids = Vec::new();
+                let mut peer_targets = Vec::new();
                 for peer in command.peers {
                     tracing::debug!(peer = %peer.id, addrs = ?peer.addrs, "adding bitswap peer");
-                    peer_ids.push(peer.id);
+                    peer_targets.push(BitswapPeerTarget {
+                        id: peer.id,
+                        skip_want_have: peer.skip_want_have,
+                    });
                     for addr in peer.addrs {
                         swarm.add_peer_address(peer.id, addr.clone());
                         let dial_addr = addr.with_p2p(peer.id).unwrap_or_else(|addr| addr);
@@ -470,7 +735,7 @@ async fn run_shared_bitswap_swarm(
                     tokio::time::sleep(Duration::from_millis(500)).await;
                     let result = fetch_bitswap_with_incoming_streams(
                         control,
-                        peer_ids,
+                        peer_targets,
                         command.cid,
                         incoming_results,
                     ).await;
@@ -488,14 +753,15 @@ async fn run_shared_bitswap_swarm(
                 }
             }
             maybe_stream = incoming.next() => {
-                let Some((_peer, mut stream)) = maybe_stream else {
+                let Some((peer, mut stream)) = maybe_stream else {
                     continue;
                 };
                 match read_bitswap_blocks(&mut stream).await {
                     Ok(blocks) => {
                         let mut matched = false;
                         for cid in pending_incoming.keys().copied().collect::<Vec<_>>() {
-                            if let Some(result) = collect_bitswap_result(&cid, blocks.clone()) {
+                            if let Some(mut result) = collect_bitswap_result(&cid, blocks.clone()) {
+                                result.source_peer = Some(peer);
                                 matched = true;
                                 if let Some(senders) = pending_incoming.get_mut(&cid) {
                                     senders.retain(|sender| sender.send(result.clone()).is_ok());
@@ -639,7 +905,11 @@ fn merge_bitswap_peer(peers: &mut Vec<BitswapPeer>, id: PeerId, addrs: Vec<Multi
         peer.addrs.dedup();
         peer.addrs.truncate(MAX_BITSWAP_ADDRS_PER_PEER);
     } else {
-        peers.push(BitswapPeer { id, addrs });
+        peers.push(BitswapPeer {
+            id,
+            addrs,
+            skip_want_have: false,
+        });
     }
 }
 
@@ -807,12 +1077,12 @@ fn accept_bitswap_streams(control: &mut StreamControl) -> Result<Vec<IncomingStr
 
 async fn fetch_bitswap_with_incoming_streams(
     control: StreamControl,
-    peer_ids: Vec<PeerId>,
+    peers: Vec<BitswapPeerTarget>,
     cid: Cid,
     mut incoming_results: mpsc::UnboundedReceiver<BitswapFetchResult>,
 ) -> Result<BitswapFetchResult> {
     tokio::select! {
-        result = fetch_bitswap_over_outgoing_streams(control, peer_ids, cid) => result,
+        result = fetch_bitswap_over_outgoing_streams(control, peers, cid) => result,
         incoming = incoming_results.recv() => incoming.ok_or_else(|| {
             RetrievalError::Bitswap("incoming bitswap result channel closed".into())
         }),
@@ -821,15 +1091,16 @@ async fn fetch_bitswap_with_incoming_streams(
 
 async fn fetch_bitswap_over_outgoing_streams(
     control: StreamControl,
-    peer_ids: Vec<PeerId>,
+    peers: Vec<BitswapPeerTarget>,
     cid: Cid,
 ) -> Result<BitswapFetchResult> {
     let mut attempts = FuturesUnordered::new();
-    let prefer_want_have = peer_ids.len() > 1;
-    for peer_id in peer_ids {
+    let has_multiple_peers = peers.len() > 1;
+    for peer in peers {
+        let prefer_want_have = has_multiple_peers && !peer.skip_want_have;
         attempts.push(request_bitswap_block(
             control.clone(),
-            peer_id,
+            peer.id,
             cid,
             prefer_want_have,
         ));
@@ -881,7 +1152,10 @@ async fn request_bitswap_block(
 
         if prefer_want_have && protocol_name == "/ipfs/bitswap/1.2.0" {
             match request_bitswap_block_after_want_have(&mut stream, &cid, &protocol_name).await {
-                Ok(result) => return Ok(result),
+                Ok(mut result) => {
+                    result.source_peer = Some(peer_id);
+                    return Ok(result);
+                }
                 Err(WantHaveFailure::TryOtherProtocols(err)) => {
                     failures.push(err);
                     continue;
@@ -894,7 +1168,10 @@ async fn request_bitswap_block(
         }
 
         match request_bitswap_block_on_stream(&mut stream, &cid, &protocol_name).await {
-            Ok(result) => return Ok(result),
+            Ok(mut result) => {
+                result.source_peer = Some(peer_id);
+                return Ok(result);
+            }
             Err(err) => failures.push(err),
         }
     }
@@ -917,7 +1194,7 @@ where
             "{protocol_name}: write want-have failed: {err}"
         )));
     }
-    let response = match timeout(Duration::from_secs(5), read_bitswap_response(stream)).await {
+    let response = match timeout(BITSWAP_WANT_HAVE_TIMEOUT, read_bitswap_response(stream)).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
             return Err(WantHaveFailure::TryOtherProtocols(format!(
@@ -1137,6 +1414,7 @@ fn collect_bitswap_result(
     requested_block.map(|requested_block| BitswapFetchResult {
         requested_block,
         extra_blocks,
+        source_peer: None,
     })
 }
 
@@ -1750,6 +2028,88 @@ mod bitswap_tests {
         server_task.abort();
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn coalesces_concurrent_fetches_for_same_missing_cid() {
+        let data = b"shared missing block";
+        let cid = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, data);
+        let requests = Arc::new(AtomicU64::new(0));
+        let (addr, server_task) = spawn_counting_http_provider(
+            data.to_vec(),
+            Duration::from_millis(200),
+            requests.clone(),
+        )
+        .await;
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        store
+            .put_provider_records(
+                &cid,
+                &[CachedProviderRecord {
+                    id: None,
+                    addrs: vec![format!("/ip4/{}/tcp/{}/http", addr.ip(), addr.port())],
+                }],
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        let retriever = Arc::new(HttpRetriever::new(
+            freedom_ipfs_routing::DelegatedRoutingClient::new("http://127.0.0.1:9/routing/v1"),
+            store.clone(),
+        ));
+        let barrier = Arc::new(tokio::sync::Barrier::new(6));
+        let mut tasks = Vec::new();
+
+        for _ in 0..6 {
+            let retriever = retriever.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                retriever.fetch_block_with_source(&cid).await.unwrap()
+            }));
+        }
+
+        for task in tasks {
+            let (block, source) = task.await.unwrap();
+            assert_eq!(source, RetrievalSource::HttpProvider);
+            assert_eq!(block.data(), data);
+        }
+        assert_eq!(requests.load(Ordering::Relaxed), 1);
+        assert_eq!(store.get(&cid).unwrap().unwrap().data(), data);
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn successful_bitswap_peers_are_preferred_without_want_have() {
+        let preferred =
+            parse_peer_id("12D3KooWNDpFqyse9kR7aZwgEzh4U1mL6Zz6jEuRNFXJxL5D2KPP").unwrap();
+        let other = parse_peer_id("12D3KooWAtxJkDLacJdK7yZkk2iPp8iMdSVh1bDHzmJ3t8oKUkqA").unwrap();
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let retriever = HttpRetriever::new(
+            freedom_ipfs_routing::DelegatedRoutingClient::new("http://127.0.0.1:9/routing/v1"),
+            store,
+        );
+        retriever.record_successful_bitswap_peer(preferred).await;
+        let mut peers = vec![
+            BitswapPeer {
+                id: other,
+                addrs: Vec::new(),
+                skip_want_have: false,
+            },
+            BitswapPeer {
+                id: preferred,
+                addrs: Vec::new(),
+                skip_want_have: false,
+            },
+        ];
+
+        retriever
+            .apply_successful_bitswap_peer_scores(&mut peers)
+            .await;
+
+        assert_eq!(peers[0].id, preferred);
+        assert!(peers[0].skip_want_have);
+        assert_eq!(peers[1].id, other);
+        assert!(!peers[1].skip_want_have);
+    }
+
     async fn spawn_static_http_provider(
         data: Vec<u8>,
     ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
@@ -1766,6 +2126,42 @@ mod bitswap_tests {
                     if stream.read(&mut request).await.is_err() {
                         return;
                     }
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        data.len()
+                    )
+                    .into_bytes()
+                    .into_iter()
+                    .chain(data)
+                    .collect::<Vec<_>>();
+                    let _ = stream.write_all(&response).await;
+                });
+            }
+        });
+        (addr, task)
+    }
+
+    async fn spawn_counting_http_provider(
+        data: Vec<u8>,
+        delay: Duration,
+        requests: Arc<AtomicU64>,
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let data = data.clone();
+                let requests = requests.clone();
+                tokio::spawn(async move {
+                    let mut request = vec![0u8; 4096];
+                    if stream.read(&mut request).await.is_err() {
+                        return;
+                    }
+                    requests.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::sleep(delay).await;
                     let response = format!(
                         "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                         data.len()

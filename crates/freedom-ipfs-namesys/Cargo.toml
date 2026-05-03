@@ -19,6 +19,7 @@ serde.workspace = true
 serde_ipld_dagcbor.workspace = true
 thiserror.workspace = true
 time.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

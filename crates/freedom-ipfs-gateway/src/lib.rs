@@ -17,12 +17,16 @@ use futures::stream;
 use std::collections::HashSet;
 use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
+use tracing::Instrument;
 
 pub const DEFAULT_GATEWAY_MAX_CONCURRENT_REQUESTS: usize = 8;
 const GATEWAY_STREAM_CHUNK_SIZE: u64 = 64 * 1024;
+static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
 pub struct GatewayConfig {
@@ -198,14 +202,60 @@ async fn ipfs_get(
     Path(path): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let Ok(_permit) = state.request_limiter.clone().try_acquire_owned() else {
-        return gateway_error(GatewayError::Busy);
-    };
+    let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let request_path = format!("/ipfs/{path}");
+    let range = header_value_for_trace(headers.get(RANGE));
+    let span = tracing::info_span!(
+        "gateway_request",
+        request_id,
+        namespace = "ipfs",
+        path = %request_path,
+        range = %range
+    );
 
-    match serve_ipfs_path(state.provider.clone(), &path, headers.get(RANGE)).await {
-        Ok(response) => response,
-        Err(err) => gateway_error(err),
+    async move {
+        let request_started = Instant::now();
+        tracing::info!(phase = "request_start", request_id, path = %request_path);
+
+        let limiter_started = Instant::now();
+        let Ok(_permit) = state.request_limiter.clone().try_acquire_owned() else {
+            tracing::info!(
+                phase = "gateway_limiter",
+                request_id,
+                acquired = false,
+                elapsed_ms = limiter_started.elapsed().as_millis()
+            );
+            let response = gateway_error(GatewayError::Busy);
+            tracing::info!(
+                phase = "request_done",
+                request_id,
+                status = response.status().as_u16(),
+                elapsed_ms = request_started.elapsed().as_millis()
+            );
+            return response;
+        };
+        tracing::info!(
+            phase = "gateway_limiter",
+            request_id,
+            acquired = true,
+            elapsed_ms = limiter_started.elapsed().as_millis()
+        );
+
+        let response =
+            match serve_ipfs_path(state.provider.clone(), &path, headers.get(RANGE)).await {
+                Ok(response) => response,
+                Err(err) => gateway_error(err),
+            };
+        tracing::info!(
+            phase = "request_done",
+            request_id,
+            status = response.status().as_u16(),
+            elapsed_ms = request_started.elapsed().as_millis()
+        );
+        response
     }
+    .instrument(span)
+    .await
 }
 
 async fn ipns_get(
@@ -213,21 +263,73 @@ async fn ipns_get(
     Path(path): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let Ok(_permit) = state.request_limiter.clone().try_acquire_owned() else {
-        return gateway_error(GatewayError::Busy);
-    };
+    let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let request_path = format!("/ipns/{path}");
+    let range = header_value_for_trace(headers.get(RANGE));
+    let span = tracing::info_span!(
+        "gateway_request",
+        request_id,
+        namespace = "ipns",
+        path = %request_path,
+        range = %range
+    );
 
-    match serve_ipns_path(
-        state.provider.clone(),
-        state.name_resolver.as_ref(),
-        &path,
-        headers.get(RANGE),
-    )
-    .await
-    {
-        Ok(response) => response,
-        Err(err) => gateway_error(err),
+    async move {
+        let request_started = Instant::now();
+        tracing::info!(phase = "request_start", request_id, path = %request_path);
+
+        let limiter_started = Instant::now();
+        let Ok(_permit) = state.request_limiter.clone().try_acquire_owned() else {
+            tracing::info!(
+                phase = "gateway_limiter",
+                request_id,
+                acquired = false,
+                elapsed_ms = limiter_started.elapsed().as_millis()
+            );
+            let response = gateway_error(GatewayError::Busy);
+            tracing::info!(
+                phase = "request_done",
+                request_id,
+                status = response.status().as_u16(),
+                elapsed_ms = request_started.elapsed().as_millis()
+            );
+            return response;
+        };
+        tracing::info!(
+            phase = "gateway_limiter",
+            request_id,
+            acquired = true,
+            elapsed_ms = limiter_started.elapsed().as_millis()
+        );
+
+        let response = match serve_ipns_path(
+            state.provider.clone(),
+            state.name_resolver.as_ref(),
+            &path,
+            headers.get(RANGE),
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => gateway_error(err),
+        };
+        tracing::info!(
+            phase = "request_done",
+            request_id,
+            status = response.status().as_u16(),
+            elapsed_ms = request_started.elapsed().as_millis()
+        );
+        response
     }
+    .instrument(span)
+    .await
+}
+
+fn header_value_for_trace(value: Option<&HeaderValue>) -> String {
+    value
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string()
 }
 
 async fn serve_ipfs_path(
@@ -244,10 +346,37 @@ async fn serve_ipfs_path_with_listing_path(
     range: Option<&HeaderValue>,
     listing_path: Option<&DirectoryListingPath>,
 ) -> Result<Response, GatewayError> {
+    let parse_started = Instant::now();
     let (cid, unixfs_path) = split_ipfs_path(path)?;
-    let response = match served_resource(provider.as_ref(), &cid, unixfs_path)? {
+    tracing::info!(
+        phase = "ipfs_path_parse",
+        cid = %cid,
+        unixfs_path,
+        elapsed_ms = parse_started.elapsed().as_millis()
+    );
+
+    let resource_started = Instant::now();
+    let resource = served_resource(provider.as_ref(), &cid, unixfs_path)?;
+    let resource_elapsed_ms = resource_started.elapsed().as_millis();
+    let response = match resource {
         ServedResource::File { path, len } => {
+            tracing::info!(
+                phase = "unixfs_resource",
+                cid = %cid,
+                unixfs_path = %path,
+                resource = "file",
+                file_len = len,
+                elapsed_ms = resource_elapsed_ms
+            );
+            let mime_started = Instant::now();
             let mime = mime_for_served_file(provider.as_ref(), &cid, &path, len)?;
+            tracing::info!(
+                phase = "mime_total",
+                cid = %cid,
+                unixfs_path = %path,
+                mime = %mime,
+                elapsed_ms = mime_started.elapsed().as_millis()
+            );
             if let Some(range) = range {
                 ranged_response(provider, cid, path, len, range, &mime)?
             } else {
@@ -255,6 +384,14 @@ async fn serve_ipfs_path_with_listing_path(
             }
         }
         ServedResource::Directory { path, entries } => {
+            tracing::info!(
+                phase = "unixfs_resource",
+                cid = %cid,
+                unixfs_path = %path,
+                resource = "directory",
+                entry_count = entries.len(),
+                elapsed_ms = resource_elapsed_ms
+            );
             if range.is_some() {
                 return Err(GatewayError::BadRequest(
                     "Range requests are not supported for directory listings".into(),
@@ -279,16 +416,46 @@ fn mime_for_served_file(
     path: &str,
     len: u64,
 ) -> Result<String, GatewayError> {
+    let started = Instant::now();
     if let Some(mime) = mime_guess::from_path(path).first() {
+        tracing::info!(
+            phase = "mime_detect",
+            cid = %cid,
+            unixfs_path = path,
+            source = "extension",
+            elapsed_ms = started.elapsed().as_millis()
+        );
         return Ok(mime.to_string());
     }
     if len > 0 {
         let end = (len - 1).min(512);
+        let sniff_started = Instant::now();
         let prefix = read_file_range(provider, cid, path, 0, end).map_err(GatewayError::Unixfs)?;
+        tracing::info!(
+            phase = "mime_sniff_read",
+            cid = %cid,
+            unixfs_path = path,
+            bytes = prefix.len(),
+            elapsed_ms = sniff_started.elapsed().as_millis()
+        );
         if looks_like_html(&prefix) {
+            tracing::info!(
+                phase = "mime_detect",
+                cid = %cid,
+                unixfs_path = path,
+                source = "sniff_html",
+                elapsed_ms = started.elapsed().as_millis()
+            );
             return Ok("text/html".to_string());
         }
     }
+    tracing::info!(
+        phase = "mime_detect",
+        cid = %cid,
+        unixfs_path = path,
+        source = "fallback",
+        elapsed_ms = started.elapsed().as_millis()
+    );
     Ok("application/octet-stream".to_string())
 }
 
@@ -348,23 +515,70 @@ fn served_resource(
     cid: &Cid,
     unixfs_path: &str,
 ) -> Result<ServedResource, GatewayError> {
+    let file_size_started = Instant::now();
     match file_size(provider, cid, unixfs_path) {
-        Ok(len) => Ok(ServedResource::File {
-            path: unixfs_path.to_string(),
-            len,
-        }),
+        Ok(len) => {
+            tracing::info!(
+                phase = "unixfs_file_size",
+                cid = %cid,
+                unixfs_path,
+                outcome = "file",
+                file_len = len,
+                elapsed_ms = file_size_started.elapsed().as_millis()
+            );
+            Ok(ServedResource::File {
+                path: unixfs_path.to_string(),
+                len,
+            })
+        }
         Err(UnixfsError::IsDirectory) => {
+            tracing::info!(
+                phase = "unixfs_file_size",
+                cid = %cid,
+                unixfs_path,
+                outcome = "directory",
+                elapsed_ms = file_size_started.elapsed().as_millis()
+            );
             let index_path = append_path(unixfs_path, "index.html");
+            let index_started = Instant::now();
             match file_size(provider, cid, &index_path) {
-                Ok(len) => Ok(ServedResource::File {
-                    path: index_path,
-                    len,
-                }),
-                Err(UnixfsError::PathNotFound(_)) => Ok(ServedResource::Directory {
-                    path: unixfs_path.to_string(),
-                    entries: list_directory(provider, cid, unixfs_path)
-                        .map_err(GatewayError::Unixfs)?,
-                }),
+                Ok(len) => {
+                    tracing::info!(
+                        phase = "unixfs_index_lookup",
+                        cid = %cid,
+                        unixfs_path = %index_path,
+                        outcome = "file",
+                        file_len = len,
+                        elapsed_ms = index_started.elapsed().as_millis()
+                    );
+                    Ok(ServedResource::File {
+                        path: index_path,
+                        len,
+                    })
+                }
+                Err(UnixfsError::PathNotFound(_)) => {
+                    tracing::info!(
+                        phase = "unixfs_index_lookup",
+                        cid = %cid,
+                        unixfs_path = %index_path,
+                        outcome = "not_found",
+                        elapsed_ms = index_started.elapsed().as_millis()
+                    );
+                    let list_started = Instant::now();
+                    let entries =
+                        list_directory(provider, cid, unixfs_path).map_err(GatewayError::Unixfs)?;
+                    tracing::info!(
+                        phase = "unixfs_list_directory",
+                        cid = %cid,
+                        unixfs_path,
+                        entry_count = entries.len(),
+                        elapsed_ms = list_started.elapsed().as_millis()
+                    );
+                    Ok(ServedResource::Directory {
+                        path: unixfs_path.to_string(),
+                        entries,
+                    })
+                }
                 Err(err) => Err(GatewayError::Unixfs(err)),
             }
         }
@@ -452,13 +666,33 @@ async fn serve_ipns_path(
             )));
         };
         let (name, rest) = split_name_path(ipns)?;
-        let resolved = name_resolver.resolve_name(name).await.map_err(|err| {
-            if matches!(err, NamesysError::NotFound(_)) {
-                GatewayError::NotFound(format!("name not found: {name}"))
-            } else {
-                GatewayError::BadGateway(format!("ipns/dnslink resolution failed: {err}"))
+        let resolve_started = Instant::now();
+        let resolved = match name_resolver.resolve_name(name).await {
+            Ok(resolved) => {
+                tracing::info!(
+                    phase = "name_resolve",
+                    name,
+                    resolved_target = %resolved,
+                    elapsed_ms = resolve_started.elapsed().as_millis(),
+                    ok = true
+                );
+                resolved
             }
-        })?;
+            Err(err) => {
+                tracing::info!(
+                    phase = "name_resolve",
+                    name,
+                    error = %err,
+                    elapsed_ms = resolve_started.elapsed().as_millis(),
+                    ok = false
+                );
+                return Err(if matches!(err, NamesysError::NotFound(_)) {
+                    GatewayError::NotFound(format!("name not found: {name}"))
+                } else {
+                    GatewayError::BadGateway(format!("ipns/dnslink resolution failed: {err}"))
+                });
+            }
+        };
         target = append_path(&resolved, rest);
     }
 

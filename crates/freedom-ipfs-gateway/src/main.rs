@@ -49,6 +49,8 @@ struct Args {
     dht_query_timeout_secs: u64,
     #[arg(long, default_value_t = DEFAULT_MAX_DHT_PROVIDERS)]
     dht_max_providers: usize,
+    #[arg(long)]
+    trace_output: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -61,11 +63,8 @@ enum RoutingMode {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
     let args = Args::parse();
+    init_tracing(args.trace_output.as_deref())?;
     let start_online_gateway = should_start_online_gateway(&args);
     let store = if let Some(path) = args.db {
         SqliteBlockStore::open(path, 256 * 1024 * 1024)?
@@ -119,6 +118,48 @@ async fn main() -> Result<()> {
     };
     serve_router(router, args.addr).await?;
     Ok(())
+}
+
+fn init_tracing(trace_output: Option<&std::path::Path>) -> Result<()> {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        if trace_output.is_some() {
+            tracing_subscriber::EnvFilter::new(
+                "freedom_ipfs_gateway=info,freedom_ipfs_retrieval=info,freedom_ipfs_namesys=info,freedom_ipfs_routing=info,warn",
+            )
+        } else {
+            tracing_subscriber::EnvFilter::new("warn")
+        }
+    });
+
+    if let Some(path) = trace_output {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .with_context(|| format!("open trace output {}", path.display()))?;
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .json()
+            .flatten_event(true)
+            .with_current_span(true)
+            .with_span_list(true)
+            .with_writer(TraceFileWriter(Arc::new(file)))
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct TraceFileWriter(Arc<fs::File>);
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TraceFileWriter {
+    type Writer = &'a fs::File;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.0.as_ref()
+    }
 }
 
 async fn serve_router(router: Router, addr: SocketAddr) -> std::io::Result<()> {

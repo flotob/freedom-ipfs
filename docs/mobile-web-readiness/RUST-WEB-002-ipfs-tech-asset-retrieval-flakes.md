@@ -150,3 +150,109 @@ the Rust node feel "not yet Kubo-like" even when the root HTML request succeeds.
   better and asset fan-out is much less flaky, but ~35-40s cold `ipfs.tech`
   loads plus occasional root-provider timeouts are still not a mobile-quality
   target.
+
+## 2026-05-03 Latency Follow-Up
+
+Hypothesis:
+Cold full-page time was dominated by per-block Bitswap behavior, not DNSLink,
+provider lookup, SQLite, MIME detection, or gateway queueing.
+
+Change:
+Added opt-in gateway JSONL tracing and harness `--trace-output` collection, then
+used the trace to make two retrieval changes:
+
+- Bounded in-flight block fetch coalescing keyed by CID, with an 8s hedge so one
+  stuck leader cannot hold every waiter until the 45s Bitswap timeout.
+- Short-lived successful Bitswap peer preference. Once a peer serves a block,
+  later block requests in the same process try that peer without a preliminary
+  `WANT_HAVE`; unknown peers keep the conservative `WANT_HAVE` flow.
+
+Commands:
+
+```sh
+cargo run -p mobile-web-harness -- \
+  --case ipfs-tech-page-assets \
+  --repeat 5 \
+  --fresh-gateway-per-run \
+  --asset-concurrency 6 \
+  --trace-output /tmp/ipfs-tech-current-5-trace.jsonl \
+  --output /tmp/ipfs-tech-current-5.json
+
+cargo run -p mobile-web-harness -- \
+  --case ipfs-tech-page-assets \
+  --warmup-runs 1 \
+  --repeat 5 \
+  --asset-concurrency 6 \
+  --trace-output /tmp/ipfs-tech-current-warm-trace.jsonl \
+  --output /tmp/ipfs-tech-current-warm.json
+```
+
+Before:
+
+```text
+passed=5 failed=0 pass_rate=100.0%
+root_ttfb p50=11461ms p90=13639ms p95=13639ms max=13639ms
+asset_ttfb p50=5610ms p90=11383ms p95=11527ms max=14639ms
+measured run totals: 37036ms, 34941ms, 34842ms, 37692ms, 35684ms
+```
+
+After:
+
+```text
+passed=5 failed=0 pass_rate=100.0%
+root_ttfb p50=7265ms p90=7419ms p95=7419ms max=7419ms
+asset_ttfb p50=633ms p90=2047ms p95=2396ms max=12042ms
+measured run totals: 12466ms, 19318ms, 11104ms, 10648ms, 11372ms
+```
+
+Warm after one warmup remained fast:
+
+```text
+passed=5 failed=0 pass_rate=100.0%
+root_ttfb p50=37ms p90=47ms p95=47ms max=47ms
+asset_ttfb p50=39ms p90=106ms p95=144ms max=278ms
+measured run totals: 342ms, 427ms, 407ms, 331ms, 266ms
+```
+
+Trace evidence:
+
+```text
+before trace smoke:
+bitswap_fetch count=26 total=143051ms p50=5602ms p95=6190ms max=6896ms
+one shared directory/data CID fetched over Bitswap 6 times
+
+after trace repeat:
+bitswap_fetch count=105 total=134163ms p50=810ms p95=5605ms max=6608ms
+hot shared CIDs are fetched once per fresh gateway run
+```
+
+Resource impact:
+The changes keep existing caps: gateway request concurrency remains 8, asset
+concurrency remains harness-side, Bitswap connection limits are unchanged, and
+in-flight block coalescing is capped at 256 CIDs with hedged waiters.
+
+Failed experiments:
+
+- Global `WANT_HAVE` timeout reductions to 750ms and 2s made asset samples fast
+  but caused repeated root failures when delegated providers were stale. Reverted.
+- Failure-only light-DHT fallback after a stale delegated provider set added
+  about 10s to failed roots and did not recover `ipfs.tech` during the test
+  window. Reverted.
+
+Kubo comparison:
+
+Kubo v0.41.0 lowpower/auto in a fresh temp repo, same harness:
+
+```text
+ipfs-tech-page-assets repeat=3:
+passed=3 failed=0
+run totals: 3087ms, 36ms, 32ms
+root_ttfb p50=2ms p90=2449ms max=2449ms
+asset_ttfb p50=3ms p90=103ms max=208ms
+```
+
+Conclusion:
+Rust cold full-page latency is now materially better for this case, but Kubo is
+still much faster on the first load and dramatically faster once its repo is
+warm. Remaining evidence points to provider quality/session behavior and root
+UnixFS path startup cost.

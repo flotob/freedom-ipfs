@@ -66,6 +66,9 @@ struct Args {
     /// Concurrent subresource fetches for page crawls.
     #[arg(long, default_value_t = DEFAULT_ASSET_CONCURRENCY)]
     asset_concurrency: usize,
+    /// Gateway JSONL trace output path when spawning a gateway; parsed into the report.
+    #[arg(long)]
+    trace_output: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -90,6 +93,19 @@ async fn main() -> Result<()> {
 async fn run_harness(args: &Args, corpus: &Corpus) -> Result<RunReport> {
     if args.gateway_url.is_some() && args.fresh_gateway_per_run {
         bail!("--fresh-gateway-per-run cannot be used with --gateway-url");
+    }
+    if args.gateway_url.is_none() {
+        if let Some(trace_output) = &args.trace_output {
+            match std::fs::remove_file(trace_output) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!("clear previous trace output {}", trace_output.display())
+                    });
+                }
+            }
+        }
     }
 
     let timeout = Duration::from_secs(args.timeout_secs);
@@ -159,6 +175,11 @@ async fn run_harness(args: &Args, corpus: &Corpus) -> Result<RunReport> {
     }
 
     let summary = RepeatSummary::from_runs(&runs);
+    let trace_summary = args
+        .trace_output
+        .as_ref()
+        .map(|path| summarize_trace_output(path))
+        .transpose()?;
     Ok(RunReport {
         gateway_url: persistent_gateway_url,
         generated_at_unix_seconds: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
@@ -166,6 +187,11 @@ async fn run_harness(args: &Args, corpus: &Corpus) -> Result<RunReport> {
         warmup_runs: args.warmup_runs,
         fresh_gateway_per_run: args.fresh_gateway_per_run,
         asset_concurrency: args.asset_concurrency,
+        trace_output: args
+            .trace_output
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        trace_summary,
         summary,
         runs,
     })
@@ -341,6 +367,22 @@ fn print_summary(report: &RunReport) {
             for example in &group.examples {
                 println!("    - {example}");
             }
+        }
+    }
+
+    if let Some(trace) = &report.trace_summary {
+        println!(
+            "trace: path={} lines={} events={} phases={}",
+            report.trace_output.as_deref().unwrap_or("-"),
+            trace.line_count,
+            trace.event_count,
+            trace.phases.len()
+        );
+        for phase in trace.phases.iter().take(16) {
+            println!(
+                "  phase {}: count={} total={}ms latency={}",
+                phase.phase, phase.count, phase.total_ms, phase.elapsed_ms
+            );
         }
     }
 
@@ -1267,6 +1309,9 @@ impl SpawnedGateway {
             .arg("127.0.0.1:0")
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
+        if let Some(trace_output) = &args.trace_output {
+            command.arg("--trace-output").arg(trace_output);
+        }
         let mut child = command.spawn().with_context(|| {
             format!(
                 "spawn {}; build it first with `cargo build -p freedom-ipfs-gateway`",
@@ -1359,6 +1404,8 @@ struct RunReport {
     warmup_runs: usize,
     fresh_gateway_per_run: bool,
     asset_concurrency: usize,
+    trace_output: Option<String>,
+    trace_summary: Option<TraceSummary>,
     summary: RepeatSummary,
     runs: Vec<RunResult>,
 }
@@ -1566,6 +1613,89 @@ impl std::fmt::Display for LatencySummary {
             self.max_ms.unwrap_or_default()
         )
     }
+}
+
+#[derive(Debug, Serialize)]
+struct TraceSummary {
+    line_count: usize,
+    event_count: usize,
+    phases: Vec<TracePhaseAggregate>,
+}
+
+#[derive(Debug, Serialize)]
+struct TracePhaseAggregate {
+    phase: String,
+    count: usize,
+    total_ms: u128,
+    elapsed_ms: LatencySummary,
+}
+
+fn summarize_trace_output(path: &PathBuf) -> Result<TraceSummary> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("read trace output {}", path.display()))?;
+    let mut line_count = 0usize;
+    let mut event_count = 0usize;
+    let mut phases = BTreeMap::<String, Vec<u128>>::new();
+
+    for line in text.lines() {
+        line_count += 1;
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(phase) = value.get("phase").and_then(|phase| phase.as_str()) else {
+            continue;
+        };
+        event_count += 1;
+        let Some(elapsed_ms) = value.get("elapsed_ms").and_then(json_u128) else {
+            continue;
+        };
+        phases
+            .entry(phase.to_string())
+            .or_default()
+            .push(elapsed_ms);
+    }
+
+    let mut phases = phases
+        .into_iter()
+        .map(|(phase, values)| {
+            let total_ms = values.iter().sum();
+            let count = values.len();
+            TracePhaseAggregate {
+                phase,
+                count,
+                total_ms,
+                elapsed_ms: LatencySummary::from_values(values),
+            }
+        })
+        .collect::<Vec<_>>();
+    phases.sort_by(|left, right| {
+        right
+            .total_ms
+            .cmp(&left.total_ms)
+            .then_with(|| right.elapsed_ms.max_ms.cmp(&left.elapsed_ms.max_ms))
+            .then_with(|| left.phase.cmp(&right.phase))
+    });
+
+    Ok(TraceSummary {
+        line_count,
+        event_count,
+        phases,
+    })
+}
+
+fn json_u128(value: &serde_json::Value) -> Option<u128> {
+    if let Some(value) = value.as_u64() {
+        return Some(value as u128);
+    }
+    if let Some(value) = value.as_f64() {
+        if value.is_finite() && value >= 0.0 {
+            return Some(value.round() as u128);
+        }
+    }
+    if let Some(value) = value.as_str() {
+        return value.parse::<u128>().ok();
+    }
+    None
 }
 
 #[derive(Debug, Serialize)]

@@ -162,9 +162,16 @@ where
 
     async fn resolve_name_with_ttl(&self, name: &str) -> Result<ResolvedName> {
         if let Some(value) = self.cached(name) {
+            tracing::info!(
+                phase = "name_cache",
+                name,
+                cache_hit = true,
+                resolved_target = %value
+            );
             return Ok(ResolvedName::new(value));
         }
 
+        tracing::info!(phase = "name_cache", name, cache_hit = false);
         let resolved = self.inner.resolve_name_with_ttl(name).await?;
         self.store(name, &resolved.value, resolved.ttl);
         Ok(resolved)

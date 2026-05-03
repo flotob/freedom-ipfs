@@ -52,6 +52,12 @@ the same routing, DHT, request-concurrency, and asset-concurrency knobs as the
 single-run harness, with an 8-request gateway default and a 6-asset crawl
 default to model bounded browser pressure.
 
+For gateway phase tracing, pass `--trace-output /tmp/run.jsonl`. When the
+harness spawns the Rust gateway it forwards this path to the gateway, parses the
+JSONL events, and adds a phase summary to the report. This is the preferred way
+to distinguish DNSLink/name resolution, provider lookup, Bitswap fetch, UnixFS
+path traversal, MIME sniffing, and gateway limiter behavior during live runs.
+
 The default live corpus is `tools/mobile-web-harness/corpus/mobile-web.json`.
 It captures browser-facing checks such as status, MIME type, byte ranges,
 minimum body size, body snippets, TTFB, and total response time.
@@ -67,7 +73,10 @@ status, MIME type, byte count, and timing.
   when the path lacked an extension. Fixed in this branch with a regression test.
 - `RUST-WEB-002`: `ipfs.tech` page asset crawls intermittently lost JS chunks to
   gateway `502` / `504` responses. Mitigated by the shared Bitswap client and
-  harness repeat reporting; cold latency remains a follow-up bottleneck.
+  harness repeat reporting. A latency follow-up added phase tracing, bounded
+  in-flight block fetch coalescing, and successful Bitswap peer preference;
+  fresh `ipfs.tech` 5-run totals improved from roughly 35-38s to roughly
+  10.6-19.3s while preserving 5/5 pass rate.
 
 ## Next Scenario Targets
 

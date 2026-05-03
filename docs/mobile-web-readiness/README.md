@@ -84,9 +84,11 @@ status, MIME type, byte count, and timing.
 - `RUST-WEB-002`: `ipfs.tech` page asset crawls intermittently lost JS chunks to
   gateway `502` / `504` responses. Mitigated by the shared Bitswap client and
   harness repeat reporting. A latency follow-up added phase tracing, bounded
-  in-flight block fetch coalescing, and successful Bitswap peer preference;
-  fresh `ipfs.tech` 5-run totals improved from roughly 35-38s to roughly
-  10.6-19.3s while preserving 5/5 pass rate.
+  in-flight block fetch coalescing, successful Bitswap peer preference, and a
+  conservative recent-peer race for slow provider-cache misses; fresh
+  `ipfs.tech` 5-run totals improved from roughly 35-38s to roughly 10.6-19.3s
+  while preserving 5/5 pass rate. A later same-window comparison showed the
+  remaining 30s root 504 tail also occurs on the previous pushed commit.
 
 ## Next Scenario Targets
 

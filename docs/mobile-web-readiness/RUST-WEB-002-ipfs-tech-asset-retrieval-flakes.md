@@ -166,6 +166,11 @@ used the trace to make two retrieval changes:
 - Short-lived successful Bitswap peer preference. Once a peer serves a block,
   later block requests in the same process try that peer without a preliminary
   `WANT_HAVE`; unknown peers keep the conservative `WANT_HAVE` flow.
+- Recent successful Bitswap peers now retain their dial addresses. On a provider
+  cache miss, the retriever starts provider lookup immediately and only races a
+  direct recent-peer `WANT_BLOCK` shortcut after a 150ms grace period. This keeps
+  fast delegated lookups on the normal path while allowing known-good page
+  session peers to win when provider lookup is slow or errors.
 
 The harness also gained `--gateway-db` so fresh gateway processes can be
 measured against the same persistent SQLite cache.
@@ -253,6 +258,32 @@ bitswap_fetch count=105 total=134163ms p50=810ms p95=5605ms max=6608ms
 hot shared CIDs are fetched once per fresh gateway run
 ```
 
+Session-peer race check, compared with the previous pushed commit
+`dfee107386c1189ee1d9b69b00637ac495108522` in the same live-network window:
+
+```text
+previous commit repeat=3:
+passed=2 failed=1 pass_rate=66.7%
+root_ttfb p50=9633ms p90=30759ms max=30759ms
+asset_ttfb p50=627ms p90=1393ms p95=5795ms max=10662ms
+bitswap_fetch count=43 total=96575ms p50=631ms p95=8672ms max=30515ms
+provider_lookup count=72 total=1712ms p50=17ms p95=61ms max=89ms
+
+recent-peer race repeat=3:
+passed=2 failed=1 pass_rate=66.7%
+root_ttfb p50=8811ms p90=30676ms max=30676ms
+asset_ttfb p50=610ms p90=2101ms p95=3971ms max=4306ms
+bitswap_session_shortcut count=2 total=1220ms p50=565ms max=655ms
+bitswap_fetch count=41 total=70003ms p50=633ms p95=5558ms max=30519ms
+provider_lookup count=70 total=5872ms p50=20ms p95=575ms max=740ms
+```
+
+Both samples hit the same remaining root 504 pattern: the first root block spent
+about 30.5s in provider-derived Bitswap, then refreshed to effectively the same
+provider set and returned 504 before any asset crawl. The raced shortcut did not
+participate in that root failure; it only won two slow asset block misses in the
+successful runs.
+
 Resource impact:
 The changes keep existing caps: gateway request concurrency remains 8, asset
 concurrency remains harness-side, Bitswap connection limits are unchanged, and
@@ -275,6 +306,10 @@ Failed experiments:
 - Failure-only light-DHT fallback after a stale delegated provider set added
   about 10s to failed roots and did not recover `ipfs.tech` during the test
   window. Reverted.
+- An aggressive recent-peer shortcut before provider lookup was also tested. It
+  produced many successful direct session fetches, but because it ran before the
+  delegated lookup it added avoidable 2s stalls on misses. Replaced with the
+  conservative 150ms-grace race described above.
 
 Kubo comparison:
 

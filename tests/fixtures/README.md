@@ -27,3 +27,12 @@ Follow-up fixture work:
 - add device-side soak fixtures and scripts once target iPhones are available,
 - add signed IPNS records and expired/invalid variants,
 - add DNSLink TXT fixtures.
+
+Rejected public-corpus candidates:
+
+- 2026-05-03: `/ipns/ipfs.tech/_nuxt/community-hero.Cp0BCcC7.jpg`
+  resolved but returned `504 Gateway Timeout` through the local Rust gateway
+  after Bitswap retrieval timed out.
+- 2026-05-03: `/ipns/ipfs.tech/_nuxt/developers-hero.BRuJDQyf.jpg`
+  resolved but returned `504 Gateway Timeout` through the local Rust gateway
+  after Bitswap retrieval timed out.

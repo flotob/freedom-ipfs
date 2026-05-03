@@ -181,7 +181,8 @@ impl DelegatedRoutingClient {
     }
 
     async fn providers_from_endpoint(&self, endpoint: &str, cid: &Cid) -> Result<Vec<Provider>> {
-        let url = format!("{endpoint}/providers/{cid}");
+        let lookup_cid = delegated_lookup_cid(cid);
+        let url = format!("{endpoint}/providers/{lookup_cid}");
         let response = self
             .client
             .get(url)
@@ -192,6 +193,10 @@ impl DelegatedRoutingClient {
         let body = limited_response_text(response, MAX_DELEGATED_ROUTING_RESPONSE_BYTES).await?;
         Ok(limit_delegated_providers(parse_provider_response(&body)?))
     }
+}
+
+fn delegated_lookup_cid(cid: &Cid) -> String {
+    Cid::new_v1(cid.codec(), *cid.hash()).to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -782,6 +787,20 @@ mod tests {
             Some("12D3KooWNDpFqyse9kR7aZwgEzh4U1mL6Zz6jEuRNFXJxL5D2KPP")
         );
         assert_eq!(providers[0].addrs[0], "/ip4/164.92.225.198/tcp/4001");
+    }
+
+    #[test]
+    fn delegated_routing_normalizes_cidv0_to_cidv1_base32() {
+        let hash = Multihash::<64>::wrap(0x12, &[0u8; 32]).unwrap();
+        let cidv0 = Cid::new_v0(hash).unwrap();
+
+        let lookup = delegated_lookup_cid(&cidv0);
+
+        assert!(lookup.starts_with("bafy"), "{lookup}");
+        assert_ne!(lookup, cidv0.to_string());
+        let reparsed = lookup.parse::<Cid>().unwrap();
+        assert_eq!(reparsed.codec(), cidv0.codec());
+        assert_eq!(reparsed.hash(), cidv0.hash());
     }
 
     #[tokio::test]

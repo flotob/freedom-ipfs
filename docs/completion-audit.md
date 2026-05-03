@@ -73,7 +73,7 @@ Results:
 | DNSLink cache TTL | DNSLink resolution preserves DNS TXT TTLs where the resolver supplies them; `CachedNameResolver` caps dynamic TTLs with a conservative max. | Done |
 | Native/system TXT resolver | Explicit follow-up in spec/status. | Not required for MVP; open |
 | ENS excluded from node | Live smoke resolves ENS/contenthash outside the node, then feeds `/ipfs` paths to the local gateway. | Done |
-| Delegated Routing V1 | Routing parser/client, JSON/NDJSON tests, response byte cap, provider fanout cap. | Done |
+| Delegated Routing V1 | Routing parser/client, JSON/NDJSON tests, CIDv1/base32 lookup normalization, response byte cap, provider fanout cap. | Done |
 | Multiple delegated routers | `DelegatedRoutingClient::with_endpoints`, comma-separated CLI/mobile provider-routing config, race/failover test. | Done |
 | Default delegated router | `https://delegated-ipfs.dev/routing/v1`. | Done |
 | Verified HTTP raw-block retrieval | Retrieval requests provider `/ipfs/{cid}?format=raw`, bounds response bodies, disables redirects, verifies CIDs. | Done |

@@ -2317,7 +2317,13 @@ mod bitswap_tests {
         let (missing_peer_id, missing_addr, missing_swarm, missing_stream) =
             spawn_want_have_bitswap_peer(cid, data.to_vec(), false).await;
         let (present_peer_id, present_addr, present_swarm, present_stream) =
-            spawn_want_have_bitswap_peer(cid, data.to_vec(), true).await;
+            spawn_want_have_bitswap_peer_with_presence_delay(
+                cid,
+                data.to_vec(),
+                true,
+                Some(Duration::from_millis(250)),
+            )
+            .await;
 
         let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
         let retriever = HttpRetriever::new(

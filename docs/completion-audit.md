@@ -20,7 +20,7 @@ Do not mark the overall implementation goal complete until those Apple-platform 
 
 ## Current Verification Evidence
 
-Fresh checks run against code changes through `d98e8ca`:
+Fresh checks run against code changes through `6ae45b3`:
 
 ```bash
 cargo fmt --all --check && make verify
@@ -40,7 +40,7 @@ Results:
   - Retrieval stats: `cache_hits=25 http_provider_blocks=2 bitswap_blocks=3`.
 - Public corpus smoke passed for the checked-in `vitalik-home` and `daicowtf-home` entries with the same byte counts and retrieval stats.
 - Kubo parity passed for generated UnixFS site files, directory-index fallback, range reads, and HAMT directories.
-- Local cached-gateway soak passed: `500` requests, Linux RSS from `9216` KiB to `13696` KiB.
+- Local cached-gateway soak passed: `500` requests, Linux RSS from `8960` KiB to `13312` KiB.
 - `xtask build-xcframework` and `xtask verify-xcframework` correctly refused to run on Linux with the macOS/Xcode requirement message.
 
 ## Prompt-To-Artifact Checklist

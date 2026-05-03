@@ -63,7 +63,7 @@ Observed live-corpus result:
 Observed local-soak result:
 
 - 500 cached local-gateway requests completed against an in-memory raw block.
-- Linux RSS moved from `9216` KiB to `13696` KiB, within the 32 MiB maximum growth budget.
+- Linux RSS moved from `8960` KiB to `13312` KiB, within the 32 MiB maximum growth budget.
 
 iOS packaging command was exercised on Linux and correctly refused to run:
 

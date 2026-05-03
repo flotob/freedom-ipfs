@@ -1,5 +1,8 @@
 use cid::Cid;
-use freedom_ipfs_core::{verify_block, Block, BlockProvider, CoreError, Result as CoreResult};
+use freedom_ipfs_core::{
+    verify_block, Block, BlockProvider, CoreError, Result as CoreResult, CODEC_DAG_PB,
+    HASH_IDENTITY, HASH_SHA2_256,
+};
 use freedom_ipfs_namesys::{CloudflareDohResolver, DnsTxtResolver};
 use freedom_ipfs_routing::{Provider, ProviderRoutingClient};
 use freedom_ipfs_store::{CachedProviderRecord, SqliteBlockStore};
@@ -10,6 +13,8 @@ use libp2p::multiaddr::Protocol;
 use libp2p::StreamProtocol;
 use libp2p::{noise, tcp, tls, yamux, Multiaddr, PeerId, SwarmBuilder};
 use libp2p_stream::{Control as StreamControl, IncomingStreams};
+use multihash::Multihash;
+use multihash_codetable::{Code, MultihashDigest};
 use prost::Message;
 use std::collections::BTreeSet;
 use std::io;
@@ -26,6 +31,8 @@ const BAD_HTTP_PROVIDER_TTL: Duration = Duration::from_secs(10 * 60);
 const BAD_BITSWAP_PROVIDER_TTL: Duration = Duration::from_secs(2 * 60);
 const MAX_BITSWAP_PEERS_PER_BLOCK: usize = 16;
 const MAX_BITSWAP_ADDRS_PER_PEER: usize = 4;
+const CID_VERSION_0: u64 = 0;
+const CID_VERSION_1: u64 = 1;
 
 #[derive(Debug, Error)]
 pub enum RetrievalError {
@@ -327,12 +334,17 @@ impl HttpRetriever {
             }
         };
         swarm_task.abort();
-        let data = match result {
-            Ok(data) => data,
+        let result = match result {
+            Ok(result) => result,
             Err(err) => return Err(err),
         };
-        self.store.put_block(cid, &data)?;
-        Ok(Block::unchecked(*cid, data))
+        for (extra_cid, extra_data) in &result.extra_blocks {
+            if extra_cid != cid {
+                let _ = self.store.put_block(extra_cid, extra_data);
+            }
+        }
+        self.store.put_block(cid, &result.requested_block)?;
+        Ok(Block::unchecked(*cid, result.requested_block))
     }
 }
 
@@ -396,6 +408,17 @@ impl BlockProvider for FetchingBlockProvider {
 struct BitswapPeer {
     id: PeerId,
     addrs: Vec<Multiaddr>,
+}
+
+struct BitswapFetchResult {
+    requested_block: Vec<u8>,
+    extra_blocks: Vec<(Cid, Vec<u8>)>,
+}
+
+#[derive(Clone)]
+struct ReceivedBitswapBlock {
+    cid: Option<Cid>,
+    data: Vec<u8>,
 }
 
 async fn bitswap_peers(providers: &[Provider]) -> Vec<BitswapPeer> {
@@ -590,7 +613,7 @@ async fn fetch_bitswap_over_streams(
     incoming: Vec<IncomingStreams>,
     peer_ids: Vec<PeerId>,
     cid: Cid,
-) -> Result<Vec<u8>> {
+) -> Result<BitswapFetchResult> {
     let mut incoming = select_all(incoming);
     let mut attempts = FuturesUnordered::new();
     for peer_id in peer_ids {
@@ -623,10 +646,8 @@ async fn fetch_bitswap_over_streams(
                 match read_bitswap_blocks(&mut stream).await {
                     Ok(blocks) => {
                         let _ = write_empty_bitswap_message(&mut stream).await;
-                        for data in blocks {
-                            if verify_block(&cid, &data).is_ok() {
-                                return Ok(data);
-                            }
+                        if let Some(result) = collect_bitswap_result(&cid, blocks) {
+                            return Ok(result);
                         }
                     }
                     Err(err) => failures.push(err.to_string()),
@@ -640,7 +661,7 @@ async fn request_bitswap_block(
     mut control: StreamControl,
     peer_id: PeerId,
     cid: Cid,
-) -> std::result::Result<Vec<u8>, String> {
+) -> std::result::Result<BitswapFetchResult, String> {
     let mut failures = Vec::new();
     for protocol in bitswap_protocols() {
         let protocol_name = protocol.to_string();
@@ -677,10 +698,8 @@ async fn request_bitswap_block(
                 continue;
             }
         };
-        for data in blocks {
-            if verify_block(&cid, &data).is_ok() {
-                return Ok(data);
-            }
+        if let Some(result) = collect_bitswap_result(&cid, blocks) {
+            return Ok(result);
         }
         failures.push(format!("{protocol_name}: no valid block returned"));
     }
@@ -732,20 +751,100 @@ where
     io.flush().await
 }
 
-async fn read_bitswap_blocks<T>(io: &mut T) -> io::Result<Vec<Vec<u8>>>
+async fn read_bitswap_blocks<T>(io: &mut T) -> io::Result<Vec<ReceivedBitswapBlock>>
 where
     T: AsyncRead + Unpin,
 {
     for _ in 0..4 {
         let bytes = read_length_prefixed(io, 2 * 1024 * 1024 + 4096).await?;
         let message = BitswapMessage::decode(bytes.as_slice()).map_err(invalid_data)?;
-        let mut blocks = message.blocks;
-        blocks.extend(message.payload.into_iter().map(|payload| payload.data));
+        let mut blocks = message
+            .blocks
+            .into_iter()
+            .map(|data| ReceivedBitswapBlock { cid: None, data })
+            .collect::<Vec<_>>();
+        blocks.extend(message.payload.into_iter().map(|payload| {
+            let cid = cid_from_bitswap_payload_prefix(&payload.prefix, &payload.data);
+            ReceivedBitswapBlock {
+                cid,
+                data: payload.data,
+            }
+        }));
         if !blocks.is_empty() {
             return Ok(blocks);
         }
     }
     Ok(Vec::new())
+}
+
+fn collect_bitswap_result(
+    requested: &Cid,
+    blocks: Vec<ReceivedBitswapBlock>,
+) -> Option<BitswapFetchResult> {
+    let mut requested_block = None;
+    let mut extra_blocks = Vec::new();
+
+    for block in blocks {
+        match block.cid {
+            Some(block_cid) if &block_cid == requested => {
+                if verify_block(requested, &block.data).is_ok() {
+                    requested_block = Some(block.data);
+                }
+            }
+            Some(block_cid) => {
+                if verify_block(&block_cid, &block.data).is_ok() {
+                    extra_blocks.push((block_cid, block.data));
+                }
+            }
+            None => {
+                if verify_block(requested, &block.data).is_ok() {
+                    requested_block = Some(block.data);
+                }
+            }
+        }
+    }
+
+    requested_block.map(|requested_block| BitswapFetchResult {
+        requested_block,
+        extra_blocks,
+    })
+}
+
+fn cid_from_bitswap_payload_prefix(prefix: &[u8], data: &[u8]) -> Option<Cid> {
+    let (version, rest) = unsigned_varint::decode::u64(prefix).ok()?;
+    if !matches!(version, CID_VERSION_0 | CID_VERSION_1) {
+        return None;
+    }
+    let (codec, rest) = unsigned_varint::decode::u64(rest).ok()?;
+    let (hash_code, rest) = unsigned_varint::decode::u64(rest).ok()?;
+    let (hash_len, rest) = unsigned_varint::decode::u64(rest).ok()?;
+    if !rest.is_empty() {
+        return None;
+    }
+
+    let hash_len = usize::try_from(hash_len).ok()?;
+    let hash = match hash_code {
+        HASH_SHA2_256 => {
+            let hash = Code::Sha2_256.digest(data);
+            if hash.digest().len() != hash_len {
+                return None;
+            }
+            hash
+        }
+        HASH_IDENTITY => {
+            if data.len() != hash_len {
+                return None;
+            }
+            Multihash::<64>::wrap(HASH_IDENTITY, data).ok()?
+        }
+        _ => return None,
+    };
+
+    match version {
+        CID_VERSION_0 if codec == CODEC_DAG_PB => Cid::new_v0(hash).ok(),
+        CID_VERSION_1 => Some(Cid::new_v1(codec, hash)),
+        _ => None,
+    }
 }
 
 async fn read_length_prefixed<T>(io: &mut T, max_size: usize) -> io::Result<Vec<u8>>
@@ -918,6 +1017,69 @@ mod bitswap_tests {
             peers[0].addrs[1].to_string(),
             "/ip4/164.92.225.199/tcp/4001"
         );
+    }
+
+    #[test]
+    fn decodes_bitswap_payload_prefix_to_cid() {
+        let data = b"payload block";
+        let cid = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, data);
+        let prefix = bitswap_payload_prefix(&cid);
+
+        assert_eq!(cid_from_bitswap_payload_prefix(&prefix, data), Some(cid));
+    }
+
+    #[test]
+    fn decodes_cidv0_bitswap_payload_prefix_to_cid() {
+        let data = b"legacy dag-pb payload";
+        let cid = Cid::new_v0(Code::Sha2_256.digest(data)).unwrap();
+        let mut prefix = Vec::new();
+        append_uvarint(&mut prefix, CID_VERSION_0);
+        append_uvarint(&mut prefix, freedom_ipfs_core::CODEC_DAG_PB);
+        append_uvarint(&mut prefix, cid.hash().code());
+        append_uvarint(&mut prefix, cid.hash().digest().len() as u64);
+
+        assert_eq!(cid_from_bitswap_payload_prefix(&prefix, data), Some(cid));
+    }
+
+    #[test]
+    fn collects_requested_and_extra_bitswap_payload_blocks() {
+        let requested_data = b"requested block";
+        let extra_data = b"extra linked block";
+        let requested =
+            freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, requested_data);
+        let extra = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, extra_data);
+
+        let result = collect_bitswap_result(
+            &requested,
+            vec![
+                ReceivedBitswapBlock {
+                    cid: Some(extra),
+                    data: extra_data.to_vec(),
+                },
+                ReceivedBitswapBlock {
+                    cid: Some(requested),
+                    data: requested_data.to_vec(),
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(result.requested_block, requested_data);
+        assert_eq!(result.extra_blocks, vec![(extra, extra_data.to_vec())]);
+    }
+
+    fn bitswap_payload_prefix(cid: &Cid) -> Vec<u8> {
+        let mut prefix = Vec::new();
+        append_uvarint(&mut prefix, CID_VERSION_1);
+        append_uvarint(&mut prefix, cid.codec());
+        append_uvarint(&mut prefix, cid.hash().code());
+        append_uvarint(&mut prefix, cid.hash().digest().len() as u64);
+        prefix
+    }
+
+    fn append_uvarint(buffer: &mut Vec<u8>, value: u64) {
+        let mut encode_buffer = unsigned_varint::encode::u64_buffer();
+        buffer.extend_from_slice(unsigned_varint::encode::u64(value, &mut encode_buffer));
     }
 
     #[test]

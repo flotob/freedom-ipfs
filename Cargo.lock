@@ -973,6 +973,8 @@ dependencies = [
  "futures",
  "libp2p",
  "libp2p-stream",
+ "multihash",
+ "multihash-codetable",
  "prost",
  "reqwest",
  "thiserror 2.0.18",

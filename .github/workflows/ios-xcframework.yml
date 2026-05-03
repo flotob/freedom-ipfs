@@ -1,0 +1,67 @@
+name: iOS XCFramework
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ios-xcframework.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "ffi/**"
+      - "rust-toolchain.toml"
+      - "xtask/**"
+  pull_request:
+    paths:
+      - ".github/workflows/ios-xcframework.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "ffi/**"
+      - "rust-toolchain.toml"
+      - "xtask/**"
+  workflow_dispatch:
+
+jobs:
+  build-and-verify:
+    name: Build and verify XCFramework
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show Apple toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphonesimulator --show-sdk-version
+          xcrun simctl list runtimes available
+
+      - name: Show Rust toolchain
+        run: |
+          rustup show
+          cargo --version
+          rustc --version
+
+      - name: Build XCFramework
+        run: cargo run -p xtask -- build-xcframework
+
+      - name: Boot iOS simulator
+        run: |
+          SIMULATOR_UDID="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ && /Shutdown|Booted/ { print $2; exit }')"
+          test -n "$SIMULATOR_UDID"
+          echo "Booting simulator $SIMULATOR_UDID"
+          xcrun simctl boot "$SIMULATOR_UDID" || true
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+
+      - name: Verify XCFramework and Swift simulator smoke
+        run: cargo run -p xtask -- verify-xcframework
+
+      - name: Upload XCFramework artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreedomIpfs.xcframework
+          path: target/ios-xcframework/FreedomIpfs.xcframework
+          if-no-files-found: error

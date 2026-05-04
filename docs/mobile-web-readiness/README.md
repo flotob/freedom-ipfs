@@ -64,6 +64,9 @@ harness spawns the Rust gateway it forwards this path to the gateway, parses the
 JSONL events, and adds a phase summary to the report. This is the preferred way
 to distinguish DNSLink/name resolution, provider lookup, Bitswap fetch, UnixFS
 path traversal, MIME sniffing, and gateway limiter behavior during live runs.
+The spawned gateway uses a trace-friendly filter by default whenever
+`--trace-output` is set, so an ambient `RUST_LOG=warn` will not hide phase
+events. Use `--trace-filter` only when intentionally overriding the default.
 
 The default live corpus is `tools/mobile-web-harness/corpus/mobile-web.json`.
 It captures browser-facing checks such as status, MIME type, byte ranges,

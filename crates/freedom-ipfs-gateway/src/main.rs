@@ -24,6 +24,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 
+const DEFAULT_TRACE_FILTER: &str =
+    "freedom_ipfs_gateway=info,freedom_ipfs_retrieval=info,freedom_ipfs_namesys=info,freedom_ipfs_routing=info,warn";
+
 #[derive(Debug, Parser)]
 #[command(author, version, about = "Local Freedom IPFS gateway")]
 struct Args {
@@ -51,6 +54,8 @@ struct Args {
     dht_max_providers: usize,
     #[arg(long)]
     trace_output: Option<PathBuf>,
+    #[arg(long)]
+    trace_filter: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -64,7 +69,7 @@ enum RoutingMode {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    init_tracing(args.trace_output.as_deref())?;
+    init_tracing(args.trace_output.as_deref(), args.trace_filter.as_deref())?;
     let start_online_gateway = should_start_online_gateway(&args);
     let store = if let Some(path) = args.db {
         SqliteBlockStore::open(path, 256 * 1024 * 1024)?
@@ -120,16 +125,16 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn init_tracing(trace_output: Option<&std::path::Path>) -> Result<()> {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        if trace_output.is_some() {
-            tracing_subscriber::EnvFilter::new(
-                "freedom_ipfs_gateway=info,freedom_ipfs_retrieval=info,freedom_ipfs_namesys=info,freedom_ipfs_routing=info,warn",
-            )
-        } else {
-            tracing_subscriber::EnvFilter::new("warn")
-        }
-    });
+fn init_tracing(trace_output: Option<&std::path::Path>, trace_filter: Option<&str>) -> Result<()> {
+    let filter = if let Some(trace_filter) = trace_filter {
+        tracing_subscriber::EnvFilter::try_new(trace_filter)
+            .with_context(|| format!("parse trace filter {trace_filter:?}"))?
+    } else if trace_output.is_some() {
+        tracing_subscriber::EnvFilter::new(DEFAULT_TRACE_FILTER)
+    } else {
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"))
+    };
 
     if let Some(path) = trace_output {
         let file = fs::OpenOptions::new()

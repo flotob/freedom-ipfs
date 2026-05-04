@@ -938,7 +938,10 @@ async fn run_shared_bitswap_swarm(
 
     loop {
         tokio::select! {
-            Some(command) = commands.recv() => {
+            command = commands.recv() => {
+                let Some(command) = command else {
+                    break;
+                };
                 prune_connection_waiters(&mut connection_waiters, &mut connection_wait_started);
                 let (incoming_result, incoming_results) = mpsc::unbounded_channel();
                 pending_incoming.entry(command.cid).or_default().push(incoming_result);
@@ -2060,6 +2063,22 @@ mod bitswap_tests {
         let swarm = build_bitswap_swarm().await.unwrap();
 
         assert_eq!(swarm.listeners().count(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shared_bitswap_swarm_exits_when_commands_close() {
+        let swarm = build_bitswap_swarm().await.unwrap();
+        let mut control = swarm.behaviour().stream.new_control();
+        let incoming = accept_bitswap_streams(&mut control).unwrap();
+        let (commands, receiver) = mpsc::channel(1);
+        let task = tokio::spawn(run_shared_bitswap_swarm(swarm, control, incoming, receiver));
+
+        drop(commands);
+
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

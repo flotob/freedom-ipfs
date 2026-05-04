@@ -72,6 +72,9 @@ struct Args {
     /// Gateway JSONL trace output path when spawning a gateway; parsed into the report.
     #[arg(long)]
     trace_output: Option<PathBuf>,
+    /// Optional tracing filter for spawned gateway trace output.
+    #[arg(long)]
+    trace_filter: Option<String>,
 }
 
 #[tokio::main]
@@ -1345,6 +1348,9 @@ impl SpawnedGateway {
             .stderr(Stdio::piped());
         if let Some(trace_output) = &args.trace_output {
             command.arg("--trace-output").arg(trace_output);
+        }
+        if let Some(trace_filter) = &args.trace_filter {
+            command.arg("--trace-filter").arg(trace_filter);
         }
         if let Some(gateway_db) = &args.gateway_db {
             command.arg("--db").arg(gateway_db);

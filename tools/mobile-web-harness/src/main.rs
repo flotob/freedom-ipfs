@@ -204,7 +204,7 @@ async fn run_harness(args: &Args, corpus: &Corpus) -> Result<RunReport> {
     let trace_summary = args
         .trace_output
         .as_ref()
-        .map(|path| summarize_trace_output(path))
+        .map(summarize_trace_output)
         .transpose()?;
     Ok(RunReport {
         gateway_url: persistent_gateway_url,
@@ -791,13 +791,9 @@ impl MimeExpectation {
         let content_type = content_type.to_ascii_lowercase();
         match self {
             Self::Prefix(prefix) => content_type.starts_with(prefix),
-            Self::AnyOf(options) => options.iter().any(|option| {
-                if option.ends_with('/') {
-                    content_type.starts_with(option)
-                } else {
-                    content_type.starts_with(option)
-                }
-            }),
+            Self::AnyOf(options) => options
+                .iter()
+                .any(|option| content_type.starts_with(option)),
         }
     }
 
@@ -1061,9 +1057,10 @@ fn resolve_asset_url(
         return None;
     }
 
-    let resolved = if raw_url.starts_with("//") {
-        base_url.join(raw_url).ok()?
-    } else if raw_url.starts_with("/ipfs/") || raw_url.starts_with("/ipns/") {
+    let resolved = if raw_url.starts_with("//")
+        || raw_url.starts_with("/ipfs/")
+        || raw_url.starts_with("/ipns/")
+    {
         base_url.join(raw_url).ok()?
     } else if raw_url.starts_with('/') {
         if let Some(content_root) = content_root {

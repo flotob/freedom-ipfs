@@ -10,11 +10,15 @@ use futures::future::{BoxFuture, FutureExt, Shared};
 use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use futures::stream::{select_all, FuturesUnordered};
 use futures::StreamExt;
+use libp2p::core::muxing::StreamMuxerBox;
+use libp2p::core::transport::Boxed;
+use libp2p::core::upgrade;
 use libp2p::multiaddr::Protocol;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::StreamProtocol;
 use libp2p::{
-    connection_limits, identify, noise, ping, tcp, tls, yamux, Multiaddr, PeerId, SwarmBuilder,
+    connection_limits, identify, noise, ping, tcp, tls, websocket, yamux, Multiaddr, PeerId,
+    SwarmBuilder, Transport,
 };
 use libp2p_stream::{Control as StreamControl, IncomingStreams};
 use multihash::Multihash;
@@ -24,6 +28,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::error::Error as StdError;
 use std::fmt::Debug;
 use std::io;
+use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -35,6 +40,7 @@ use url::Url;
 
 const PROVIDER_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const BAD_HTTP_PROVIDER_TTL: Duration = Duration::from_secs(10 * 60);
+const BAD_BITSWAP_PROVIDER_TTL: Duration = Duration::from_secs(30);
 const HTTP_PROVIDER_TIMEOUT: Duration = Duration::from_secs(20);
 const BITSWAP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 // Start provider retry before a full dial timeout can dominate gateway TTFB.
@@ -46,6 +52,9 @@ const BITSWAP_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
 const BITSWAP_SUCCESSFUL_PEER_TTL: Duration = Duration::from_secs(10 * 60);
 const BITSWAP_SESSION_SHORTCUT_GRACE: Duration = Duration::from_millis(150);
 const BITSWAP_SESSION_SHORTCUT_TIMEOUT: Duration = Duration::from_secs(2);
+// The per-peer read path has its own 10s timeout. This caps broader shared
+// swarm stalls so one stuck command cannot sit on a browser request for 45s.
+const BITSWAP_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const BITSWAP_MAX_PENDING_OUTGOING_CONNECTIONS: u32 = 16;
 const BITSWAP_MAX_ESTABLISHED_CONNECTIONS: u32 = 16;
 const MAX_BITSWAP_PEERS_PER_BLOCK: usize = 16;
@@ -74,6 +83,12 @@ pub enum RetrievalError {
     Url(#[from] url::ParseError),
     #[error("bitswap: {0}")]
     Bitswap(String),
+    #[error("bitswap: {message}")]
+    BitswapPeerFailures {
+        message: String,
+        timeout_peers: Vec<String>,
+        connection_timeout_peers: Vec<String>,
+    },
     #[error("bitswap request timed out")]
     BitswapTimeout,
     #[error("no HTTP-capable providers found")]
@@ -331,9 +346,19 @@ impl HttpRetriever {
         match self.fetch_from_providers_with_source(cid, &providers).await {
             Ok((block, source)) => Ok((block, source)),
             Err(err) if should_refresh_providers_after_failure(&err) => {
+                let timeout_peer_count = bitswap_timeout_peers(&err).len();
+                let connection_timeout_peer_count = bitswap_connection_timeout_peers(&err).len();
+                let request_timeout = is_bitswap_request_timeout(&err);
                 tracing::info!(
-                    phase = "provider_refresh_after_failure",
+                    phase = if timeout_peer_count > 0 || request_timeout {
+                        "provider_refresh_after_timeout"
+                    } else {
+                        "provider_refresh_after_failure"
+                    },
                     cid = %cid,
+                    timeout_peer_count,
+                    connection_timeout_peer_count,
+                    request_timeout,
                     initial_error = %err
                 );
                 let routing_started = Instant::now();
@@ -364,7 +389,37 @@ impl HttpRetriever {
                         return Err(err);
                     }
                 };
+                tracing::info!(
+                    phase = "retry_provider_count",
+                    cid = %cid,
+                    previous_provider_count = providers.len(),
+                    retry_provider_count = refreshed.len(),
+                    same_provider_set = same_provider_set(&providers, &refreshed),
+                    timeout_peer_count,
+                    connection_timeout_peer_count,
+                    request_timeout
+                );
                 if same_provider_set(&providers, &refreshed) {
+                    if timeout_peer_count > 0 || request_timeout {
+                        tracing::info!(
+                            phase = if request_timeout {
+                                "provider_retry_after_request_timeout"
+                            } else {
+                                "provider_retry_after_timeout"
+                            },
+                            cid = %cid,
+                            provider_count = providers.len(),
+                            timeout_peer_count,
+                            request_timeout,
+                            initial_error = %err
+                        );
+                        return match self.fetch_from_providers_with_source(cid, &providers).await {
+                            Ok((block, source)) => Ok((block, source)),
+                            Err(retry_err) => Err(RetrievalError::Bitswap(format!(
+                                "initial provider retrieval failed ({err}); same-provider retry after timeout failed ({retry_err})"
+                            ))),
+                        };
+                    }
                     if is_bitswap_connection_ready_failure(&err) {
                         tracing::info!(
                             phase = "provider_retry_after_connection_timeout",
@@ -506,6 +561,13 @@ impl HttpRetriever {
         let peer_started = Instant::now();
         let mut peers = bitswap_peers(providers).await;
         let provider_peer_count = peers.len();
+        if provider_peer_count == 0 && !providers.is_empty() {
+            tracing::info!(
+                phase = "bitswap_provider_candidates_empty",
+                cid = %cid,
+                providers = %format_provider_candidates(providers)
+            );
+        }
         self.apply_successful_bitswap_peer_scores(&mut peers).await;
         let session_peer_count = self.insert_recent_bitswap_session_peers(&mut peers).await;
         tracing::info!(
@@ -522,7 +584,12 @@ impl HttpRetriever {
             |peer| match self.store.is_bad_provider(&peer.id.to_string()) {
                 Ok(false) => true,
                 Ok(true) => {
-                    tracing::debug!(peer = %peer.id, "skipping temporarily bad Bitswap provider");
+                    tracing::info!(
+                        phase = "bad_peer_skipped",
+                        cid = %cid,
+                        peer = %peer.id,
+                        reason = "temporary bitswap suppression"
+                    );
                     false
                 }
                 Err(_) => true,
@@ -540,14 +607,31 @@ impl HttpRetriever {
         let bitswap_started = Instant::now();
         let peer_count = peers.len();
         let peers_for_record = peers.clone();
-        let result = self
-            .shared_bitswap_client()
-            .await?
-            .fetch(*cid, peers)
-            .await?;
+        let result = self.shared_bitswap_client().await?.fetch(*cid, peers).await;
         let result = match result {
-            Ok(result) => result,
+            Ok(Ok(result)) => result,
+            Ok(Err(err)) => {
+                self.mark_bitswap_timeout_peers(cid, &err, peer_count);
+                tracing::info!(
+                    phase = "bitswap_fetch",
+                    cid = %cid,
+                    peer_count,
+                    ok = false,
+                    error = %err,
+                    elapsed_ms = bitswap_started.elapsed().as_millis()
+                );
+                return Err(err);
+            }
             Err(err) => {
+                if is_bitswap_request_timeout(&err) {
+                    tracing::info!(
+                        phase = "bitswap_request_timeout",
+                        cid = %cid,
+                        peer_count,
+                        elapsed_ms = bitswap_started.elapsed().as_millis()
+                    );
+                    self.reset_shared_bitswap_client().await;
+                }
                 tracing::info!(
                     phase = "bitswap_fetch",
                     cid = %cid,
@@ -576,6 +660,41 @@ impl HttpRetriever {
         self.store_bitswap_result(cid, result)
     }
 
+    fn mark_bitswap_timeout_peers(
+        &self,
+        cid: &Cid,
+        err: &RetrievalError,
+        attempted_peer_count: usize,
+    ) {
+        let timeout_peers = bitswap_timeout_peers(err);
+        if timeout_peers.is_empty() {
+            return;
+        }
+        if suppress_bitswap_timeout_suppression(timeout_peers.len(), attempted_peer_count) {
+            tracing::info!(
+                phase = "bitswap_peer_timeout_suppressed",
+                cid = %cid,
+                timeout_peer_count = timeout_peers.len(),
+                attempted_peer_count,
+                reason = "broad_timeout"
+            );
+            return;
+        }
+        for peer in timeout_peers {
+            tracing::info!(
+                phase = "bitswap_peer_timeout",
+                cid = %cid,
+                peer = %peer,
+                ttl_secs = BAD_BITSWAP_PROVIDER_TTL.as_secs()
+            );
+            let _ = self.store.mark_bad_provider(
+                peer,
+                "bitswap stream read timed out",
+                BAD_BITSWAP_PROVIDER_TTL,
+            );
+        }
+    }
+
     async fn shared_bitswap_client(&self) -> Result<SharedBitswapClient> {
         let mut client = self.bitswap.lock().await;
         if let Some(client) = client.as_ref() {
@@ -584,6 +703,13 @@ impl HttpRetriever {
         let spawned = SharedBitswapClient::spawn().await?;
         *client = Some(spawned.clone());
         Ok(spawned)
+    }
+
+    async fn reset_shared_bitswap_client(&self) {
+        let mut client = self.bitswap.lock().await;
+        if client.take().is_some() {
+            tracing::info!(phase = "bitswap_client_reset");
+        }
     }
 
     async fn apply_successful_bitswap_peer_scores(&self, peers: &mut [BitswapPeer]) {
@@ -663,7 +789,7 @@ impl HttpRetriever {
             .iter()
             .map(|(id, success)| (*id, success.seen_at, success.addrs.clone()))
             .collect::<Vec<_>>();
-        peers.sort_by(|left, right| right.1.cmp(&left.1));
+        peers.sort_by_key(|peer| std::cmp::Reverse(peer.1));
         peers
             .into_iter()
             .take(MAX_BITSWAP_SESSION_PEERS)
@@ -873,6 +999,42 @@ struct BitswapPeerTarget {
     connection_ready: Option<oneshot::Receiver<()>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BitswapPeerFailureKind {
+    ConnectionTimeout,
+    ReadTimeout,
+    Other,
+}
+
+#[derive(Debug, Clone)]
+struct BitswapProtocolFailure {
+    kind: BitswapPeerFailureKind,
+    detail: String,
+}
+
+impl BitswapProtocolFailure {
+    fn other(detail: String) -> Self {
+        Self {
+            kind: BitswapPeerFailureKind::Other,
+            detail,
+        }
+    }
+
+    fn read_timeout(detail: String) -> Self {
+        Self {
+            kind: BitswapPeerFailureKind::ReadTimeout,
+            detail,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BitswapPeerFailure {
+    id: PeerId,
+    kind: BitswapPeerFailureKind,
+    detail: String,
+}
+
 #[derive(Clone)]
 struct BitswapFetchResult {
     requested_block: Vec<u8>,
@@ -915,7 +1077,7 @@ impl SharedBitswapClient {
             .await
             .map_err(|_| RetrievalError::Bitswap("shared bitswap swarm stopped".into()))?;
 
-        match timeout(Duration::from_secs(45), response).await {
+        match timeout(BITSWAP_REQUEST_TIMEOUT, response).await {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => Err(RetrievalError::Bitswap(
                 "shared bitswap response dropped".into(),
@@ -1168,6 +1330,21 @@ fn format_multiaddrs(addrs: &[Multiaddr]) -> String {
     }
 }
 
+fn format_provider_candidates(providers: &[Provider]) -> String {
+    providers
+        .iter()
+        .take(MAX_BITSWAP_FAILURE_DETAILS)
+        .map(|provider| {
+            format!(
+                "{}@{}",
+                provider.id.as_deref().unwrap_or("<unknown>"),
+                provider.addrs.join(",")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn format_error_detail<E>(err: &E) -> String
 where
     E: StdError + Debug,
@@ -1219,8 +1396,8 @@ struct ReceivedBlockPresence {
 }
 
 enum WantHaveFailure {
-    TryOtherProtocols(String),
-    PeerDoesNotHave(String),
+    TryOtherProtocols(BitswapProtocolFailure),
+    PeerDoesNotHave(BitswapProtocolFailure),
 }
 
 #[derive(NetworkBehaviour)]
@@ -1249,13 +1426,11 @@ async fn build_bitswap_swarm() -> Result<libp2p::Swarm<BitswapBehaviour>> {
         )
         .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
         .with_quic()
-        // Avoid libp2p's system DNS path: iOS devices do not expose a
-        // Unix-style /etc/resolv.conf, and Bitswap frequently dials DNS
-        // multiaddrs from public provider records.
-        .with_dns_config(
-            libp2p::dns::ResolverConfig::cloudflare(),
-            libp2p::dns::ResolverOpts::default(),
-        )
+        // WebSocket providers need DNS names preserved for WSS SNI, so this
+        // transport has its own explicit Cloudflare resolver instead of the
+        // builder's system-DNS websocket shortcut.
+        .with_other_transport(cloudflare_websocket_transport)
+        .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
         .with_behaviour(|key| BitswapBehaviour {
             stream: libp2p_stream::Behaviour::new(),
             identify: identify::Behaviour::new(identify::Config::new(
@@ -1272,6 +1447,25 @@ async fn build_bitswap_swarm() -> Result<libp2p::Swarm<BitswapBehaviour>> {
     Ok(swarm)
 }
 
+fn cloudflare_websocket_transport(
+    keypair: &libp2p::identity::Keypair,
+) -> std::result::Result<Boxed<(PeerId, StreamMuxerBox)>, Box<dyn std::error::Error + Send + Sync>>
+{
+    let tcp = tcp::tokio::Transport::new(tcp::Config::default());
+    let dns_tcp = libp2p::dns::tokio::Transport::custom(
+        tcp,
+        libp2p::dns::ResolverConfig::cloudflare(),
+        libp2p::dns::ResolverOpts::default(),
+    );
+    let security = noise::Config::new(keypair)?;
+    Ok(websocket::Config::new(dns_tcp)
+        .upgrade(upgrade::Version::V1Lazy)
+        .authenticate(security)
+        .multiplex(yamux::Config::default())
+        .map(|(peer, muxer), _| (peer, StreamMuxerBox::new(muxer)))
+        .boxed())
+}
+
 async fn bitswap_peers(providers: &[Provider]) -> Vec<BitswapPeer> {
     let mut peers = Vec::new();
 
@@ -1280,7 +1474,7 @@ async fn bitswap_peers(providers: &[Provider]) -> Vec<BitswapPeer> {
         let mut addrs = Vec::new();
         let mut peer_id = provider_peer;
 
-        for addr in expand_dnsaddr_records(&provider.addrs).await {
+        for addr in expand_provider_multiaddrs(&provider.addrs).await {
             let Some((addr_peer, dial_addr)) = parse_bitswap_multiaddr(&addr, provider_peer) else {
                 continue;
             };
@@ -1334,25 +1528,68 @@ fn interleaved_bitswap_dials(peers: &[BitswapPeer]) -> Vec<(PeerId, Multiaddr)> 
     dials
 }
 
-async fn expand_dnsaddr_records(addrs: &[String]) -> Vec<String> {
+async fn expand_provider_multiaddrs(addrs: &[String]) -> Vec<String> {
     let resolver = CloudflareDohResolver::default();
-    let mut expanded = Vec::new();
+    let mut expanded_dnsaddr = Vec::new();
 
     for addr in addrs {
         let Some(host) = dnsaddr_host(addr) else {
-            expanded.push(addr.clone());
+            expanded_dnsaddr.push(addr.clone());
             continue;
         };
         let lookup = format!("_dnsaddr.{host}");
         let Ok(records) = resolver.txt_lookup(&lookup).await else {
+            tracing::info!(
+                phase = "bitswap_dnsaddr_expand",
+                host,
+                ok = false,
+                record_count = 0
+            );
             continue;
         };
-        expanded.extend(records.into_iter().filter_map(|record| {
+        tracing::info!(
+            phase = "bitswap_dnsaddr_expand",
+            host,
+            ok = true,
+            record_count = records.len()
+        );
+        expanded_dnsaddr.extend(records.into_iter().filter_map(|record| {
             record
                 .trim()
                 .strip_prefix("dnsaddr=")
                 .map(ToOwned::to_owned)
         }));
+    }
+
+    let mut expanded = Vec::new();
+    for addr in expanded_dnsaddr {
+        if websocket_multiaddr(&addr) {
+            expanded.push(addr);
+            continue;
+        }
+        let Some(dns_name) = dns_multiaddr_name(&addr) else {
+            expanded.push(addr);
+            continue;
+        };
+        let Ok(addrs) = resolver.ip_lookup(&dns_name).await else {
+            expanded.push(addr);
+            continue;
+        };
+        if addrs.is_empty() {
+            expanded.push(addr);
+            continue;
+        }
+        tracing::info!(
+            phase = "bitswap_dns_multiaddr_expand",
+            host = %dns_name,
+            ip_count = addrs.len()
+        );
+        expanded.extend(
+            addrs
+                .into_iter()
+                .map(|ip| replace_dns_multiaddr(&addr, ip))
+                .filter_map(|addr| addr.map(|addr| addr.to_string())),
+        );
     }
 
     expanded
@@ -1365,6 +1602,43 @@ fn dnsaddr_host(addr: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+fn websocket_multiaddr(addr: &str) -> bool {
+    Multiaddr::from_str(addr).is_ok_and(|addr| {
+        addr.iter()
+            .any(|protocol| matches!(protocol, Protocol::Ws(_) | Protocol::Wss(_)))
+    })
+}
+
+fn dns_multiaddr_name(addr: &str) -> Option<String> {
+    Multiaddr::from_str(addr)
+        .ok()?
+        .iter()
+        .find_map(|protocol| match protocol {
+            Protocol::Dns(name) | Protocol::Dns4(name) | Protocol::Dns6(name) => {
+                Some(name.to_string())
+            }
+            _ => None,
+        })
+}
+
+fn replace_dns_multiaddr(addr: &str, ip: IpAddr) -> Option<Multiaddr> {
+    let mut replaced = Multiaddr::empty();
+    let mut replaced_dns = false;
+    for protocol in Multiaddr::from_str(addr).ok()?.iter() {
+        match protocol {
+            Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) if !replaced_dns => {
+                match ip {
+                    IpAddr::V4(ip) => replaced.push(Protocol::Ip4(ip)),
+                    IpAddr::V6(ip) => replaced.push(Protocol::Ip6(ip)),
+                }
+                replaced_dns = true;
+            }
+            other => replaced.push(other.to_owned()),
+        }
+    }
+    replaced_dns.then_some(replaced)
 }
 
 fn parse_bitswap_multiaddr(
@@ -1404,8 +1678,6 @@ fn is_supported_bitswap_addr(addr: &Multiaddr) -> bool {
             | Protocol::WebRTC
             | Protocol::WebRTCDirect
             | Protocol::P2pWebRtcDirect
-            | Protocol::Ws(_)
-            | Protocol::Wss(_)
             | Protocol::P2pCircuit
             | Protocol::Certhash(_) => return false,
             _ => {}
@@ -1449,6 +1721,7 @@ fn should_refresh_providers_after_failure(err: &RetrievalError) -> bool {
     matches!(
         err,
         RetrievalError::Bitswap(_)
+            | RetrievalError::BitswapPeerFailures { .. }
             | RetrievalError::BitswapTimeout
             | RetrievalError::NoHttpProviders
             | RetrievalError::NoBitswapProviders
@@ -1456,11 +1729,44 @@ fn should_refresh_providers_after_failure(err: &RetrievalError) -> bool {
 }
 
 fn is_bitswap_connection_ready_failure(err: &RetrievalError) -> bool {
-    matches!(
-        err,
-        RetrievalError::Bitswap(message)
-            if message.contains("bitswap connection was not established")
-    )
+    match err {
+        RetrievalError::Bitswap(message) => {
+            message.contains("bitswap connection was not established")
+        }
+        RetrievalError::BitswapPeerFailures {
+            connection_timeout_peers,
+            ..
+        } => !connection_timeout_peers.is_empty(),
+        _ => false,
+    }
+}
+
+fn is_bitswap_request_timeout(err: &RetrievalError) -> bool {
+    matches!(err, RetrievalError::BitswapTimeout)
+}
+
+fn bitswap_timeout_peers(err: &RetrievalError) -> &[String] {
+    match err {
+        RetrievalError::BitswapPeerFailures { timeout_peers, .. } => timeout_peers,
+        _ => &[],
+    }
+}
+
+fn bitswap_connection_timeout_peers(err: &RetrievalError) -> &[String] {
+    match err {
+        RetrievalError::BitswapPeerFailures {
+            connection_timeout_peers,
+            ..
+        } => connection_timeout_peers,
+        _ => &[],
+    }
+}
+
+fn suppress_bitswap_timeout_suppression(
+    timeout_peer_count: usize,
+    attempted_peer_count: usize,
+) -> bool {
+    attempted_peer_count >= 4 && timeout_peer_count * 2 >= attempted_peer_count
 }
 
 fn same_provider_set(left: &[Provider], right: &[Provider]) -> bool {
@@ -1553,14 +1859,33 @@ async fn fetch_bitswap_over_outgoing_streams(
         "no bitswap request attempts completed".to_string()
     } else {
         failures
-            .into_iter()
+            .iter()
             .take(MAX_BITSWAP_FAILURE_DETAILS)
+            .map(|failure| failure.detail.as_str())
             .collect::<Vec<_>>()
             .join("; ")
     };
-    Err(RetrievalError::Bitswap(format!(
-        "all bitswap stream requests failed for cid {cid}; targets={target_summary}; detail={detail}"
-    )))
+    let message =
+        format!("all bitswap stream requests failed for cid {cid}; targets={target_summary}; detail={detail}");
+    let timeout_peers = failures
+        .iter()
+        .filter(|failure| failure.kind == BitswapPeerFailureKind::ReadTimeout)
+        .map(|failure| failure.id.to_string())
+        .collect::<Vec<_>>();
+    let connection_timeout_peers = failures
+        .iter()
+        .filter(|failure| failure.kind == BitswapPeerFailureKind::ConnectionTimeout)
+        .map(|failure| failure.id.to_string())
+        .collect::<Vec<_>>();
+    if timeout_peers.is_empty() && connection_timeout_peers.is_empty() {
+        Err(RetrievalError::Bitswap(message))
+    } else {
+        Err(RetrievalError::BitswapPeerFailures {
+            message,
+            timeout_peers,
+            connection_timeout_peers,
+        })
+    }
 }
 
 async fn request_bitswap_block_after_connection(
@@ -1569,7 +1894,7 @@ async fn request_bitswap_block_after_connection(
     cid: Cid,
     prefer_want_have: bool,
     dial_errors: DialErrorLog,
-) -> std::result::Result<BitswapFetchResult, String> {
+) -> std::result::Result<BitswapFetchResult, BitswapPeerFailure> {
     let BitswapPeerTarget {
         id: peer_id,
         addrs,
@@ -1581,20 +1906,28 @@ async fn request_bitswap_block_after_connection(
         match timeout(BITSWAP_CONNECTION_READY_TIMEOUT, connection_ready).await {
             Ok(Ok(())) => {}
             Ok(Err(_)) => {
-                return Err(format!(
-                    "{}: bitswap connection waiter was dropped before connection",
-                    peer_id
-                ))
+                return Err(BitswapPeerFailure {
+                    id: peer_id,
+                    kind: BitswapPeerFailureKind::Other,
+                    detail: format!(
+                        "{}: bitswap connection waiter was dropped before connection",
+                        peer_id
+                    ),
+                })
             }
             Err(_) => {
                 let recent_dial_errors = recent_dial_errors(&dial_errors, peer_id).await;
-                return Err(format!(
-                    "{}: bitswap connection was not established within {}ms; addrs={}; recent_dial_errors={}",
-                    peer_id,
-                    BITSWAP_CONNECTION_READY_TIMEOUT.as_millis(),
-                    format_multiaddrs(&addrs),
-                    recent_dial_errors
-                ));
+                return Err(BitswapPeerFailure {
+                    id: peer_id,
+                    kind: BitswapPeerFailureKind::ConnectionTimeout,
+                    detail: format!(
+                        "{}: bitswap connection was not established within {}ms; addrs={}; recent_dial_errors={}",
+                        peer_id,
+                        BITSWAP_CONNECTION_READY_TIMEOUT.as_millis(),
+                        format_multiaddrs(&addrs),
+                        recent_dial_errors
+                    ),
+                });
             }
         }
     }
@@ -1607,7 +1940,7 @@ async fn request_bitswap_block(
     addrs: Vec<Multiaddr>,
     cid: Cid,
     prefer_want_have: bool,
-) -> std::result::Result<BitswapFetchResult, String> {
+) -> std::result::Result<BitswapFetchResult, BitswapPeerFailure> {
     let mut failures = Vec::new();
     for protocol in bitswap_protocols() {
         let protocol_name = protocol.to_string();
@@ -1619,15 +1952,17 @@ async fn request_bitswap_block(
         let mut stream = match stream {
             Ok(Ok(stream)) => stream,
             Ok(Err(err)) => {
-                failures.push(format!(
+                failures.push(BitswapProtocolFailure::other(format!(
                     "{protocol_name}: open failed for {peer_id} addrs={}: {}",
                     format_multiaddrs(&addrs),
                     format_error_detail(&err)
-                ));
+                )));
                 continue;
             }
             Err(_) => {
-                failures.push(format!("{protocol_name}: open timed out"));
+                failures.push(BitswapProtocolFailure::other(format!(
+                    "{protocol_name}: open timed out"
+                )));
                 continue;
             }
         };
@@ -1639,7 +1974,11 @@ async fn request_bitswap_block(
                     return Ok(result);
                 }
                 Err(WantHaveFailure::TryOtherProtocols(err)) => {
+                    let read_timed_out = err.kind == BitswapPeerFailureKind::ReadTimeout;
                     failures.push(err);
+                    if read_timed_out {
+                        break;
+                    }
                     continue;
                 }
                 Err(WantHaveFailure::PeerDoesNotHave(err)) => {
@@ -1654,14 +1993,36 @@ async fn request_bitswap_block(
                 result.source_peer = Some(peer_id);
                 return Ok(result);
             }
-            Err(err) => failures.push(err),
+            Err(err) => {
+                let read_timed_out = err.kind == BitswapPeerFailureKind::ReadTimeout;
+                failures.push(err);
+                if read_timed_out {
+                    break;
+                }
+            }
         }
     }
-    Err(format!(
-        "{peer_id}: no supported Bitswap protocol returned cid {cid}; addrs={}; failures=({})",
-        format_multiaddrs(&addrs),
-        failures.join("; ")
-    ))
+    let kind = if failures
+        .iter()
+        .any(|failure| failure.kind == BitswapPeerFailureKind::ReadTimeout)
+    {
+        BitswapPeerFailureKind::ReadTimeout
+    } else {
+        BitswapPeerFailureKind::Other
+    };
+    Err(BitswapPeerFailure {
+        id: peer_id,
+        kind,
+        detail: format!(
+            "{peer_id}: no supported Bitswap protocol returned cid {cid}; addrs={}; failures=({})",
+            format_multiaddrs(&addrs),
+            failures
+                .iter()
+                .map(|failure| failure.detail.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
+        ),
+    })
 }
 
 async fn request_bitswap_block_after_want_have<T>(
@@ -1673,16 +2034,20 @@ where
     T: AsyncRead + AsyncWrite + Unpin,
 {
     if let Err(err) = write_bitswap_want_have(stream, cid).await {
-        return Err(WantHaveFailure::TryOtherProtocols(format!(
-            "{protocol_name}: write want-have failed: {err}"
-        )));
+        return Err(WantHaveFailure::TryOtherProtocols(
+            BitswapProtocolFailure::other(format!(
+                "{protocol_name}: write want-have failed: {err}"
+            )),
+        ));
     }
     let response = match timeout(BITSWAP_WANT_HAVE_TIMEOUT, read_bitswap_response(stream)).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
-            return Err(WantHaveFailure::TryOtherProtocols(format!(
-                "{protocol_name}: read want-have failed: {err}"
-            )))
+            return Err(WantHaveFailure::TryOtherProtocols(
+                BitswapProtocolFailure::other(format!(
+                    "{protocol_name}: read want-have failed: {err}"
+                )),
+            ))
         }
         Err(_) => {
             return request_bitswap_block_on_stream(stream, cid, protocol_name)
@@ -1697,9 +2062,9 @@ where
         return Ok(result);
     }
     if has_dont_have {
-        return Err(WantHaveFailure::PeerDoesNotHave(format!(
-            "{protocol_name}: peer returned DONT_HAVE"
-        )));
+        return Err(WantHaveFailure::PeerDoesNotHave(
+            BitswapProtocolFailure::other(format!("{protocol_name}: peer returned DONT_HAVE")),
+        ));
     }
     if !has_have {
         return request_bitswap_block_on_stream(stream, cid, protocol_name)
@@ -1715,23 +2080,35 @@ async fn request_bitswap_block_on_stream<T>(
     stream: &mut T,
     cid: &Cid,
     protocol_name: &str,
-) -> std::result::Result<BitswapFetchResult, String>
+) -> std::result::Result<BitswapFetchResult, BitswapProtocolFailure>
 where
     T: AsyncRead + AsyncWrite + Unpin,
 {
     if let Err(err) = write_bitswap_want(stream, cid).await {
-        return Err(format!("{protocol_name}: write failed: {err}"));
+        return Err(BitswapProtocolFailure::other(format!(
+            "{protocol_name}: write failed: {err}"
+        )));
     }
     let blocks = match timeout(Duration::from_secs(10), read_bitswap_blocks(stream)).await {
         Ok(Ok(blocks)) => blocks,
-        Ok(Err(err)) => return Err(format!("{protocol_name}: read failed: {err}")),
-        Err(_) => return Err(format!("{protocol_name}: read timed out")),
+        Ok(Err(err)) => {
+            return Err(BitswapProtocolFailure::other(format!(
+                "{protocol_name}: read failed: {err}"
+            )))
+        }
+        Err(_) => {
+            return Err(BitswapProtocolFailure::read_timeout(format!(
+                "{protocol_name}: read timed out"
+            )))
+        }
     };
     if let Some(result) = collect_bitswap_result(cid, blocks) {
         let _ = write_bitswap_cancel(stream, cid).await;
         return Ok(result);
     }
-    Err(format!("{protocol_name}: no valid block returned"))
+    Err(BitswapProtocolFailure::other(format!(
+        "{protocol_name}: no valid block returned"
+    )))
 }
 
 fn bitswap_protocols() -> [StreamProtocol; 3] {
@@ -2088,6 +2465,43 @@ mod bitswap_tests {
     }
 
     #[test]
+    fn accepts_wss_multiaddr() {
+        let provider = parse_peer_id("Qmdv6yNikmUWUWXufLJLRNkv6Y9sY5cmgeX5RVWA4WNMz4");
+        let (peer, addr) = parse_bitswap_multiaddr(
+            "/dns4/bitswap-v3.pinata.cloud/tcp/443/wss/p2p/Qmdv6yNikmUWUWXufLJLRNkv6Y9sY5cmgeX5RVWA4WNMz4",
+            provider,
+        )
+        .unwrap();
+        assert_eq!(Some(peer), provider);
+        assert_eq!(
+            addr.to_string(),
+            "/dns4/bitswap-v3.pinata.cloud/tcp/443/wss"
+        );
+    }
+
+    #[test]
+    fn detects_websocket_dns_multiaddr() {
+        assert!(websocket_multiaddr(
+            "/dns4/bitswap-v3.pinata.cloud/tcp/443/wss"
+        ));
+        assert!(websocket_multiaddr("/dns4/example.com/tcp/4001/tls/ws"));
+        assert!(!websocket_multiaddr("/dns4/example.com/tcp/4001"));
+    }
+
+    #[test]
+    fn replaces_non_websocket_dns_multiaddr_with_ip() {
+        let replaced = replace_dns_multiaddr(
+            "/dns4/example.com/tcp/4001/p2p/12D3KooWNDpFqyse9kR7aZwgEzh4U1mL6Zz6jEuRNFXJxL5D2KPP",
+            "203.0.113.10".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            replaced.to_string(),
+            "/ip4/203.0.113.10/tcp/4001/p2p/12D3KooWNDpFqyse9kR7aZwgEzh4U1mL6Zz6jEuRNFXJxL5D2KPP"
+        );
+    }
+
+    #[test]
     fn rejects_relay_only_bitswap_multiaddr() {
         let provider = parse_peer_id("12D3KooWNDpFqyse9kR7aZwgEzh4U1mL6Zz6jEuRNFXJxL5D2KPP");
         assert!(
@@ -2102,12 +2516,12 @@ mod bitswap_tests {
         let providers = vec![Provider::from_parts(
             Some(peer.to_string()),
             vec![
-                "/dns4/example.com/tcp/4001".to_string(),
                 "/ip4/164.92.225.198/udp/4001/quic-v1".to_string(),
                 "/ip4/164.92.225.198/tcp/4001".to_string(),
                 "/ip4/164.92.225.198/tcp/4001".to_string(),
                 "/dns4/example.com/tcp/4002/ws".to_string(),
                 "/ip4/164.92.225.199/tcp/4001".to_string(),
+                "/ip4/164.92.225.200/tcp/4001".to_string(),
             ],
         )
         .unwrap()];
@@ -2807,6 +3221,102 @@ mod bitswap_tests {
         session_swarm.abort();
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn provider_refresh_after_bitswap_timeout_uses_new_peer() {
+        let data = b"provider refresh after silent peer";
+        let cid = freedom_ipfs_core::cid_from_data(freedom_ipfs_core::CODEC_RAW, data);
+        let (silent_peer_id, silent_addr, silent_swarm, silent_stream) =
+            spawn_silent_bitswap_peer(cid).await;
+        let (good_peer_id, good_addr, good_swarm, good_stream) =
+            spawn_local_bitswap_peer(cid, data.to_vec()).await;
+        let first_response = format!(
+            r#"{{"Providers":[{{"ID":"{}","Addrs":["{}"]}}]}}"#,
+            silent_peer_id, silent_addr
+        );
+        let second_response = format!(
+            r#"{{"Providers":[{{"ID":"{}","Addrs":["{}"]}}]}}"#,
+            good_peer_id, good_addr
+        );
+        let (endpoint, routing_task) =
+            spawn_sequence_delegated_response(vec![first_response, second_response]).await;
+
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let retriever = HttpRetriever::new(
+            freedom_ipfs_routing::DelegatedRoutingClient::new(endpoint),
+            store.clone(),
+        );
+
+        let (block, source) = tokio::time::timeout(
+            Duration::from_secs(20),
+            retriever.fetch_block_with_source(&cid),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(source, RetrievalSource::Bitswap);
+        assert_eq!(block.data(), data);
+        assert!(store.is_bad_provider(&silent_peer_id.to_string()).unwrap());
+        assert_eq!(store.get(&cid).unwrap().unwrap().data(), data);
+
+        tokio::time::timeout(Duration::from_secs(5), good_stream)
+            .await
+            .unwrap()
+            .unwrap();
+        silent_stream.abort();
+        silent_swarm.abort();
+        good_swarm.abort();
+        routing_task.abort();
+    }
+
+    #[test]
+    fn single_bitswap_timeout_peer_is_temporarily_suppressed() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let retriever = HttpRetriever::new(
+            freedom_ipfs_routing::DelegatedRoutingClient::new("http://127.0.0.1:9/routing/v1"),
+            store.clone(),
+        );
+        let cid = freedom_ipfs_core::cid_from_data(
+            freedom_ipfs_core::CODEC_RAW,
+            b"single timeout peer suppression",
+        );
+        let peer = "12D3KooWNDpFqyse9kR7aZwgEzh4U1mL6Zz6jEuRNFXJxL5D2KPP";
+        let err = RetrievalError::BitswapPeerFailures {
+            message: "timed out".into(),
+            timeout_peers: vec![peer.to_string()],
+            connection_timeout_peers: Vec::new(),
+        };
+
+        retriever.mark_bitswap_timeout_peers(&cid, &err, 1);
+
+        assert!(store.is_bad_provider(peer).unwrap());
+    }
+
+    #[test]
+    fn broad_bitswap_timeouts_are_not_mass_suppressed() {
+        let store = SqliteBlockStore::in_memory(1024 * 1024).unwrap();
+        let retriever = HttpRetriever::new(
+            freedom_ipfs_routing::DelegatedRoutingClient::new("http://127.0.0.1:9/routing/v1"),
+            store.clone(),
+        );
+        let cid = freedom_ipfs_core::cid_from_data(
+            freedom_ipfs_core::CODEC_RAW,
+            b"broad timeout peer suppression",
+        );
+        let peers = ["peer-a", "peer-b", "peer-c", "peer-d"];
+        let err = RetrievalError::BitswapPeerFailures {
+            message: "broad timeout".into(),
+            timeout_peers: peers.iter().map(|peer| (*peer).to_string()).collect(),
+            connection_timeout_peers: Vec::new(),
+        };
+
+        retriever.mark_bitswap_timeout_peers(&cid, &err, peers.len());
+
+        for peer in peers {
+            assert!(!store.is_bad_provider(peer).unwrap());
+        }
+    }
+
     async fn spawn_static_http_provider(
         data: Vec<u8>,
     ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
@@ -3087,6 +3597,84 @@ mod bitswap_tests {
         });
 
         (peer_id, addr, swarm_task, stream_task)
+    }
+
+    async fn spawn_silent_bitswap_peer(
+        cid: Cid,
+    ) -> (
+        PeerId,
+        Multiaddr,
+        tokio::task::JoinHandle<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let mut swarm = SwarmBuilder::with_new_identity()
+            .with_tokio()
+            .with_tcp(
+                tcp::Config::default(),
+                (tls::Config::new, noise::Config::new),
+                yamux::Config::default,
+            )
+            .unwrap()
+            .with_behaviour(|_| libp2p_stream::Behaviour::new())
+            .unwrap()
+            .build();
+        let peer_id = *swarm.local_peer_id();
+        let mut control = swarm.behaviour().new_control();
+        let mut incoming = control
+            .accept(StreamProtocol::new("/ipfs/bitswap/1.2.0"))
+            .unwrap();
+        swarm
+            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .unwrap();
+        let addr = loop {
+            if let libp2p::swarm::SwarmEvent::NewListenAddr { address, .. } =
+                swarm.select_next_some().await
+            {
+                break address;
+            }
+        };
+
+        let swarm_task = tokio::spawn(async move {
+            loop {
+                let _ = swarm.select_next_some().await;
+            }
+        });
+        let stream_task = tokio::spawn(async move {
+            let (_peer, mut stream) = incoming.next().await.unwrap();
+            let want_bytes = read_length_prefixed(&mut stream, 1024).await.unwrap();
+            let want = BitswapMessage::decode(want_bytes.as_slice()).unwrap();
+            let entry = want.wantlist.unwrap().entries.remove(0);
+            assert_eq!(entry.block, cid.to_bytes());
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+
+        (peer_id, addr, swarm_task, stream_task)
+    }
+
+    async fn spawn_sequence_delegated_response(
+        responses: Vec<String>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let endpoint = format!("http://{addr}/routing/v1");
+        let task = tokio::spawn(async move {
+            for body in responses {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut request = vec![0u8; 4096];
+                if stream.read(&mut request).await.is_err() {
+                    continue;
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        (endpoint, task)
     }
 
     struct KuboDaemon {

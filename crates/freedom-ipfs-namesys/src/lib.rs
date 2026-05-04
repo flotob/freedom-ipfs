@@ -7,6 +7,7 @@ use multihash::Multihash;
 use prost::Message;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -24,6 +25,8 @@ const DEFAULT_NAME_CACHE_TTL: Duration = Duration::from_secs(60);
 const DEFAULT_NAMESYS_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const DNS_TYPE_CNAME: u16 = 5;
 const DNS_TYPE_TXT: u16 = 16;
+const DNS_TYPE_A: u16 = 1;
+const DNS_TYPE_AAAA: u16 = 28;
 const MAX_DOH_CNAME_DEPTH: usize = 8;
 
 #[derive(Debug, Error)]
@@ -247,6 +250,51 @@ impl CloudflareDohResolver {
             .json::<DohResponse>()
             .await
             .map_err(NamesysError::from)
+    }
+
+    pub async fn ip_lookup(&self, name: &str) -> Result<Vec<IpAddr>> {
+        let mut addrs = self.ip_lookup_type(name, DNS_TYPE_A).await?;
+        addrs.extend(self.ip_lookup_type(name, DNS_TYPE_AAAA).await?);
+        addrs.sort();
+        addrs.dedup();
+        Ok(addrs)
+    }
+
+    async fn ip_lookup_type(&self, name: &str, record_type: u16) -> Result<Vec<IpAddr>> {
+        let mut current = name.trim_end_matches('.').to_string();
+        let record_type_query = record_type.to_string();
+
+        for _ in 0..=MAX_DOH_CNAME_DEPTH {
+            let response = self
+                .client
+                .get(&self.endpoint)
+                .query(&[
+                    ("name", current.as_str()),
+                    ("type", record_type_query.as_str()),
+                ])
+                .header("accept", "application/dns-json")
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<DohResponse>()
+                .await?;
+            let answers = response.answer.unwrap_or_default();
+            let addrs = answers
+                .iter()
+                .filter(|answer| answer.record_type == Some(record_type))
+                .filter_map(|answer| answer.data.parse::<IpAddr>().ok())
+                .collect::<Vec<_>>();
+            if !addrs.is_empty() {
+                return Ok(addrs);
+            }
+
+            let Some(cname) = answers.iter().find(|answer| answer.is_cname()) else {
+                return Ok(Vec::new());
+            };
+            current = cname.data.trim_end_matches('.').to_string();
+        }
+
+        Ok(Vec::new())
     }
 }
 

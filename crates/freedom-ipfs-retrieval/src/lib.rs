@@ -1165,8 +1165,13 @@ async fn build_bitswap_swarm() -> Result<libp2p::Swarm<BitswapBehaviour>> {
         )
         .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
         .with_quic()
-        .with_dns()
-        .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
+        // Avoid libp2p's system DNS path: iOS devices do not expose a
+        // Unix-style /etc/resolv.conf, and Bitswap frequently dials DNS
+        // multiaddrs from public provider records.
+        .with_dns_config(
+            libp2p::dns::ResolverConfig::cloudflare(),
+            libp2p::dns::ResolverOpts::default(),
+        )
         .with_websocket(
             (tls::Config::new, noise::Config::new),
             yamux::Config::default,

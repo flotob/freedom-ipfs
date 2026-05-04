@@ -1256,12 +1256,6 @@ async fn build_bitswap_swarm() -> Result<libp2p::Swarm<BitswapBehaviour>> {
             libp2p::dns::ResolverConfig::cloudflare(),
             libp2p::dns::ResolverOpts::default(),
         )
-        .with_websocket(
-            (tls::Config::new, noise::Config::new),
-            yamux::Config::default,
-        )
-        .await
-        .map_err(|err| RetrievalError::Bitswap(err.to_string()))?
         .with_behaviour(|key| BitswapBehaviour {
             stream: libp2p_stream::Behaviour::new(),
             identify: identify::Behaviour::new(identify::Config::new(
@@ -1410,6 +1404,8 @@ fn is_supported_bitswap_addr(addr: &Multiaddr) -> bool {
             | Protocol::WebRTC
             | Protocol::WebRTCDirect
             | Protocol::P2pWebRtcDirect
+            | Protocol::Ws(_)
+            | Protocol::Wss(_)
             | Protocol::P2pCircuit
             | Protocol::Certhash(_) => return false,
             _ => {}

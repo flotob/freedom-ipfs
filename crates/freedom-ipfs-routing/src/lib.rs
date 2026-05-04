@@ -733,12 +733,6 @@ async fn build_dht_swarm(query_timeout: Duration) -> Result<libp2p::Swarm<DhtBeh
             libp2p::dns::ResolverConfig::cloudflare(),
             libp2p::dns::ResolverOpts::default(),
         )
-        .with_websocket(
-            (tls::Config::new, noise::Config::new),
-            yamux::Config::default,
-        )
-        .await
-        .map_err(|err| RoutingError::Dht(err.to_string()))?
         .with_behaviour(move |key| {
             let peer_id = key.public().to_peer_id();
             let store = MemoryStore::new(peer_id);
